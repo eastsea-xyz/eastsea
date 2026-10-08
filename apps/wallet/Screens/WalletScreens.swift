@@ -45,6 +45,7 @@ struct Stage {
     let unattended = UnattendedDaemon()
     let updates = Updates(SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil))
     let browser = BrowserController()
+    let browserSession = BrowserSession()
 
     init() {
         guard let root = ProcessInfo.processInfo.environment["WALLET_SCREEN_FIXTURE_ROOT"] else {
@@ -62,6 +63,7 @@ struct Stage {
         node.loadPreview()
         earnings.attach(node, operatorAddress: { "" })
         browser.attach(model: model)
+        browserSession.attach(model: model)
     }
 
     func wrap<V: View>(_ v: V) -> some View {
@@ -73,6 +75,7 @@ struct Stage {
             .environmentObject(unattended)
             .environmentObject(updates)
             .environmentObject(browser)
+            .environmentObject(browserSession)
             .tint(.aether)
     }
 }
@@ -123,6 +126,30 @@ final class Renderer {
             page("network-verifying", dark, ["designPreview": "verifying"]) { NetworkPage() }
             page("security", dark) { SecurityPage() }
             page("explore", dark) { ExplorePage(goHome: {}).frame(height: 640) }
+            // Real browser components with account-scoped favorites/history,
+            // URL-only tab snapshots, and no external page or network load.
+            stagePage("browser-start", dark, pad: false, prepare: { s in
+                s.browserSession.seedPreview()
+            }) { s in
+                BrowserStartPage(session: s.browserSession).frame(height: 640)
+            }
+            stagePage("browser-tabs", dark, pad: false, prepare: { s in
+                s.browserSession.seedPreview()
+            }) { _ in
+                ExplorePage(goHome: {}).frame(height: 640)
+            }
+            stagePage("browser-tabs-narrow", dark, width: 380, pad: false, prepare: { s in
+                s.browserSession.seedPreview()
+            }) { _ in
+                ExplorePage(goHome: {}).frame(height: 640)
+            }
+            stagePage("browser-permissions", dark, width: 480, pad: false) { s in
+                BrowserSitePermissionsPanel(browser: s.browser, origin: "https://eastsea.xyz", account: s.model.address,
+                                            allowances: [String(localized: "Read your address"), String(localized: "Request transactions")])
+            }
+            stagePage("browser-find", dark, pad: false) { s in
+                BrowserFindBar(browser: s.browser)
+            }
             page("developer", dark, width: 1000) { DeveloperView() }
             // The whole window, sidebar included, wide and narrow.
             window("window", dark, width: 1000, height: 780) { SimpleDashboard() }

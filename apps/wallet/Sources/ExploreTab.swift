@@ -1,119 +1,22 @@
 import SwiftUI
 import WebKit
 
-/// The Explore tab (docs/design/09-wallet.md "인앱 브라우저"): a curated home,
-/// an address bar that opens external https after one warning per site, and
-/// the block explorer bundled with the app. Pages' `window.aether` is
-/// answered by the wallet itself through BrowserController.
+/// Explore owns native browser chrome. Each session tab answers the page's
+/// `window.aether` bridge through its own origin-checked BrowserController.
 struct ExplorePage: View {
-    @EnvironmentObject var model: WalletModel
-    @EnvironmentObject var browser: BrowserController
+    @EnvironmentObject var session: BrowserSession
     /// Back to Home, always in the address bar: a page in the full-bleed
     /// web view must never be a dead end (founder report on 0.7.0).
     var goHome: (() -> Void)?
 
     var body: some View {
-        VStack(spacing: 0) {
-            addressBar
-            if let n = browser.notice {
-                Text(n).font(.aeFootnote).foregroundStyle(Color.warn)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16).padding(.vertical, 6)
-                    .background(Color.warn.opacity(0.12))
-            }
-            Divider()
-            if browser.webView == nil {
-                home.padding(20)
-            } else if let web = browser.webView {
-                WebViewHolder(webView: web)
-                    .id(browser.webViewGeneration)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .sheet(item: $browser.warning) { w in
-            SiteWarningSheet(warning: w, browser: browser)
-                .frame(width: 460)
-        }
-        .sheet(item: $browser.ask) { ask in
-            ProviderAskSheet(ask: ask, browser: browser)
-                .frame(width: 480)
-        }
-    }
-
-    private var addressBar: some View {
-        HStack(spacing: 8) {
-            if let goHome {
-                Button(action: goHome) { Label("Home", systemImage: "house.fill") }
-                    .buttonStyle(.bordered)
-                    .help("Back to Home")
-            }
-            #if os(macOS)
-            if browser.canGoBack {
-                Button { browser.goBack() } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.borderless).help("Back")
-            }
-            #endif
-            Image(systemName: "lock.fill").font(.aeCaption).foregroundStyle(.secondary)
-            TextField("Enter a web address (https)", text: $browser.addressField)
-                .textFieldStyle(.roundedBorder).font(.aeBody)
-                .onSubmit { browser.open(browser.addressField) }
-            Button("Go") { browser.open(browser.addressField) }
-                .buttonStyle(.borderedProminent).disabled(browser.addressField.trimmingCharacters(in: .whitespaces).isEmpty)
-        }
-        .padding(.horizontal, 16).padding(.vertical, 10)
-    }
-
-    /// The curated home: what the tab is for, before any address is typed.
-    private var home: some View {
-        VStack(spacing: 16) {
-            Card {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(alignment: .top, spacing: 14) {
-                        Image(systemName: "safari.fill").font(.system(size: 30)).foregroundStyle(Color.aether)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Explore the chain").font(.aeHeadline)
-                            Text("The block explorer below is part of the app and reads this Mac's own node. Pages you open can connect to your wallet — every request asks first, and Security lists the sites you allowed.")
-                                .font(.aeBody).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            Card {
-                VStack(alignment: .leading, spacing: 12) {
-                    Button {
-                        browser.openExplorer()
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Block explorer").font(.aeHeadline)
-                            Text("Bundled with the app — reads your own node, signs nothing.")
-                                .font(.aeBody).foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
-                    Divider()
-                    ForEach(Array(BrowserOriginPolicy.curatedDomains).sorted(), id: \.self) { domain in
-                        Button {
-                            browser.load(URL(string: "https://\(domain)")!)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(domain).font(.aeHeadline)
-                                Text("The \(Brand.name) website.").font(.aeBody).foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            Spacer()
-        }
-        .frame(maxWidth: 620)
+        BrowserWorkspace(session: session, browser: session.controller, goHome: goHome)
+            .id(session.activeTabID)
     }
 }
 
 /// Puts a WKWebView in the SwiftUI tree on both platforms.
-private struct WebViewHolder: View {
+struct WebViewHolder: View {
     let webView: WKWebView
 
     var body: some View {
@@ -167,8 +70,8 @@ struct SiteWarningSheet: View {
                 .font(.aeFootnote).foregroundStyle(.secondary)
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { browser.refuseWarning() }.keyboardShortcut(.cancelAction)
-                Button("Open Site") { browser.approveWarning() }.keyboardShortcut(.defaultAction)
+                Button("Cancel", role: .cancel) { browser.refuseWarning(id: warning.id) }.keyboardShortcut(.cancelAction)
+                Button("Open Site") { browser.approveWarning(id: warning.id) }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)
@@ -188,12 +91,16 @@ struct ProviderAskSheet: View {
             switch ask.kind {
             case .connect(let origin, let host):
                 Text("Connect to \(host.isEmpty ? origin : host)?").font(.aeTitle)
+                Text(verbatim: origin).font(.aeBody.monospaced()).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text("This site is asking which address this wallet controls. Saying yes shows it **\(Short.address(model.address))** — the address itself, not your key, and not your balances.")
                     .font(.aeBody)
                 Text("You can take this back any time in Security → Connected sites.")
                     .font(.aeFootnote).foregroundStyle(.secondary)
             case .send(let origin, let host, let tx, let feeWei):
                 Text("\(host.isEmpty ? origin : host) asks to send").font(.aeTitle)
+                Text(verbatim: origin).font(.aeBody.monospaced()).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
                 VStack(alignment: .leading, spacing: 8) {
                     row("Action", CallDescribe.action(to: tx.to, data: tx.data), mono: false)
                     if !tx.to.isEmpty { row("To", tx.to, mono: true) }
@@ -217,8 +124,8 @@ struct ProviderAskSheet: View {
             }
             HStack {
                 Spacer()
-                Button("Refuse", role: .cancel) { browser.refuseAsk() }.keyboardShortcut(.cancelAction)
-                Button(ask.kind.isConnect ? String(localized: "Connect") : String(localized: "Send")) { browser.approveAsk() }
+                Button("Refuse", role: .cancel) { browser.refuseAsk(id: ask.id) }.keyboardShortcut(.cancelAction)
+                Button(ask.kind.isConnect ? String(localized: "Connect") : String(localized: "Send")) { browser.approveAsk(id: ask.id) }
                     .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
             }
         }

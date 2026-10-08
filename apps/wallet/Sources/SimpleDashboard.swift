@@ -8,7 +8,8 @@ import SwiftUI
 struct SimpleDashboard: View {
     @EnvironmentObject var model: WalletModel
     /// The Explore tab's browser, owned here so it survives page switches.
-    @StateObject private var browser = BrowserController()
+    @StateObject private var browserSession = BrowserSession()
+    private var browser: BrowserController { browserSession.controller }
     @State private var page: Page? = .home
     @State private var sheet: Sheet?
     @AppStorage("acceptedTerms") private var acceptedTerms = 0
@@ -61,7 +62,8 @@ struct SimpleDashboard: View {
         shell
             .tint(.aether)
             .environmentObject(browser)
-            .onAppear { browser.attach(model: model) }
+            .environmentObject(browserSession)
+            .onAppear { browserSession.attach(model: model) }
             .sheet(item: $sheet) { s in sheetContent(s) }
             #if DEBUG
             .onAppear { applyPreview() }

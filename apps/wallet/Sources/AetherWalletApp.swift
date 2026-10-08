@@ -83,6 +83,7 @@ struct AetherWalletApp: App {
                     .keyboardShortcut("d", modifiers: [.command, .shift])
             }
             CommandMenu("Go") { PageCommands() }
+            BrowserCommands()
         }
         #endif
         #if os(macOS)

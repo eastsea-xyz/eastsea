@@ -4,6 +4,8 @@
 # text from Vision OCR next to it for check-wallet-screens-language.py.
 #   scripts/wallet-screens.sh [screen-prefix]
 # Account states: switcher, two-accounts, retire-blocked, menubar-qr.
+# Browser: browser-start, browser-tabs (three tabs), browser-tabs-narrow,
+# browser-permissions, browser-find. Fixtures never load an external page.
 # Never launches EastSea.app or reads its real data, node, or keychain.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"

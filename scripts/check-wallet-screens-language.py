@@ -36,12 +36,12 @@ NAMES = ("EastSea", "Doubloon", "Aether", "DBLN", "Mac", "Touch ID", "Face ID", 
          "DeviceCheck", "Pipln", "Sparkle", "Safari", "WebKit", "Ledger", "Trezor", "Samsung T7",
          "Finder", "FileVault", "iCloud", "iPhone", "macOS", "iOS", "Claude Code", "Codex", "Metal",
          "AI", "SSD", "BLS", "EIP-7864", "SHA-256", "ID", "PATH", "APFS", "Mac OS Extended", "OS",
-         "http", "https", "eastsea-earnings.csv",
+         "http", "https", "sea", "DuckDuckGo", "Google", "Bing", "eastsea-earnings.csv",
          "CSV", "GPU", "CPU", "RAM", "API", "RPC", "DHT", "EVM", "ERC-20", "HTTP", "HTTPS",
          "TCP", "UDP", "IP", "PID", "JSON", "ZIP", "USDX", "VVDBLN", "NEB", "ORB", "CMT", "WAETH", "AETH")
 NAME_RE = re.compile(r"(?<![A-Za-z])(?:" + "|".join(re.escape(name) for name in sorted(NAMES, key=len, reverse=True)) + r")(?![A-Za-z])")
 UNIT_RE = re.compile(r"(?<![A-Za-z])(?:[KMGT]i?B|[km]?s|Hz|GHz|MHz|MB/s|GB/s|UTC|W|kWh)(?![A-Za-z])")
-DATA_RE = re.compile(r"(?:https?://[^\s]+|(?:[A-Za-z0-9-]+\.)+(?:xyz|com|org|net)(?:/[^\s]*)?"
+DATA_RE = re.compile(r"(?:(?:https?|sea|eastsea-page)://[^\s]+|(?:[A-Za-z0-9-]+\.)+(?:xyz|com|org|net)(?:/[^\s]*)?"
                      r"|0x[0-9a-fA-F…\.]*|(?<!\w)[0-9a-fA-F]{8,}(?!\w)"
                      r"|~?/\.local/bin|(?:~?/Applications/|~?/Library/Application Support/)(?:EastSea|Aether)(?:\.app|/[^\s]*)?)")
 # Human supplied data is not app copy. Exceptions are confined to the screens
@@ -64,6 +64,12 @@ FEATURE_COPY = {
     "retire-blocked": ("Retire account", "Check balance again",
                        "This account still has funds. Move its balance and tokens before retiring it so you can keep using them."),
     "menubar-qr": ("Receive", "Copy address", "Share"),
+    "browser-start": ("Favorites", "Recent sites", "EastSea apps"),
+    "browser-tabs": ("New tab", "Private tab"),
+    "browser-tabs-narrow": ("New tab", "Private tab"),
+    "browser-permissions": ("Site permissions", "Connected account", "Requested permissions",
+                            "Read your address", "Request transactions"),
+    "browser-find": ("Find in page",),
 }
 FEATURE_ACCOUNTS = {"switcher": (1, 2), "two-accounts": (2,), "retire-blocked": (2,), "menubar-qr": (2,)}
 

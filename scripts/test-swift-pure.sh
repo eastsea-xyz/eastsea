@@ -41,7 +41,8 @@ run token-icon Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift
 run token-send Brand.swift TokenSend.swift TokenAssets.swift EarningsModel.swift
 run unattended UnattendedDecision.swift
 run tx-status-text TxStatusText.swift
-run update-channel UpdateChannel.swift
+run update-channel ReleaseApproval.swift UpdateChannel.swift
+run chain-release ReleaseApproval.swift ChainRelease.swift ReleaseArtifact.swift UpdateChannel.swift
 run update-state Brand.swift DataMigration.swift UpdateTracker.swift
 run update-window UpdateWindow.swift
 run watchdog Brand.swift Clock.swift NodeWatchdog.swift
@@ -53,7 +54,7 @@ W=apps/bridge/Sources; T=apps/bridge/Tests
 run bridge-plan BridgePlan.swift
 # Native identity fixtures need signed task-owned executables and arguments.
 if [ "$(uname -s)" = Darwin ]; then
-  for fixture in update-daemon update-listener; do
+  for fixture in update-daemon update-listener chain-release-sparkle; do
     if bash "scripts/test-$fixture.sh" > "tmp/sw-$fixture.out" 2> "tmp/sw-$fixture.err"; then
       echo "OK   $fixture"
     else

@@ -63,6 +63,7 @@ pub struct RpcState {
 /// never relay a transaction or trigger node-side work.
 const PUBLIC_READ_METHODS: &[&str] = &[
     "aether_status",
+    "aether_restartSlot",
     "aether_recentBlocks",
     "aether_candidates",
     "aether_proverStatus",
@@ -848,6 +849,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
     let chain = &st.chain;
     match method {
         "aether_status" => {
+            if let Some(network) = &st.network { chain.watch_releases(Some(network)); }
             let resources = crate::resources::monitor().map(|m| m.status_value()).unwrap_or(Value::Null);
             let g = chain.lock();
             let f = &g.finalized;
@@ -896,6 +898,11 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "schedule": f.schedule.iter().map(|a| json!([a.protocol, a.at])).collect::<Vec<_>>(),
                 "upgrade_metadata": crate::chain::upgrade_metadata(&g),
                 "upcoming_upgrades": g.upgrade_notices,
+                // Discovery bytes were checked against pinned builder keys
+                // and a finalized parent-state commitment. Wallets still
+                // independently prove the entry with verified_release.
+                "release": g.release_watcher.status(g.cfg.chain_id, f.height,
+                    crate::release::restart_slot(&g, None, unix_millis())),
                 // The free registration lane (G2): wallets see it and register
                 // without needing a balance for a paid contract call.
                 "free_registration": aether_rewards::enabled(&f.state),
@@ -908,6 +915,11 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // grants from this address as "faucet" in the balance breakdown.
                 "faucet": st.faucet.as_ref().map(|f| json!(f.address)).unwrap_or(Value::Null),
             }))
+        }
+        "aether_restartSlot" => {
+            let key: String = param(p, 0)?;
+            let g = chain.lock();
+            Ok(crate::release::restart_slot(&g, Some(&key), unix_millis()))
         }
         // The next relay nonce a free-lane registration of `operator` must
         // carry (`[operator]`): the count the chain has spent of its items.
@@ -1279,6 +1291,11 @@ fn release_entries(state: &aether_execution::WorldState, address: Address, start
         })
         .collect();
     json!({ "count": count, "height": height, "entries": entries })
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_millis().min(u64::MAX as u128) as u64
 }
 
 /// A chain at genesis in an `RpcState` with nothing attached — enough to

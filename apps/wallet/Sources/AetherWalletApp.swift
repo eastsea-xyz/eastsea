@@ -130,8 +130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var node: NodeController?
     weak var model: WalletModel?
     private let releaseGate = ReleaseUpdateGate()
-    /// Sparkle: checks the signed appcast on GitHub Releases and installs updates.
-    lazy var updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
+    /// Start only after choosing discovery from the running app's pinned network.
+    lazy var updater = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
     /// What the Network page shows: when updates were last checked, and a Check button.
     @MainActor lazy var updates = Updates(updater)
     /// Layer 1 of the health signal (docs/design/32-health-signal.md §4.2):
@@ -140,6 +140,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var started = false
     /// Tells a validator Mac when the network pauses and resumes.
     private var pauseWatch: AnyCancellable?
+    private var releaseWatch: AnyCancellable?
+    private var updateNetworkWatch: AnyCancellable?
+    private var chainAnnouncement: ChainReleaseAnnouncement?
+    private var preparedChainRelease: PreparedChainRelease?
+    private var releasePreparing = false
+    private var releaseAttemptHeight: UInt64?
+    private var releaseAttemptIdentity: String?
+    private var heldItem: SUAppcastItem?
     /// Update failures, persisted and retried by cause (red team #11):
     /// discover → download → verify → install → health, across relaunches.
     private var tracker = UpdateTracker()
@@ -171,7 +179,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #if DEBUG
         if DesignPreview.on { return }
         #endif
-        _ = updater  // start checking right away (hourly, and when the chain schedules a newer protocol)
+        updater.updater.clearFeedURLFromUserDefaults()
+        updater.updater.automaticallyChecksForUpdates = UpdateChannel.pollsForDiscovery(trust: ReleaseTrust.bundled(), activeChainId: configuredChainId())
+        updater.updater.automaticallyDownloadsUpdates = true
+        do { try updater.updater.start() }
+        catch { Self.updateLog.error("updater could not start: \(error.localizedDescription, privacy: .public)") }
     }
 
     /// Once per launch, from whichever appears first (window or menu-bar panel).
@@ -201,10 +213,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
         self.node = node
         self.model = model
-        let check: () -> Void = { [weak self] in self?.updater.updater.checkForUpdatesInBackground() }
+        let check: () -> Void = { [weak self] in self?.checkKnownRelease() }
         node.onUpgradeNeeded = check
         node.onUpdateMomentChanged = { [weak self] in self?.installIfSafe() }
         model.onOutdated = check
+        updateNetworkWatch = model.$networkChainId.sink { [weak self] chain in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let polling = UpdateChannel.pollsForDiscovery(trust: ReleaseTrust.bundled(), activeChainId: chain)
+                if self.updater.updater.automaticallyChecksForUpdates != polling {
+                    self.updater.updater.automaticallyChecksForUpdates = polling
+                }
+            }
+        }
+        // Reuse the wallet's normal chain-status stream. No release feed is
+        // contacted until finalized status announces a specific entry.
+        releaseWatch = model.$status.sink { [weak self] status in
+            MainActor.assumeIsolated { self?.observeRelease(status) }
+        }
         pauseWatch = model.$chainPausedSince
             .removeDuplicates { ($0 == nil) == ($1 == nil) }
             .sink { [weak node] since in
@@ -281,7 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tracker.nodeRunning(running: node.state == .running && node.rpcAnswering,
                                 releaseVerified: node.updateReleaseVerified && !node.usePreviousBinary)
         }
-        if tracker.retryDue() { updater.updater.checkForUpdatesInBackground() }
+        if tracker.retryDue() { checkKnownRelease() }
         installIfSafe()
         let notice = tracker.sentence
         if updates.installNotice != notice { updates.installNotice = notice }
@@ -309,9 +335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private func updateMoment(node: NodeController, model: WalletModel) -> UpdateWindow.Moment {
         return UpdateWindow.Moment(
             seated: node.updateMembership,
-            // N1 (aether_status.restart) is not built: no chain-assigned slot
-            // yet, so a seated Mac waits until it leaves the committee or quits.
-            inOwnSlot: nil,
+            inOwnSlot: node.updateRestartSlot,
             sendSheetOpen: model.sendSheetOpen,
             signing: model.busy,
             migrating: migration.moving,
@@ -357,7 +381,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateShutdownID = id
         updateShutdownTask = Task { @MainActor [weak self, weak node] in
             guard let self, let node else { return }
-            let prepared = await node.prepareForUpdate()
+            // Download approval cannot authorize a later install: re-read the
+            // certified release and hash the cached bytes before stopping writers.
+            guard let item = self.heldItem else {
+                self.updateShutdownTask = nil
+                self.updateShutdownID = nil
+                if quit { NSApp.reply(toApplicationShouldTerminate: false) }
+                return
+            }
+            if let issue = await self.releaseGate.validateForInstall(item: item, validators: self.model?.validators ?? 0) {
+                self.updates.approvalIssue = issue
+                self.updateShutdownTask = nil
+                self.updateShutdownID = nil
+                if quit { NSApp.reply(toApplicationShouldTerminate: false) }
+                return
+            }
+            guard self.updateShutdownID == id, !Task.isCancelled,
+                  let model = self.model, let trust = ReleaseTrust.bundled(),
+                  configuredChainId() == trust.chainId, model.status?.chainId == trust.chainId,
+                  self.releaseGate.hasPreparedApproval(for: item),
+                  UpdateWindow.decide(self.updateMoment(node: node, model: model)) == .installNow else {
+                self.updateShutdownTask = nil
+                self.updateShutdownID = nil
+                if quit { NSApp.reply(toApplicationShouldTerminate: false) }
+                return
+            }
+            let prepared = await node.prepareForUpdate() { [weak self, weak node] in
+                guard let self, let node, let model = self.model,
+                      self.updateShutdownID == id, self.heldItem === item,
+                      configuredChainId() == trust.chainId, model.status?.chainId == trust.chainId,
+                      self.releaseGate.hasPreparedApproval(for: item) else { return false }
+                return UpdateWindow.decide(self.updateMoment(node: node, model: model)) == .installNow
+            }
             guard self.updateShutdownID == id else {
                 if quit { NSApp.reply(toApplicationShouldTerminate: false) }
                 return
@@ -366,6 +421,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.updateShutdownID = nil
             guard prepared, !Task.isCancelled, self.heldInstall != nil, self.heldVersion == version,
                   let model = self.model,
+                  self.heldItem === item, configuredChainId() == trust.chainId, model.status?.chainId == trust.chainId,
+                  self.releaseGate.hasPreparedApproval(for: item),
                   UpdateWindow.decide(self.updateMoment(node: node, model: model)) == .installNow else {
                 node.abortUpdatePreparation()
                 if quit { NSApp.reply(toApplicationShouldTerminate: false) }
@@ -375,6 +432,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // The root stub is suppressed and the app cannot start a writer.
             self.updateShutdownReady = true
             self.heldInstall = nil
+            self.heldItem = nil
             self.heldReason = nil
             self.tracker.installing()
             self.syncUpdateNotice()
@@ -388,10 +446,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if updates.installNotice != notice { updates.installNotice = notice }
     }
 
+    @MainActor private func checkKnownRelease() {
+        if UpdateChannel.pollsForDiscovery(trust: ReleaseTrust.bundled(), activeChainId: configuredChainId()) {
+            updater.updater.checkForUpdatesInBackground()
+        } else if preparedChainRelease != nil {
+            updater.updater.checkForUpdatesInBackground()
+        } else if let status = model?.status {
+            releaseAttemptHeight = nil
+            observeRelease(status)
+        }
+    }
+
+    @MainActor private func observeRelease(_ status: ChainStatus?) {
+        guard let trust = ReleaseTrust.bundled(), !trust.legacy,
+              let status, status.chainId == trust.chainId else { return }
+        guard let announcement = ChainReleaseAnnouncement.parse(json: status.releaseJson) else {
+            if status.releaseJson != "null" { updates.approvalIssue = ChainReleaseFailure.forgedEntry.sentence }
+            return
+        }
+        // Sparkle retains its driver through a held install and cannot start
+        // a second session. Finish this immutable approved item safely; the
+        // relaunched app then learns the newer announcement from chain status.
+        guard heldInstall == nil, updateShutdownTask == nil, !updater.updater.sessionInProgress else { return }
+        chainAnnouncement = announcement
+        guard preparedChainRelease?.identity != announcement.identity,
+              !releasePreparing else { return }
+        // Waiting is driven by chain progress. An early entry gets one proof
+        // check, then waits until its announced barrier before trying again.
+        if releaseAttemptIdentity == announcement.identity,
+           let attempted = releaseAttemptHeight,
+           status.height < announcement.installAfterHeight || attempted == status.height { return }
+        releaseAttemptIdentity = announcement.identity
+        releaseAttemptHeight = status.height
+        releasePreparing = true
+        releaseGate.prepare(announcement: announcement, validators: model?.validators ?? 0) { [weak self] prepared, pending, issue in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.releasePreparing = false
+                guard self.chainAnnouncement?.identity == announcement.identity,
+                      self.model?.status?.chainId == trust.chainId else { return }
+                self.updates.pendingRelease = pending
+                self.updates.approvalIssue = issue
+                guard let prepared else { return }
+                self.preparedChainRelease = prepared
+                self.updater.updater.checkForUpdatesInBackground()
+            }
+        }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 extension AppDelegate: SPUUpdaterDelegate {
+    /// A chain update fetches a generated appcast containing only the verified
+    /// manifest item and a loopback URL for the already hashed artifact.
+    func feedURLString(for updater: SPUUpdater) -> String? {
+        if UpdateChannel.pollsForDiscovery(trust: ReleaseTrust.bundled(), activeChainId: configuredChainId()) { return nil }
+        return preparedChainRelease?.appcastURL.absoluteString
+    }
+
+    func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
+        guard UpdateChannel.pollsForDiscovery(trust: ReleaseTrust.bundled(), activeChainId: configuredChainId()) || preparedChainRelease != nil else {
+            throw NSError(domain: "AetherReleaseApproval", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: String(localized: "This update is not approved by the network yet.")])
+        }
+    }
+
     /// The canary ring (docs/design/32-health-signal.md §5.2): channel items
     /// are offered only to a Mac set to `updateChannel = canary`. The release
     /// gate below applies to them unchanged.
@@ -410,6 +530,7 @@ extension AppDelegate: SPUUpdaterDelegate {
     }
 
     @MainActor private func startReleasePreflight(_ item: SUAppcastItem) {
+        guard UpdateChannel.pollsForDiscovery(trust: ReleaseTrust.bundled(), activeChainId: configuredChainId()) else { return }
         releaseGate.inspect(item, validators: model?.validators ?? 0) { [weak self] pending, issue, ready in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -457,6 +578,10 @@ extension AppDelegate: SPUUpdaterDelegate {
             self.updateShutdownID = nil
             self.updateShutdownReady = false
             self.node?.abortUpdatePreparation()
+            self.heldInstall = nil
+            self.heldItem = nil
+            self.heldVersion = ""
+            self.heldReason = nil
             self.tracker.aborted(networkError: ns.domain == NSURLErrorDomain
                 || ns.underlyingErrors.contains { ($0 as? NSError)?.domain == NSURLErrorDomain })
             self.syncUpdateNotice()
@@ -477,6 +602,7 @@ extension AppDelegate: SPUUpdaterDelegate {
             heldVersion = "\((item.displayVersionString as String?) ?? "") (\(item.versionString))"
             Self.updateLog.notice("update downloaded: \(self.heldVersion, privacy: .public), verified")
             heldInstall = immediateInstallationBlock
+            heldItem = item
             heldReason = nil
             installIfSafe()
         }

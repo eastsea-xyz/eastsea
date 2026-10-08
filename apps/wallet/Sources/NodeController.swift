@@ -294,7 +294,7 @@ final class NodeController: ObservableObject {
         return pid == releaseVerifiedPID && pid == binding.rootPID
     }
 
-    func prepareForUpdate() async -> Bool {
+    func prepareForUpdate(mayStop: @escaping @MainActor () -> Bool) async -> Bool {
         guard !updateInProgress else { return updateRunLock != nil }
         guard storageMovePercent == nil else { return false }
         updatePreparationGeneration &+= 1
@@ -331,11 +331,32 @@ final class NodeController: ObservableObject {
         let runtimeAbsent: Bool
         let attestedBinding: NodeReleaseIdentity.Binding?
         if let rootPID, let expected = Self.helperBinaryURL {
+            let requestedAt = clock.now
             let sample = await LocalRPC.callVerified(rootPID: rootPID, port: Self.port, expected: expected,
                                                      method: "aether_status", params: [])
             releaseVerified = sample.map { NodeReleaseIdentity.hasWriterLease(status: $0.value) } ?? false
             runtimeAbsent = false
             attestedBinding = sample?.binding
+            // Slot and membership are renewed after any long proof/hash work,
+            // immediately before stopping a seated writer, on the same listener.
+            if releaseVerified, let key = candidate?.validatorKey {
+                let network = await LocalRPC.callVerified(rootPID: rootPID, port: Self.port, expected: expected,
+                                                          method: "aether_network", params: [])
+                let slot = await LocalRPC.callVerified(rootPID: rootPID, port: Self.port, expected: expected,
+                                                       method: "aether_restartSlot", params: [key])
+                let bound = network?.binding == attestedBinding && slot?.binding == attestedBinding
+                let value = bound ? slot?.value as? [String: Any] : nil
+                let membership = bound ? UpdateWindow.reconciledMembership(network: network?.value,
+                    validatorKey: key, restartSlot: value) : nil
+                updateMembershipSnapshot.observe(membership, requestedAt: requestedAt.seconds,
+                    generation: updateMembershipSnapshot.generation)
+                updateSlotAllowed = value?["allowed"] as? Bool
+                updateSlotRequestedAt = value == nil ? nil : requestedAt
+            } else {
+                updateMembershipSnapshot.invalidate()
+                updateSlotAllowed = nil
+                updateSlotRequestedAt = nil
+            }
         } else {
             releaseVerified = false
             attestedBinding = nil
@@ -350,7 +371,7 @@ final class NodeController: ObservableObject {
               process?.processIdentifier == ownPID, unattended.runningNodePID == daemonPID,
               UnattendedDecision.mayStopForUpdate(ownProcess: ownPID != nil, attached: attached,
                   daemonPresent: daemonPID != nil, releaseVerified: releaseVerified,
-                  unclaimedRuntimeAbsent: runtimeAbsent) else {
+                  unclaimedRuntimeAbsent: runtimeAbsent), mayStop() else {
             if updatePreparationGeneration == generation { abortUpdatePreparation() }
             return false
         }
@@ -363,6 +384,9 @@ final class NodeController: ObservableObject {
                 return false
             }
         }
+        // Signature/process-tree validation above may itself take time. No
+        // expensive operation may separate the last lease check from stopping.
+        guard mayStop() else { abortUpdatePreparation(); return false }
         stop(keepSwitch: true)
         if let daemonPID { unattended.stopDaemonNode(expectedPID: daemonPID) }
         let heldFD: Int32?
@@ -1173,15 +1197,29 @@ final class NodeController: ObservableObject {
 
     var onUpdateMomentChanged: (() -> Void)?
     private var updateMembershipSnapshot = UpdateWindow.MembershipSnapshot()
+    private var updateSlotAllowed: Bool?
+    private var updateSlotRequestedAt: MonotonicInstant?
     private var lastUpdateMembershipCheck = MonotonicInstant.distantPast
     private var updateMembershipTask: Task<Void, Never>?
     private var unclaimedProbeRequestedAt: MonotonicInstant?
     private var unclaimedEndpointAbsent = false
 
+    /// Read from the same signed local listener as voting membership. A slot
+    /// observation expires with the membership lease and is held during quiesce.
+    var updateRestartSlot: Bool? {
+        guard let requestedAt = updateSlotRequestedAt,
+              clock.now.elapsed(since: requestedAt) >= 0,
+              clock.now.elapsed(since: requestedAt) <= 15,
+              updateInProgress || updateReleaseVerified else { return nil }
+        return updateSlotAllowed
+    }
+
     private func invalidateUpdateMembership() {
         updateMembershipTask?.cancel()
         updateMembershipTask = nil
         updateMembershipSnapshot.invalidate()
+        updateSlotAllowed = nil
+        updateSlotRequestedAt = nil
         lastUpdateMembershipCheck = .distantPast
         unclaimedProbeRequestedAt = nil
         unclaimedEndpointAbsent = false
@@ -1220,17 +1258,25 @@ final class NodeController: ObservableObject {
         updateMembershipTask = Task { [weak self] in
             let sample = await LocalRPC.callVerified(rootPID: leasedBinding.rootPID, port: port, expected: expected,
                                                      method: "aether_network", params: [])
+            let slot = await LocalRPC.callVerified(rootPID: leasedBinding.rootPID, port: port, expected: expected,
+                                                   method: "aether_restartSlot", params: [key])
             guard let self, self.updateMembershipSnapshot.generation == generation else { return }
             self.updateMembershipTask = nil
             guard !self.updateInProgress else { return }
             guard self.updateReleaseVerified, self.verifiedStatusBinding == leasedBinding,
                   sample?.binding == leasedBinding, self.candidate?.validatorKey == key else {
                 self.updateMembershipSnapshot.observe(nil, requestedAt: requestedAt.seconds, generation: generation)
+                self.updateSlotAllowed = nil
+                self.updateSlotRequestedAt = nil
                 self.onUpdateMomentChanged?()
                 return
             }
-            let membership = UpdateWindow.votingMembership(network: sample?.value, validatorKey: key)
+            let slotStatus = slot?.binding == leasedBinding ? slot?.value as? [String: Any] : nil
+            let membership = UpdateWindow.reconciledMembership(network: sample?.value,
+                validatorKey: key, restartSlot: slotStatus)
             self.updateMembershipSnapshot.observe(membership, requestedAt: requestedAt.seconds, generation: generation)
+            self.updateSlotAllowed = slotStatus?["allowed"] as? Bool
+            self.updateSlotRequestedAt = slotStatus == nil ? nil : requestedAt
             self.onUpdateMomentChanged?()
         }
     }

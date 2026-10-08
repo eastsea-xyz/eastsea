@@ -353,7 +353,12 @@ impl Upstream {
     /// highest claim wins. The iroh client corroborates across its own peer
     /// set the same way (PA7B-06), moving to the peer with the best claim.
     pub async fn net_height(&self, ours: u64) -> Result<u64, String> {
+        self.net_height_with_release(ours, None).await
+    }
+
+    async fn net_height_with_release(&self, ours: u64, chain: Option<&Chain>) -> Result<u64, String> {
         let ask_one = |v: Value| -> Result<u64, String> {
+            if let Some(chain) = chain { chain.discover_release_hint(&v["release"]); }
             v["height"].as_u64().ok_or_else(|| "no upstream height".to_string())
         };
         match self {
@@ -1047,7 +1052,7 @@ async fn advance(
         // The height this round fetches toward is corroborated across
         // sources (PA7-06): a single false-low-tip answer used to cap the
         // fetch at our own height, so a round "succeeded" fetching nothing.
-        let hint = upstream.net_height(ours).await?;
+        let hint = upstream.net_height_with_release(ours, Some(chain)).await?;
         // The claimed height is a fetch hint, not a fact (audit 7 A7-4):
         // what this round OBSERVES (and jumps toward) is the trusted
         // reading, while the pipeline below still fetches toward the

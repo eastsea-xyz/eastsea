@@ -149,7 +149,8 @@ def prepare(args):
     sparkle_version = plistlib.loads(sparkle_info.read_bytes()).get("CFBundleShortVersionString", "") if sparkle_info.exists() else ""
     inventory = bundle_inventory(app)
     artifacts = [
-        {"name": "EastSea.dmg", "sha256": sha256(args.dmg)},
+        {"name": "EastSea.dmg", "sha256": sha256(args.dmg),
+         "size": pathlib.Path(args.dmg).stat().st_size},
         {"name": "EastSea.app/Contents/MacOS/EastSea", "sha256": executable_sha256(app / "Contents/MacOS/EastSea"), "normalization": "remove-codesign"},
         {"name": "EastSea.app/Contents/Helpers/aether", "sha256": executable_sha256(app / "Contents/Helpers/aether"), "normalization": "remove-codesign"},
         {"name": "EastSea.app/Contents/Helpers/aether-agent", "sha256": executable_sha256(app / "Contents/Helpers/aether-agent"), "normalization": "remove-codesign"},

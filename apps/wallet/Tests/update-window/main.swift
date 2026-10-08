@@ -14,6 +14,21 @@ check(delegateSource.contains("storageMoving: node.storageMovePercent != nil"),
       "R09 active storage mover is wired into the update gate")
 
 typealias W = UpdateWindow
+let slotRoster: [String: Any] = ["validators": [["key": String(repeating: "a", count: 64)]]]
+let ourKey = String(repeating: "b", count: 64)
+let assignedSlot: [String: Any] = ["committee_size": 4, "seat_index": 2, "allowed": false]
+check(W.reconciledMembership(network: slotRoster, validatorKey: ourKey, restartSlot: assignedSlot) == true,
+      "a new slot assignment cannot inherit an earlier absent roster observation")
+check(W.reconciledMembership(network: slotRoster, validatorKey: ourKey,
+    restartSlot: ["committee_size": 4, "seat_index": NSNull()]) == false,
+      "both complete observations must confirm an unseated Mac")
+check(W.reconciledMembership(network: slotRoster, validatorKey: ourKey, restartSlot: nil) == nil,
+      "missing slot membership cannot authorize a writer stop")
+var lateLease = W.MembershipSnapshot()
+lateLease.observe(true, requestedAt: 100, generation: lateLease.generation)
+var writerStops = 0
+if W.decide(W.Moment(seated: lateLease.value(at: 116), inOwnSlot: true)) == .installNow { writerStops += 1 }
+check(writerStops == 0, "slot lease expiring during verification stops no writer")
 // R10: absent membership has no permission to restart without a chain slot.
 check(W.decide(W.Moment()) != .installNow,
       "R10 unknown membership must wait without a restart slot")

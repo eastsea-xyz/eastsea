@@ -9,17 +9,15 @@ import Foundation
 ///
 /// Seated validators: design 34's slot rule (seat i of n restarts only while
 /// floor(height / 600) mod n == i) needs the node to publish the slot in
-/// `aether_status.restart` (N1), which no node does yet. Until it does,
-/// `inOwnSlot` is nil and a seated Mac waits: it installs as soon as
-/// `aether_status` no longer has it in the voting set, and otherwise when the
-/// app quits (Sparkle always installs a downloaded update at termination).
-/// Once N1 lands, the caller passes the node's answer and the slot decides.
+/// `aether_restartSlot` for this Mac's voting key. Its signed local listener
+/// supplies a fresh slot observation alongside voting membership. Missing or
+/// expired observations keep a seated Mac waiting, including at quit.
 enum UpdateWindow {
     struct Moment: Equatable {
         /// Fresh membership of the running node; nil means unknown.
         var seated: Bool? = nil
         /// The chain-assigned restart slot: true inside it, false outside it,
-        /// nil while the node does not publish one (N1 not built).
+        /// nil when the node's slot observation is unavailable or expired.
         var inOwnSlot: Bool? = nil
         /// The send sheet is open (the user is composing or confirming a send).
         var sendSheetOpen = false
@@ -38,7 +36,7 @@ enum UpdateWindow {
         case storageMove = "the block data is moving"
         case membershipUnknown = "this Mac's current voting membership is unknown"
         case outOfSlot = "this validator is outside its restart slot"
-        case seatedNoSlot = "this Mac is in the active committee and the chain publishes no restart slot yet; installing when it leaves the committee, or at quit"
+        case seatedNoSlot = "this Mac is in the active committee and no verified restart slot is available"
 
         var logLine: String { "update downloaded; waiting for safe moment: \(rawValue)" }
     }
@@ -116,5 +114,21 @@ enum UpdateWindow {
         case false?: return .wait(.outOfSlot)
         case nil: return .wait(.seatedNoSlot)
         }
+    }
+
+    /// Rotation can occur between the roster read and the slot read. Either
+    /// seated observation keeps the validator gate on; both complete replies
+    /// must agree before declaring this Mac unseated.
+    static func reconciledMembership(network: Any?, validatorKey: String, restartSlot: Any?) -> Bool? {
+        let roster = votingMembership(network: network, validatorKey: validatorKey)
+        guard let slot = restartSlot as? [String: Any],
+              let count = slot["committee_size"] as? Int, count > 0,
+              let seat = slot["seat_index"] else { return roster == true ? true : nil }
+        let slotSeated: Bool
+        if let index = seat as? Int, (0..<count).contains(index) { slotSeated = true }
+        else if seat is NSNull { slotSeated = false }
+        else { return roster == true ? true : nil }
+        if roster == true || slotSeated { return true }
+        return roster == false ? false : nil
     }
 }

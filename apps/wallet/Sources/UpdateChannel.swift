@@ -21,4 +21,14 @@ enum UpdateChannel {
     static func allowedChannels(_ defaults: UserDefaults = .standard) -> Set<String> {
         defaults.string(forKey: defaultsKey) == canary ? [canary] : []
     }
+
+    #if os(macOS)
+    /// Only a bundled legacy trust decision enables timed feed discovery.
+    /// A failed RPC or a malformed new-chain pin can never enable the timer.
+    static func pollsForDiscovery(trust: ReleaseTrust?, activeChainId: UInt64? = nil) -> Bool {
+        guard let trust else { return false }
+        return trust.legacy && (trust.chainId == 7_777 || trust.chainId == 7_780)
+            && (activeChainId == nil || activeChainId == trust.chainId)
+    }
+    #endif
 }

@@ -82,6 +82,7 @@ fn legacy_7780_encoded_history_replays_byte_identically() {
     // The existing shipped-network SHA-256 pin also applies to this fixture.
     assert!(aether_node::mainnet::shipped_legacy_network(NETWORK));
     let file: NetworkFile = serde_json::from_slice(NETWORK).unwrap();
+    replay_archived_7780(&file);
     assert_eq!(file.chain_id, 7_780);
     let cfg = config(&file);
     assert!(!cfg.node_rewards);
@@ -231,5 +232,81 @@ fn legacy_7780_encoded_history_replays_byte_identically() {
     assert_eq!(
         actual, EXPECTED_TRANSCRIPT,
         "legacy7780 pre-change transcript; genesis digest={genesis_digest}, root={genesis_root:#x}"
+    );
+}
+
+// Optional, immutable RPC capture: replay it without launching or reading a node.
+fn replay_archived_7780(file: &NetworkFile) {
+    use std::io::BufRead as _;
+
+    let Ok(path) = std::env::var("AETHER_7780_REPLAY") else {
+        return;
+    };
+    let rows = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+    let (chain, genesis) = Chain::new(config(file));
+    chain.lock().identity = Some(
+        aether_light::Identity::decode(
+            hex::decode(file.identity.as_ref().unwrap())
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap(),
+    );
+    chain.finalize(&genesis).unwrap();
+    let mut transcript = blake3::Hasher::new();
+    let mut count = 0u64;
+    for line in rows.lines() {
+        let row: serde_json::Value = serde_json::from_str(&line.unwrap()).unwrap();
+        let height = row["height"].as_u64().unwrap();
+        assert_eq!(height, count, "the archived range is contiguous");
+        let block = if height == 0 {
+            genesis.clone()
+        } else {
+            let bytes = hex::decode(
+                row["finalized"]["block"]
+                    .as_str()
+                    .unwrap()
+                    .trim_start_matches("0x"),
+            )
+            .unwrap();
+            Block::decode_cfg(bytes.as_slice(), &Block::codec_config(8 << 20)).unwrap()
+        };
+        assert_eq!(block.height.get(), height);
+        assert_eq!(
+            block.digest().to_string(),
+            row["summary"]["hash"].as_str().unwrap(),
+            "archived block hash at {height}"
+        );
+        if height > 0 {
+            chain
+                .finalize(&block)
+                .unwrap_or_else(|e| panic!("archived execution at {height}: {e:?}"));
+        }
+        let exec = chain.lock().finalized.clone();
+        let root: B256 = serde_json::from_value(row["summary"]["state_root"].clone()).unwrap();
+        assert_eq!(
+            exec.state.root(),
+            root,
+            "archived 7780 state root at {height}"
+        );
+        Frame::of(&block, &exec).hash_into(&mut transcript);
+        if height.is_multiple_of(10_000) {
+            println!("archived7780 replay height={height} root={root:#x}");
+        }
+        count += 1;
+    }
+    assert_eq!(
+        count, 79_878,
+        "capture includes the protocol-2 and protocol-3 switches"
+    );
+    let last = chain.lock().finalized.clone();
+    assert_eq!(
+        aether_node::upgrade::protocol_at(&last.schedule, last.height),
+        3
+    );
+    println!(
+        "archived7780 PASS range=0..{} roots={count} transcript={}",
+        last.height,
+        transcript.finalize().to_hex()
     );
 }

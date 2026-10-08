@@ -247,14 +247,14 @@ check(rolled2.tracker.state == .failed(cause: .health, attempts: 1, nextRetryAt:
       "back on an older version while awaiting health: recorded as a health failure")
 
 // Network/download failures: unlimited attempts, backoff 1 min doubling to a
-// 6 h cap, never a tight loop.
+// 1 h cap, never a tight loop.
 let net = Rig()
 net.tracker.found(key: "k1", version: "1.2", build: "34")
 net.tracker.downloading()
 net.tracker.aborted(networkError: true)
 check(net.tracker.state == .failed(cause: .network, attempts: 1, nextRetryAt: t0.addingTimeInterval(60)),
       "first download failure: retry in a minute")
-for (n, expected) in [(2, 120.0), (3, 240.0), (4, 480.0), (5, 960.0), (6, 1920.0), (7, 3840.0), (8, 7680.0), (9, 15360.0), (10, 21600.0), (11, 21600.0)] {
+for (n, expected) in [(2, 120.0), (3, 240.0), (4, 480.0), (5, 960.0), (6, 1920.0), (7, 3600.0), (8, 3600.0), (9, 3600.0), (10, 3600.0), (11, 3600.0)] {
     net.tracker.found(key: "k1", version: "1.2", build: "34")  // Sparkle offers the same item again
     net.tracker.downloading()
     net.tracker.aborted(networkError: true)
@@ -262,7 +262,7 @@ for (n, expected) in [(2, 120.0), (3, 240.0), (4, 480.0), (5, 960.0), (6, 1920.0
           "network attempt \(n): backoff \(expected) s")
 }
 check(!net.tracker.retryDue(), "before the retry time: not due")
-net.advance(21600)
+net.advance(3600)
 check(net.tracker.retryDue(), "at the retry time: due")
 
 // A *new* item after download failures starts a fresh count.
@@ -436,7 +436,7 @@ backNet.advance(1000)
 backNet.tracker.aborted(networkError: true)
 check(backNet.tracker.state == .failed(cause: .network, attempts: 1, nextRetryAt: backNet.now.addingTimeInterval(60)),
       "backoff is scheduled from the (already moved) now, not from t0")
-backNet.advance(-5000)
+backNet.advance(-1000)
 check(!backNet.tracker.retryDue(), "clock behind the failure: no retry")
 backNet.tracker.found(key: "k1", version: "1.2", build: "34")
 backNet.tracker.downloading()

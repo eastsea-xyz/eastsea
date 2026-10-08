@@ -18,7 +18,7 @@
 	<integer>3600</integer>
 	<key>SUAutomaticallyUpdate</key>
 	<true/>
-	<!-- eastsea://pay?to=…&amount=… (and the legacy aether:// links): web pages reach the wallet without an extension. -->
+	<!-- sea:// names and actions; eastsea:// and legacy aether:// links remain registered. -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -26,7 +26,8 @@
 			<string>com.pipln.eastsea.pay</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>eastsea</string>
+				<string>sea</string>
+					<string>eastsea</string>
 				<string>aether</string>
 			</array>
 		</dict>

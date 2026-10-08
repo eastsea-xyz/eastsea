@@ -6,6 +6,9 @@
 # and signs with a P-256 key that never leaves the browser.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Both shipped applications use the same pure sea:// parser.
+cp -f apps/shared/sea-url.mjs apps/explorer/js/sea-url.mjs
+cp -f apps/shared/sea-url.mjs apps/extension/src/lib/sea-url.mjs
 export PATH="$HOME/.cargo/bin:$PATH"
 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
 # The BLS verifier (blst) is C: it needs a clang with a wasm32 backend. Apple's

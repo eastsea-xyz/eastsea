@@ -3,13 +3,15 @@
 // transaction when a receipt answers and a block when a recent summary
 // matches (test/search.test.mjs).
 
+import { browserInput } from './sea-url.mjs';
+
 /**
  * A search string -> `{ kind: 'block', height }`, `{ kind: 'account', address }`,
  * `{ kind: 'hash', hash }` or null. Heights are decimal, addresses and hashes
  * are hex; the 0x prefix may be missing or any case, and everything comes
  * back lowercase-normalized.
  */
-export function classifySearch(q) {
+export function classifySearch(q, chainID = 1) {
   const s = String(q || '').trim();
   if (!s) return null;
   if (/^\d+$/.test(s)) {
@@ -20,6 +22,10 @@ export function classifySearch(q) {
   const bare = s.replace(/^0[xX]/, '').toLowerCase();
   if (/^[0-9a-f]{40}$/.test(bare)) return { kind: 'account', address: `0x${bare}` };
   if (/^[0-9a-f]{64}$/.test(bare)) return { kind: 'hash', hash: `0x${bare}` };
+  if (/^(?:sea|eastsea|aether):/i.test(s) || /^[^/?#]+\.[^/?#]+/.test(s)) {
+    const link = browserInput(s, chainID);
+    if (link.kind === 'name' || link.kind === 'action') return { kind: link.kind, link };
+  }
   return null;
 }
 
@@ -28,11 +34,12 @@ export function classifySearch(q) {
  * nothing this node knows matches. A hash the node has no receipt for may
  * still be one of the newest 100 block hashes (summaries carry no receipts).
  */
-export async function resolveSearch(q, node) {
-  const c = classifySearch(q);
+export async function resolveSearch(q, node, chainID = 1) {
+  const c = classifySearch(q, chainID);
   if (!c) return null;
   if (c.kind === 'block') return { page: 'block', height: c.height };
   if (c.kind === 'account') return { page: 'account', address: c.address };
+  if (c.kind === 'name' || c.kind === 'action') return { page: 'name', link: c.link };
   try {
     const receipt = await node.call('aether_getReceipt', [c.hash]);
     if (receipt) return { page: 'tx', hash: c.hash };

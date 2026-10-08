@@ -3,6 +3,8 @@
 # A new Tests/<name> directory must be added to the table below, or scripts/verify.sh will not run it.
 # The Aether 0.6.7 bridge (apps/bridge) has its own Sources/Tests: the `bridge` lines at the end.
 cd "$(dirname "$0")/.."
+mkdir -p tmp
+export TMPDIR="$PWD/tmp"
 W=apps/wallet/Sources; T=apps/wallet/Tests; bad=0
 run() { n=$1; shift; files=(); for f in "$@"; do files+=("$W/$f"); done
   if swiftc -o tmp/sw-$n "${files[@]}" $T/$n/main.swift 2>tmp/sw-$n.err && AETHER_AGENT_TEST_TMP=$PWD/tmp ./tmp/sw-$n > tmp/sw-$n.out 2>&1; then echo "OK   $n"; else echo "FAIL $n :: $(head -c 160 tmp/sw-$n.err | tr '\n' ' ') $(tail -2 tmp/sw-$n.out | tr '\n' ' ')"; bad=$((bad+1)); fi; }
@@ -13,6 +15,8 @@ run balance-history BalanceHistory.swift
 run browser-origin BrowserOriginPolicy.swift
 run browser-permissions SitePermissions.swift
 run browser-routing Brand.swift BrowserPolicy.swift
+run sea-url SeaURL.swift
+run sea-resolution SeaURL.swift SeaNameResolver.swift
 run browser-verify Brand.swift BrowserOriginPolicy.swift BrowserPolicy.swift VerifyBridge.swift
 run diagnostic-report Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift HealthCheck.swift DiagnosticReport.swift
 run earnings EarningsModel.swift

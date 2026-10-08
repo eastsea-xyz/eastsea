@@ -11,7 +11,8 @@ import {
 } from './rpc.js';
 import { parseTokenSources, tokenInfo, tokenOrigin } from './erc20.js';
 import { resolveSearch } from './search.js';
-import { accountView, blockView, errorView, homeView, notFoundView, tokenView, txView } from './pages.js';
+import { accountView, blockView, errorView, homeView, notFoundView, seaLinkView, tokenView, txView } from './pages.js';
+import { parseSeaURL, externalNameMessage, suggestedHTTPS } from './sea-url.mjs';
 import { detectVerifier } from './verify.js';
 import { h, loading, message } from './dom.js';
 
@@ -59,7 +60,7 @@ const ctx = {
 
 // ---- header ----
 
-const searchInput = h('input', { id: 'q', type: 'search', placeholder: 'Height, 0x address or tx hash', 'aria-label': 'Search' });
+const searchInput = h('input', { id: 'q', type: 'search', placeholder: 'Height, 0x address, tx hash or name.sea', 'aria-label': 'Search' });
 const searchMsg = h('span', { id: 'search-msg', class: 'small' });
 const nodeInput = h('input', { id: 'node-url', type: 'url', spellcheck: 'false', 'aria-label': 'Node JSON-RPC endpoint' });
 const gatewayInput = h('input', { id: 'gateway-url', type: 'url', spellcheck: 'false', placeholder: DEFAULT_GATEWAY, 'aria-label': 'Public read gateway' });
@@ -102,12 +103,25 @@ top.append(
       e.preventDefault();
       searchMsg.replaceChildren();
       if (!String(searchInput.value).trim()) return;
-      const route = await resolveSearch(searchInput.value, ctx.node);
+      let route;
+      try {
+        route = await resolveSearch(searchInput.value, ctx.node, ctx.chainId ?? 1);
+      } catch (error) {
+        const text = error.code === 'externalTLD' ? externalNameMessage(navigator.language) : error.message;
+        searchMsg.append(message('error', text));
+        const https = suggestedHTTPS(searchInput.value);
+        if (https) searchMsg.append(h('a', { href: https, target: '_blank', rel: 'noopener noreferrer' }, 'Open with https://'));
+        return;
+      }
       if (!route) {
         searchMsg.append(message('error', `Nothing this node knows matches "${String(searchInput.value).trim().slice(0, 80)}" — try a height, a 0x… address or a tx hash.`));
         return;
       }
       searchInput.value = '';
+      if (route.page === 'name') {
+        location.hash = `#/name/${encodeURIComponent(route.link.kind === 'name' ? route.link.canonicalURL : route.link.raw)}`;
+        return;
+      }
       location.hash = `#/${route.page}/${route.page === 'block' ? route.height : (route.hash || route.address)}`;
     },
   }, searchInput, h('button', { type: 'submit' }, 'Search'), searchMsg),
@@ -186,6 +200,7 @@ const routes = [
   [/^#\/tx\/((?:0x)?[0-9a-fA-F]{64})$/, (m) => txView(ctx, m[1].toLowerCase().replace(/^0x/, '').replace(/^/, '0x'))],
   [/^#\/account\/(0x[0-9a-fA-F]{40})$/, (m) => accountView(ctx, m[1].toLowerCase())],
   [/^#\/token\/(0x[0-9a-fA-F]{40})$/, (m) => tokenView(ctx, m[1].toLowerCase())],
+  [/^#\/name\/(.+)$/, (m) => seaLinkView(parseSeaURL(decodeURIComponent(m[1]), ctx.chainId ?? 1))],
 ];
 
 // A slow page never overwrites a newer one: only the newest render may paint.

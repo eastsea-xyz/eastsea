@@ -14,6 +14,9 @@ use alloy_primitives::keccak256;
 use p256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use sha2::{Digest as _, Sha256};
 
+#[cfg(feature = "registrar-encryption")]
+pub mod registrar;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CryptoError {
     InvalidSecret,

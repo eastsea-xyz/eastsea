@@ -9,6 +9,7 @@ enum Terms {
     // line without TERMS_BUMP_REASON.)
     static let version = isTestnet ? 5 : 6
     static let disclaimerURL = URL(string: "https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md")!
+    static let privacyURL = URL(string: "https://eastsea.xyz/privacy")!
 }
 
 /// The chain's voting-set rules, as shown to the user (registry params and
@@ -67,9 +68,12 @@ struct TermsSheet: View {
                 Bullet(icon: "chart.line.uptrend.xyaxis", text: String(localized: "There is no token sale. The value of \(Brand.networkCoinTicker) is set by the market; nothing here promises a price, a return, a listing or a way to cash out."))
                 Bullet(icon: "person.fill.checkmark", text: String(localized: "You use \(Brand.name), and run its node, at your own risk and responsibility, including power and hardware costs, taxes, and following the laws where you live."))
                 Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule)
-                Bullet(icon: "network", text: String(localized: "Running \(Brand.name) shows your IP address to other nodes and the public DHT. Joining as a voting node sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks it with Apple. Addresses and transactions are public on chain."))
+                Bullet(icon: "network", text: String(localized: "Private keys stay on this device. Addresses, balances, transactions, rewards and registration records are public on chain indefinitely, even after you stop using the app."))
+                Bullet(icon: "iphone.and.arrow.forward", text: String(localized: "Joining encrypts a DeviceCheck token to Pipln's registrar; only it can decrypt it and send it to Apple (USA), at registration and for daily checks. The registrar keeps the voting key, operator and beacon addresses, node ID and registration time without automatic expiry."))
+                Bullet(icon: "globe", text: String(localized: "Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Ask privacy@eastsea.xyz to delete removable service data; public chain copies cannot be recalled."))
                 Bullet(icon: "key.fill", text: String(localized: "Your key stays on this device. If you lose the device and have not set up a recovery key, nobody can restore the account."))
                 Link("Read the full terms and disclaimer", destination: Terms.disclaimerURL).font(.callout)
+                Link("Read the privacy policy", destination: Terms.privacyURL).font(.callout)
                 HStack {
                     #if os(macOS)
                     Button("Quit") { NSApp.terminate(nil) }
@@ -98,7 +102,9 @@ struct VotingNodeInvite: View {
             Text("Join the network as a voting node?").font(.title3.bold())
             Bullet(icon: "clock", text: String(localized: "Your Mac proves it is online every hour. After \(VotingRules.minStreakEpochs) hours in a row it can be drawn to sign blocks."))
             Bullet(icon: "bolt", text: String(localized: "Keep \(Brand.name) running. A signing Mac that goes offline hands its seat to the next one. It uses some network, CPU and power."))
-            Bullet(icon: "iphone.and.arrow.forward", text: String(localized: "Registration sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks with Apple that this is a real Mac: one Mac, one voting node. Touch ID signs it."))
+            Bullet(icon: "iphone.and.arrow.forward", text: String(localized: "Joining encrypts a DeviceCheck token to Pipln's registrar; only it can decrypt it and send it to Apple (USA), at registration and for daily checks. The registrar keeps the voting key, operator and beacon addresses, node ID and registration time without automatic expiry."))
+            Bullet(icon: "network", text: String(localized: "Private keys stay on this device. Addresses, balances, transactions, rewards and registration records are public on chain indefinitely, even after you stop using the app."))
+            Link("Read the privacy policy", destination: Terms.privacyURL).font(.callout)
             Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule)
             Bullet(icon: "person.fill.checkmark", text: String(localized: "Running a voting node is your choice and your responsibility. You can turn the node off anytime."))
             HStack {
@@ -110,6 +116,77 @@ struct VotingNodeInvite: View {
         }
         .padding(24)
         .frame(width: 440)
+    }
+}
+#endif
+
+#if os(macOS)
+/// Both founder policies stop at the same screen. The preselected value is
+/// view-local and cannot become a country payload until a button is pressed.
+struct CountryNoticeSheet: View {
+    @EnvironmentObject private var node: NodeController
+    let mode: PresenceCountry.Mode
+    @State private var sharing: Bool
+    @State private var country: String
+
+    init(mode: PresenceCountry.Mode = PresenceCountry.mode, country: String) {
+        self.mode = mode
+        _sharing = State(initialValue: mode.initiallySelected)
+        _country = State(initialValue: PresenceCountry.normalize(country)
+                         ?? PresenceCountry.suggestedCountry(region: Locale.current.region?.identifier))
+    }
+
+    private var countryLocale: Locale {
+        Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en")
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Image(systemName: "globe").font(.system(size: 30)).foregroundStyle(Color.aether)
+                Text("Country sharing").font(.title2.bold())
+                Text("EastSea can use the country in your Mac's Region setting to choose a broad region bucket. The country stays on this Mac. No country preference is sent until you answer here.")
+                Text(mode == .defaultOn
+                     ? String(localized: "Country sharing is selected below. You can turn it off before continuing.")
+                     : String(localized: "Choose whether to share a country. Declining keeps all wallet and node features available."))
+                if mode == .defaultOn {
+                    Toggle("Share this Mac's country", isOn: $sharing)
+                }
+                if mode == .askBeforeSending || sharing {
+                    Picker("Country", selection: $country) {
+                        Text("Choose a country").tag("")
+                        ForEach(PresenceCountry.codes, id: \.self) { code in
+                            Text(verbatim: countryLocale.localizedString(forRegionCode: code) ?? code).tag(code)
+                        }
+                    }
+                }
+                Text("The choice contributes only to broad regional counts. Public observations hide groups smaller than three. This choice is not saved on chain. Stop future sharing anytime in Settings; already received aggregate copies may remain.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("Don't share country") { answer(sharing: false) }
+                    Spacer()
+                    if mode == .askBeforeSending {
+                        Button("Share country") { answer(sharing: true) }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(PresenceCountry.normalize(country) == nil)
+                    } else {
+                        Button("Continue") { answer(sharing: sharing) }
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.defaultAction)
+                            .disabled(sharing && PresenceCountry.normalize(country) == nil)
+                    }
+                }
+            }
+            .font(.callout)
+            .padding(24)
+        }
+        .frame(width: 480)
+        .interactiveDismissDisabled()
+    }
+
+    private func answer(sharing: Bool) {
+        node.answerPresenceCountry(sharing: sharing, country: country)
     }
 }
 #endif

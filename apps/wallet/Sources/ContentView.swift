@@ -31,9 +31,30 @@ struct ContentView: View {
                         .padding(.vertical, 5).background(.orange).foregroundStyle(.black)
                 }
             }
-            .sheet(isPresented: Binding(get: { Self.needsTerms(acceptedTerms) }, set: { _ in })) {
+            .sheet(isPresented: Binding(get: { needsOnboarding }, set: { _ in })) {
+                #if os(macOS)
+                if Self.needsTerms(acceptedTerms) {
+                    TermsSheet { acceptedTerms = Terms.version }
+                } else if node.needsCountryNotice {
+                    CountryNoticeSheet(country: node.presenceCountryCode)
+                        .environmentObject(node)
+                }
+                #else
                 TermsSheet { acceptedTerms = Terms.version }
+                #endif
             }
+    }
+
+    private var needsOnboarding: Bool {
+        if Self.needsTerms(acceptedTerms) { return true }
+        #if os(macOS)
+        #if DEBUG
+        if DesignPreview.on { return false }
+        #endif
+        return node.needsCountryNotice
+        #else
+        return false
+        #endif
     }
 
     /// Design previews skip the gate: screenshots need the dashboard, not terms.

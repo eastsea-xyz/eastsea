@@ -1,7 +1,7 @@
-//! Versioned, bounded transport for signed live-presence packets.
+//! Versioned, bounded transport for privacy-filtered cohort aggregates.
 //!
-//! Packet verification and table management belong to the node. This module
-//! limits transport work before handing any received bytes to that verifier.
+//! Aggregate validation and local observation management belong to the node.
+//! This module limits transport work before handing bytes to that validator.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +14,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use crate::RpcGate;
 
 /// A separate ALPN lets nodes without presence support reject it safely.
-pub const ALPN_PRESENCE: &[u8] = b"aether/presence/1";
+pub const ALPN_PRESENCE: &[u8] = b"aether/presence/2";
 pub const MAX_PRESENCE_MESSAGE: usize = 32 * 1024;
 const PRESENCE_IO: Duration = Duration::from_secs(5);
 const MAX_PRESENCE_STREAMS: usize = 64;
@@ -93,7 +93,7 @@ impl ProtocolHandler for PresenceProtocol {
     }
 }
 
-/// Exchange one presence packet. The complete connect/write/read sequence is
+/// Exchange one aggregate packet. The complete connect/write/read sequence is
 /// bounded by five seconds; unsupported ALPNs and oversized packets are errors
 /// that gossip callers can ignore until the next ping.
 pub async fn presence_exchange(

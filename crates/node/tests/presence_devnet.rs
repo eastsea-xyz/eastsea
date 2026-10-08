@@ -1,8 +1,8 @@
-//! Six real processes see signed presence across a local-only overlay. The
-//! followers attach to different validators, so seeing all six also checks
-//! forwarding beyond this node's immediate connections.
+//! Six real processes expose only frozen, thresholded aggregate observations
+//! across a local-only overlay. Distinct-node census claims are intentionally
+//! absent: anonymous forwarded cohorts cannot be deduplicated or added.
 
-use aether_node::presence::NODE_VERSION;
+use aether_node::presence::{MIN_BUCKET_SIZE, TIME_BUCKET_SECONDS};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::net::{TcpListener, UdpSocket};
@@ -24,8 +24,13 @@ struct LocalDevnet {
 
 impl LocalDevnet {
     fn start() -> Self {
-        let dir =
-            std::env::temp_dir().join(format!("aether-presence-devnet-{}", std::process::id()));
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("resolve worktree root");
+        let dir = root
+            .join("tmp")
+            .join(format!("aether-presence-devnet-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create isolated presence devnet directory");
         // Hold reservations until each child starts rather than releasing a
         // port and asking the OS for another one that may return the same port.
@@ -209,68 +214,74 @@ impl Drop for LocalDevnet {
     }
 }
 
-fn assert_presence_shape(value: &Value, observer: usize) {
-    assert_eq!(value["schema"], 1);
+fn assert_presence_shape(value: &Value) {
+    assert_eq!(value["schema"], 2);
     assert_eq!(value["available"], true);
-    assert_eq!(value["total"], NODES);
     assert_eq!(
-        value["by_role"],
-        json!({ "validator": 4, "candidate": 0, "follower": 2 })
+        value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "schema",
+            "available",
+            "scope",
+            "observed_at",
+            "ttl_seconds",
+            "minimum_bucket_size",
+            "total",
+            "by_role",
+            "by_region",
+            "by_version"
+        ])
     );
-    assert_eq!(value["by_version"], json!({ (NODE_VERSION): NODES }));
-    assert_eq!(
-        value["by_region"],
-        json!({
-            "asia": 0, "europe": 0, "north_america": 0, "south_america": 0,
-            "africa": 0, "oceania": 0, "unknown": NODES,
-        })
+    assert_eq!(value["ttl_seconds"], TIME_BUCKET_SECONDS);
+    assert_eq!(value["minimum_bucket_size"], MIN_BUCKET_SIZE);
+    assert_eq!(value["scope"], "unverified cohort observation");
+    assert!(value["observed_at"]
+        .as_u64()
+        .is_some_and(|t| t > 0 && t % TIME_BUCKET_SECONDS == 0));
+    let total = value["total"].as_u64();
+    assert!(
+        value["total"].is_null()
+            || total.is_some_and(|t| t >= MIN_BUCKET_SIZE as u64 && t <= NODES as u64)
     );
-    assert_eq!(value["by_country"], json!({}));
-    assert_eq!(value["ttl_seconds"], 180);
-    assert_eq!(value["scope"], "what this node can see");
-    assert_eq!(
-        value["observer"],
-        aether_net::devnet_node_id((observer + 1) as u64).to_string()
-    );
-    assert!(value["observed_at"].as_u64().is_some_and(|t| t > 0));
-    let nodes = value["nodes"].as_array().expect("presence nodes array");
-    assert_eq!(nodes.len(), NODES);
-    let expected_ids: BTreeSet<_> = (1..=NODES as u64)
-        .map(|i| aether_net::devnet_node_id(i).to_string())
-        .collect();
-    let seen_ids: BTreeSet<_> = nodes
-        .iter()
-        .map(|node| {
-            let fields = node.as_object().expect("presence node object");
-            assert_eq!(
-                fields.keys().map(String::as_str).collect::<BTreeSet<_>>(),
-                BTreeSet::from([
-                    "node_id",
-                    "role",
-                    "version",
-                    "timestamp",
-                    "last_seen",
-                    "region"
-                ])
-            );
-            assert!(node["timestamp"].as_u64().is_some());
-            assert!(node["last_seen"].as_u64().is_some());
-            assert_eq!(node["version"], NODE_VERSION);
-            assert_eq!(node["region"], "unknown");
-            let node_id = node["node_id"].as_str().expect("node id");
-            let validator = (1..=VALIDATORS as u64)
-                .any(|i| aether_net::devnet_node_id(i).to_string() == node_id);
-            assert_eq!(
-                node["role"],
-                if validator { "validator" } else { "follower" }
-            );
-            node_id.to_owned()
-        })
-        .collect();
-    assert_eq!(
-        seen_ids, expected_ids,
-        "one count per authenticated node identity"
-    );
+    for field in ["by_role", "by_region", "by_version"] {
+        let buckets = value[field].as_object().expect("aggregate partition");
+        assert!(buckets
+            .values()
+            .all(|count| count.as_u64().is_some_and(|n| n >= MIN_BUCKET_SIZE as u64)));
+        assert_eq!(
+            buckets
+                .values()
+                .map(|count| count.as_u64().unwrap())
+                .sum::<u64>(),
+            total.unwrap_or_default(),
+            "a total cannot reveal an unreported sub-k residual in {field}"
+        );
+    }
+    let serialized = value.to_string();
+    for i in 1..=NODES as u64 {
+        assert!(!serialized.contains(&aether_net::devnet_node_id(i).to_string()));
+    }
+    for field in [
+        "nodes",
+        "node_id",
+        "observer",
+        "country",
+        "last_seen",
+        "timestamp",
+        "signature",
+        "sender",
+        "pings",
+    ] {
+        assert!(
+            !serialized.contains(field),
+            "{field} absent from actual RPC JSON"
+        );
+    }
 }
 
 fn assert_peer_shape(value: &Value) {
@@ -308,24 +319,22 @@ fn assert_peer_shape(value: &Value) {
 }
 
 #[test]
-fn four_validators_and_two_followers_see_six_macs_within_two_minutes() {
+fn six_nodes_export_safe_aggregate_json_and_keep_diagnostics_local() {
     let deadline = Instant::now() + Duration::from_secs(120);
     let net = LocalDevnet::start();
     let mut last = vec![None; NODES];
     loop {
-        let mut all_six = true;
+        let mut all_ready = true;
         for (i, snapshot) in last.iter_mut().enumerate() {
             *snapshot = net.rpc(i, "aether_presence", deadline);
-            all_six &= snapshot.as_ref().is_some_and(|v| {
-                v["total"] == NODES
-                    && v["by_role"]["validator"] == 4
-                    && v["by_role"]["follower"] == 2
-            });
+            all_ready &= snapshot
+                .as_ref()
+                .is_some_and(|v| v["schema"] == 2 && v["available"] == true);
         }
-        if all_six {
+        if all_ready {
             let peer_deadline = Instant::now() + Duration::from_secs(15);
             for (i, value) in last.iter().enumerate() {
-                assert_presence_shape(value.as_ref().unwrap(), i);
+                assert_presence_shape(value.as_ref().unwrap());
                 let peers = net
                     .rpc(i, "aether_peers", peer_deadline)
                     .expect("live peers RPC answers");
@@ -335,7 +344,7 @@ fn four_validators_and_two_followers_see_six_macs_within_two_minutes() {
         }
         assert!(
             Instant::now() < deadline,
-            "presence did not converge to four validators and two followers in 120s: {last:?}{}",
+            "presence endpoints did not become ready in 120s: {last:?}{}",
             net.log_tails()
         );
         std::thread::sleep(Duration::from_millis(250));

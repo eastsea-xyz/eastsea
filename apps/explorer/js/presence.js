@@ -1,7 +1,7 @@
-// Live presence is an observation from one node, separate from finalized
-// chain data. A missing or malformed answer is unavailable, never a zero.
+// Public presence is a frozen, thresholded cohort observation, independent
+// of finalized chain data. A suppressed small count must not become a zero.
 
-export const PRESENCE_ROLES = ['validator', 'candidate', 'follower'];
+export const PRESENCE_ROLES = ['validator', 'candidate', 'follower', 'unknown', 'other'];
 export const PRESENCE_REGIONS = [
   ['asia', 'Asia'],
   ['europe', 'Europe'],
@@ -10,41 +10,47 @@ export const PRESENCE_REGIONS = [
   ['africa', 'Africa'],
   ['oceania', 'Oceania'],
   ['unknown', 'Unknown'],
+  ['world', 'All regions'],
 ];
+const SCOPE = 'unverified cohort observation';
+const WINDOW_SECONDS = 600;
+const MINIMUM_BUCKET_SIZE = 3;
+const FIELDS = new Set([
+  'schema', 'available', 'scope', 'observed_at', 'ttl_seconds', 'minimum_bucket_size',
+  'total', 'by_role', 'by_version', 'by_region',
+]);
 
-function counts(value) {
+function counts(value, keys, total) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const entries = Object.entries(value);
-  return entries.every(([key, count]) => key.length > 0 && Number.isSafeInteger(count) && count >= 0)
-    ? Object.fromEntries(entries) : null;
+  if (!entries.every(([key, count]) => keys.includes(key) && Number.isSafeInteger(count)
+    && count >= MINIMUM_BUCKET_SIZE && count <= 4096)) return null;
+  // Completeness prevents an exact total from disclosing a hidden residual.
+  if (entries.reduce((sum, [, count]) => sum + count, 0) !== (total ?? 0)) return null;
+  return Object.fromEntries(entries);
 }
 
-function complete(counts, keys, total) {
-  return counts && keys.every((key) => Object.hasOwn(counts, key))
-    && Object.values(counts).reduce((sum, count) => sum + count, 0) === total;
-}
-
-/** Accept versioned counts only while the observation is fresh. `now` is
- * Unix seconds; a small future skew is allowed between the node and browser. */
+/** Only schema 2 contains no individual records. The timestamp is a 10-minute
+ * release bucket; counts remain fixed for that bucket at the producer. */
 export function parsePresence(answer, now = Math.floor(Date.now() / 1000)) {
-  if (!answer || answer.schema !== 1 || answer.available !== true
+  if (!answer || answer.schema !== 2 || answer.available !== true || answer.scope !== SCOPE
+    || Object.keys(answer).some((key) => !FIELDS.has(key))
     || !Number.isSafeInteger(now) || now < 0
-    || !Number.isSafeInteger(answer.total) || answer.total < 0
+    || (answer.total !== null && (!Number.isSafeInteger(answer.total)
+      || answer.total < MINIMUM_BUCKET_SIZE || answer.total > 4096))
     || !Number.isSafeInteger(answer.observed_at) || answer.observed_at < 0
-    || answer.ttl_seconds !== 180
-    || now - answer.observed_at >= answer.ttl_seconds
+    || answer.observed_at % WINDOW_SECONDS !== 0
+    || answer.ttl_seconds !== WINDOW_SECONDS
+    || answer.minimum_bucket_size !== MINIMUM_BUCKET_SIZE
+    || now - answer.observed_at >= WINDOW_SECONDS
     || answer.observed_at - now > 60) return null;
-  const byRole = counts(answer.by_role);
-  const byVersion = counts(answer.by_version);
-  const byRegion = counts(answer.by_region);
-  if (!complete(byRole, PRESENCE_ROLES, answer.total)
-    || !complete(byVersion, [], answer.total)
-    || !complete(byRegion, PRESENCE_REGIONS.map(([key]) => key), answer.total)) return null;
+  const byRole = counts(answer.by_role, PRESENCE_ROLES, answer.total);
+  const byVersion = counts(answer.by_version, ['unknown'], answer.total);
+  const byRegion = counts(answer.by_region, PRESENCE_REGIONS.map(([key]) => key), answer.total);
+  if (!byRole || !byVersion || !byRegion) return null;
   return { total: answer.total, byRole, byVersion, byRegion, ttlSeconds: answer.ttl_seconds };
 }
 
-/** Older nodes and gateways may not serve this read yet. Keep the rest of
- * the home page working when that source cannot report presence. */
 export async function readPresence(node) {
   try {
     return parsePresence(await node.call('aether_presence', []));

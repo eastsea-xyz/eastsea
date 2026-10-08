@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 aether-types.workspace = true
 aether-hash.workspace = true
-aether-crypto.workspace = true
+aether-crypto = { workspace = true, features = ["registrar-encryption"] }
 aether-state.workspace = true
 aether-execution.workspace = true
 aether-rewards.workspace = true

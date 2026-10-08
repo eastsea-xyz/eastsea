@@ -7,6 +7,7 @@
 //! if not, marks it. One Mac = one node identity, the anchor of the contribution
 //! rank. The key (.p8, "DeviceCheck" key of the team) never leaves the registrar.
 
+use aether_crypto::registrar::{EncryptionKey, RecipientSecret, TokenEnvelope};
 use base64::Engine as _;
 use p256::ecdsa::{signature::Signer as _, Signature, SigningKey};
 use p256::pkcs8::DecodePrivateKey as _;
@@ -91,11 +92,12 @@ impl DeviceCheck {
             .await
             .map_err(|e| DeviceCheckError::Apple(e.to_string()))?;
         let status = r.status();
-        let text = r.text().await.unwrap_or_default();
         match status.as_u16() {
-            200 => Ok(text),
-            400 => Err(DeviceCheckError::InvalidToken(text)),
-            _ => Err(DeviceCheckError::Apple(format!("{status}: {text}"))),
+            200 => r.text().await.map_err(|_| DeviceCheckError::Apple("unreadable Apple response".into())),
+            // Upstream bodies can echo identifying fields. They must never be
+            // reflected in registrar RPC errors or candidate activity logs.
+            400 => Err(DeviceCheckError::InvalidToken("Apple rejected the request".into())),
+            _ => Err(DeviceCheckError::Apple(format!("Apple returned HTTP {}", status.as_u16()))),
         }
     }
 
@@ -205,6 +207,10 @@ pub struct Registrar {
     /// (crate::registrar_signer, docs/ops/registrar.md).
     pub signer: std::sync::Arc<dyn crate::registrar_signer::RegistrarSigner>,
     pub chain_id: u64,
+    /// In-memory encryption key, attested by the chain signing key. The latter
+    /// stays signing-only, including when it is a Secure Enclave helper.
+    encryption: RecipientSecret,
+    encryption_descriptor: std::sync::OnceLock<EncryptionKey>,
     /// Held across every Apple-touching path (query → update → record, the
     /// re-attestation limits): two registrations racing with different keys
     /// must not both pass Apple's query before either updates the bits.
@@ -226,15 +232,40 @@ pub struct Attestation {
 
 impl Registrar {
     pub fn new(apple: Option<DeviceCheck>, registry: Registry, signer: std::sync::Arc<dyn crate::registrar_signer::RegistrarSigner>, chain_id: u64) -> Self {
+        let encryption = loop {
+            let seed = p256::elliptic_curve::zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
+            if let Ok(key) = RecipientSecret::from_seed(&seed) { break key; }
+        };
         Registrar {
             apple,
             registry,
             signer,
             chain_id,
+            encryption,
+            encryption_descriptor: std::sync::OnceLock::new(),
             gate: tokio::sync::Mutex::new(()),
             in_flight: Default::default(),
             reattests: Default::default(),
         }
+    }
+
+    pub fn encryption_key(&self) -> Result<EncryptionKey, String> {
+        if let Some(key) = self.encryption_descriptor.get() { return Ok(key.clone()); }
+        let key = EncryptionKey::signed(self.chain_id, &self.encryption.public_key(), |msg| {
+            self.signer.sign_bytes(msg).map(|(r, s)| [r, s].concat())
+        })?;
+        // Do not cache transient signing-helper failures. Concurrent initial
+        // discoveries may sign the same recipient point, with equivalent
+        // valid signatures; retain whichever completed first.
+        let _ = self.encryption_descriptor.set(key);
+        Ok(self.encryption_descriptor.get().expect("key initialized").clone())
+    }
+
+    /// Only the registrar decrypts. Every public param, the method and the
+    /// chain are authenticated with the token; relays just validate its bound.
+    pub fn open_token(&self, method: &str, params: &Value) -> Result<p256::elliptic_curve::zeroize::Zeroizing<String>, String> {
+        let envelope = encrypted_token(params)?;
+        self.encryption.open(&envelope, &token_context(self.chain_id, method, params)?)
     }
 
     /// One voting key per Mac: the device registers once (DeviceCheck), then the
@@ -343,6 +374,41 @@ impl Registrar {
     }
 }
 
+/// Parse and bound param 0 BEFORE any registrar hop; plaintext is never a
+/// compatible fallback. The envelope remains intact when a validator relays.
+pub fn encrypted_token(params: &Value) -> Result<TokenEnvelope, String> {
+    let value = params.get(0).ok_or("missing encrypted DeviceCheck token")?;
+    // Reject large fields before serde clones their contents. Relay validation
+    // has the same token bound as the registrar's decryption path.
+    if value["recipient"].as_str().is_none_or(|s| s.len() != 66)
+        || value["ephemeral"].as_str().is_none_or(|s| s.len() != 66)
+        || value["nonce"].as_str().is_none_or(|s| s.len() != 24)
+        || value["ciphertext"].as_str().is_none_or(|s| s.len() > 2 * (aether_crypto::registrar::MAX_TOKEN_BYTES + 16)) {
+        return Err("param 0 must be a bounded encrypted DeviceCheck token".into());
+    }
+    let envelope: TokenEnvelope = serde_json::from_value(value.clone()).map_err(|_| "param 0 must be an encrypted DeviceCheck token")?;
+    envelope.validate()?;
+    Ok(envelope)
+}
+
+fn token_context(chain_id: u64, method: &str, params: &Value) -> Result<Vec<u8>, String> {
+    let params = params.as_array().ok_or("DeviceCheck params must be an array")?;
+    let public = serde_json::to_vec(&params[1..]).map_err(|_| "invalid DeviceCheck params")?;
+    Ok(aether_crypto::registrar::request_context(chain_id, method, &public))
+}
+
+/// The node (candidate loop and development CLI) encrypts before any RPC.
+/// `registrar` is the key from authenticated finalized state/configuration.
+pub fn encrypt_token_request(token: &str, descriptor: &EncryptionKey, chain_id: u64, registrar: &aether_crypto::PublicKey, method: &str, public_params: Vec<Value>) -> Result<Value, String> {
+    let key = descriptor.authenticate(chain_id, registrar)?;
+    let context = aether_crypto::registrar::request_context(chain_id, method, &serde_json::to_vec(&public_params).map_err(|_| "invalid DeviceCheck params")?);
+    let seed = p256::elliptic_curve::zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
+    let envelope = aether_crypto::registrar::seal(token, &key, &context, &seed, rand::random())?;
+    let mut params = vec![serde_json::to_value(envelope).map_err(|_| "invalid encrypted DeviceCheck token")?];
+    params.extend(public_params);
+    Ok(Value::Array(params))
+}
+
 /// Whether this node's registrar key can still sign attestations the chain would
 /// accept. A committee-signed upgrade can replace the registrar key or stop it
 /// by writing zeros (docs/design/14-registration.md 4); the registry's slots 0
@@ -431,6 +497,27 @@ mod tests {
             team: "T".into(),
             base,
             http: reqwest::Client::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn apple_rejection_bodies_never_return_to_a_relay_or_activity_log() {
+        async fn echo(axum::extract::State(status): axum::extract::State<axum::http::StatusCode>, axum::Json(request): axum::Json<Value>) -> (axum::http::StatusCode, String) {
+            (status, request.to_string())
+        }
+        for status in [axum::http::StatusCode::BAD_REQUEST, axum::http::StatusCode::INTERNAL_SERVER_ERROR] {
+            let app = axum::Router::new().route("/query_two_bits", axum::routing::post(echo)).with_state(status);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let dc = mock_devicecheck(base);
+            let token = "PRIVATE_DEVICECHECK_TOKEN_that_Apple_might_echo";
+            let err = dc.is_registered(token).await.unwrap_err();
+            assert!(!err.to_string().contains(token));
+            assert!(!format!("{err:?}").contains(token));
+            assert!(!err.to_string().contains("transaction_id"));
+            task.abort();
+            let _ = task.await;
         }
     }
 

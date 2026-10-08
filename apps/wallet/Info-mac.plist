@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Founder policy: default-on preselects the first-launch choice; ask-before-sending
+	     requires an explicit share/decline choice. Both send no country before an answer. -->
+	<key>PresenceCountrySharingMode</key>
+	<string>default-on</string>
 	<!-- Sparkle: signed appcast on the GitHub release feed (EdDSA public key). EastSea has its own
 	     feed; appcast.xml is the legacy one Aether <= 0.6.6 reads, which lists the Aether bridge. -->
 	<!-- 블록 데이터 위치: the node's chain data may live on an external disk the person picks. -->
@@ -13,6 +17,9 @@
 	<string>owZzXbcYSAs74399TEZ7qMetNlTCsZqgj7rNYO9ny6E=</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
+	<!-- Update checks need the app version; optional system-profile uploads are disabled. -->
+	<key>SUEnableSystemProfiling</key>
+	<false/>
 	<!-- Hourly checks (Sparkle's minimum); updates install in the background and apply on the next launch. -->
 	<key>SUScheduledCheckInterval</key>
 	<integer>3600</integer>

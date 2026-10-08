@@ -131,7 +131,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: WalletModel?
     private let releaseGate = ReleaseUpdateGate()
     /// Sparkle: checks the signed appcast on GitHub Releases and installs updates.
-    lazy var updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
+    lazy var updater: SPUStandardUpdaterController = {
+        let controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
+        // Override an older saved opt-in before the first update request.
+        controller.updater.sendsSystemProfile = false
+        controller.startUpdater()
+        return controller
+    }()
     /// What the Network page shows: when updates were last checked, and a Check button.
     @MainActor lazy var updates = Updates(updater)
     /// Layer 1 of the health signal (docs/design/32-health-signal.md §4.2):

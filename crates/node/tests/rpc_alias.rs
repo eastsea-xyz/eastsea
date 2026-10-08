@@ -78,6 +78,7 @@ const METHODS: &[&str] = &[
     "aether_proverStatus",
     "aether_reattest",
     "aether_recentBlocks",
+    "aether_registrarEncryptionKey",
     "aether_registerDevice",
     "aether_registrationNonce",
     "aether_releaseEntries",
@@ -114,11 +115,10 @@ fn every_method_answers_identically_under_both_prefixes() {
         let mut new = rt.block_on(call(&st, &format!("eastsea_{}", &m["aether_".len()..]), json!([])));
         assert!(!not_found(&new), "{m} must answer under its eastsea_ name");
         if *m == "aether_presence" {
-            // Separate observations may cross a wall-clock second; compare
-            // the payload after validating each request's observation time.
+            // Separate observations may cross a ten-minute release boundary.
             for answer in [&mut old, &mut new] {
                 let observed_at = answer["result"].as_object_mut().unwrap().remove("observed_at").unwrap();
-                assert!(observed_at.as_u64().is_some_and(|t| t > 0));
+                assert!(observed_at.as_u64().is_some_and(|t| t > 0 && t % 600 == 0));
             }
         }
         assert_eq!(old, new, "{m}: results must be identical under both prefixes");
@@ -169,22 +169,17 @@ fn offline_presence_and_peers_keep_a_stable_privacy_safe_rpc_shape() {
     let answer = rt.block_on(call(&st, "aether_presence", json!([])));
     let mut result = answer["result"].clone();
     let observed_at = result.as_object_mut().expect("presence is an object").remove("observed_at").expect("observation timestamp");
-    assert!(observed_at.as_u64().is_some_and(|t| t > 0));
+    assert!(observed_at.as_u64().is_some_and(|t| t > 0 && t % 600 == 0));
     assert_eq!(result, json!({
-        "schema": 1,
+        "schema": 2,
         "available": false,
-        "total": 0,
-        "by_role": { "validator": 0, "candidate": 0, "follower": 0 },
+        "total": null,
+        "by_role": {},
         "by_version": {},
-        "by_region": {
-            "asia": 0, "europe": 0, "north_america": 0, "south_america": 0,
-            "africa": 0, "oceania": 0, "unknown": 0,
-        },
-        "by_country": {},
-        "nodes": [],
-        "ttl_seconds": 180,
-        "observer": null,
-        "scope": "what this node can see",
+        "by_region": {},
+        "ttl_seconds": 600,
+        "minimum_bucket_size": 3,
+        "scope": "unverified cohort observation",
     }));
 }
 
@@ -237,6 +232,37 @@ fn remote_country_settings_are_refused_before_presence_lookup() {
         assert_eq!(answers[1]["id"], 12);
         assert_eq!(answers[2]["id"], 13);
         assert_eq!(answers[2]["result"]["available"], false);
+    });
+}
+
+#[test]
+fn peer_diagnostics_require_a_native_local_request_for_both_aliases_and_batches() {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let st = state();
+    rt.block_on(async {
+        for method in ["aether_peers", "eastsea_peers"] {
+            let request = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": [] });
+            assert_eq!(rpc::handle_value(&st, request.clone()).await["result"], json!([]));
+            let remote = rpc::handle_remote_value(&st, request).await;
+            assert_eq!(remote["error"]["code"], -32601);
+            assert!(remote["error"]["message"].as_str().unwrap().contains("local-only"));
+            assert!(remote.get("result").is_none());
+        }
+        let answers = rpc::handle_remote_value(&st, json!([
+            { "jsonrpc": "2.0", "id": 1, "method": "aether_peers", "params": [] },
+            { "jsonrpc": "2.0", "id": 2, "method": "eastsea_peers", "params": [] },
+            { "jsonrpc": "2.0", "id": 3, "method": "eastsea_presence", "params": [] }
+        ])).await;
+        assert_eq!(answers[0]["error"]["code"], -32601);
+        assert_eq!(answers[1]["error"]["code"], -32601);
+        assert!(answers[2].get("result").is_some());
+
+        let app = rpc::http_router(st);
+        for headers in [vec![("origin", "https://example.test")], vec![("sec-fetch-site", "same-origin")]] {
+            let answer = http_call(app.clone(), json!({ "jsonrpc": "2.0", "id": 1, "method": "eastsea_peers", "params": [] }), &headers).await;
+            assert_eq!(answer["error"]["code"], -32601);
+            assert!(answer.get("result").is_none());
+        }
     });
 }
 

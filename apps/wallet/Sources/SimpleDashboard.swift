@@ -85,6 +85,7 @@ struct SimpleDashboard: View {
             // Once the node has caught up and this Mac is not registered, ask once.
             .onChange(of: node.voting) { _, _ in inviteIfReady() }
             .onChange(of: node.state) { _, _ in inviteIfReady() }
+            .onChange(of: node.needsCountryNotice) { _, needed in if !needed { inviteIfReady() } }
             #endif
     }
 
@@ -138,7 +139,8 @@ struct SimpleDashboard: View {
 
     #if os(macOS)
     private func inviteIfReady() {
-        guard !inviteAnswered, acceptedTerms >= Terms.version, sheet == nil, node.state == .running,
+        guard !inviteAnswered, acceptedTerms >= Terms.version, !node.needsCountryNotice,
+              sheet == nil, node.state == .running,
               node.candidate != nil, node.voting?.registered == false, model.registration == nil else { return }
         sheet = .votingInvite
     }
@@ -624,7 +626,7 @@ struct NetworkPage: View {
                     .font(.aeCaption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .help("Live count: what this node can see. Regions come from relays, not a Mac's location.")
+                    .help("Unverified cohort observations, not a count of distinct Macs. Broad regions use a local country choice or relays; small groups are folded together.")
             }
             NetworkCard()
             #if os(macOS)

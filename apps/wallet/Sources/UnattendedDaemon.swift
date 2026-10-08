@@ -194,9 +194,7 @@ final class UnattendedDaemon: ObservableObject {
                         locationFlags: BlockDataLocation.flags(
                             chainDataPath: UserDefaults.standard.string(forKey: "nodeChainDataPath") ?? "",
                             archive: UserDefaults.standard.bool(forKey: "nodeArchive")),
-                        presenceFlags: PresenceCountry.flags(
-                            sharing: UserDefaults.standard.bool(forKey: PresenceCountry.sharingKey),
-                            country: UserDefaults.standard.string(forKey: PresenceCountry.countryKey) ?? "")),
+                        presenceFlags: PresenceCountry.preference().flags),
                      proveAddress: UserDefaults.standard.string(forKey: "proveAddress"))
     }
 
@@ -281,7 +279,7 @@ private enum Marker {
 
     static func write(binary: URL?, argv: [String], proveAddress: String?) {
         guard let binary else { return }
-        let dict: [String: Any] = [
+        var dict: [String: Any] = [
             "user": NSUserName(),
             "bundle": Bundle.main.bundlePath,
             "data": NodeController.dataDir.path,
@@ -289,6 +287,9 @@ private enum Marker {
             "argv": argv,
             "prove": proveAddress ?? "",
         ]
+        // New wrappers discard legacy country arguments unless this marker
+        // records an explicit answer and the exact authorized preference.
+        dict.merge(PresenceCountry.preference().markerFields) { _, choice in choice }
         try? FileManager.default.createDirectory(at: NodeController.dataDir, withIntermediateDirectories: true)
         if let data = try? PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0) {
             try? data.write(to: url, options: .atomic)

@@ -193,7 +193,6 @@ fn count_registration(state: &mut WorldState, epoch: u64) -> Result<(), String> 
 /// lane: domain-separated (chain, registry), over the whole registered content
 /// plus the one-shot nonce and expiry. A relay carrying someone else's
 /// attestation fails this check.
-#[allow(clippy::too_many_arguments)] // the signed message is exactly these fields
 pub fn relay_message(
     chain_id: u64,
     operator: Address,
@@ -354,7 +353,7 @@ mod tests {
         // Slot 7 unset (protocol 1): the lane still bounds itself.
         assert_eq!(per_epoch_cap(&s), MAX_PER_EPOCH);
         for i in 0..MAX_PER_EPOCH {
-            register_system(&mut s, 10 + i, Address::repeat_byte(i as u8 + 1), key(i as u8 + 1), key(0), Address::ZERO).unwrap();
+            register_system(&mut s, 10 + i as u64, Address::repeat_byte(i as u8 + 1), key(i as u8 + 1), key(0), Address::ZERO).unwrap();
         }
         assert_eq!(reg_count(&s), MAX_PER_EPOCH);
         let full = register_system(&mut s, 99, Address::repeat_byte(0xfe), key(0xfe), key(0), Address::ZERO).unwrap_err();

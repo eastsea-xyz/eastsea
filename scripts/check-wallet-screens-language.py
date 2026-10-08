@@ -11,9 +11,11 @@ Foreign-only catalog phrases catch that case, and catalog/compiler/source gates
 verify that a selected key always has a translation in the selected locale.
 """
 import argparse
+import difflib
 import importlib.util
 import json
 import re
+import struct
 import sys
 import unicodedata
 from pathlib import Path
@@ -25,7 +27,10 @@ CATALOG = ROOT / "apps/wallet/Resources/Localizable.xcstrings"
 RENDERER = ROOT / "apps/wallet/Screens/WalletScreens.swift"
 LANGUAGES = ("en", "ko", "ja", "zh-Hans", "zh-Hant")
 HANGUL = re.compile(r"[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]")
-KANA = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")
+# Unicode's kana blocks also contain middle dots and dash-like marks that
+# Vision emits for separators in Chinese/Latin text. Detect letters, not the
+# entire block; actual Japanese words still contain these letter ranges.
+KANA = re.compile(r"[\u3041-\u3096\u309d-\u309f\u30a1-\u30fa\u30fd-\u30ff\u31f0-\u31ff]")
 HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U0002ffff]")
 LATIN = re.compile(r"[A-Za-z]+")
 SPEC = re.compile(r"%(?:\d+\$)?[-+ #0]*\d*(?:\.\d+)?(?:lld|llu|ld|lu|@|d|u|f|g|e|s|c|x|X|%)")
@@ -39,20 +44,29 @@ NAMES = ("EastSea", "Doubloon", "Aether", "DBLN", "Mac", "Touch ID", "Face ID", 
          "http", "https", "eastsea-earnings.csv",
          "CSV", "GPU", "CPU", "RAM", "API", "RPC", "DHT", "EVM", "ERC-20", "HTTP", "HTTPS",
          "TCP", "UDP", "IP", "PID", "JSON", "ZIP", "USDX", "VVDBLN", "NEB", "ORB", "CMT", "WAETH", "AETH")
-NAME_RE = re.compile(r"(?<![A-Za-z])(?:" + "|".join(re.escape(name) for name in sorted(NAMES, key=len, reverse=True)) + r")(?![A-Za-z])")
+NAME_RE = re.compile(r"(?<![A-Za-z])(?:" + "|".join(re.escape(name) for name in sorted(NAMES, key=len, reverse=True)) + r")(?![A-Za-z])", re.IGNORECASE)
 UNIT_RE = re.compile(r"(?<![A-Za-z])(?:[KMGT]i?B|[km]?s|Hz|GHz|MHz|MB/s|GB/s|UTC|W|kWh)(?![A-Za-z])")
 DATA_RE = re.compile(r"(?:https?://[^\s]+|(?:[A-Za-z0-9-]+\.)+(?:xyz|com|org|net)(?:/[^\s]*)?"
                      r"|0x[0-9a-fA-F…\.]*|(?<!\w)[0-9a-fA-F]{8,}(?!\w)"
-                     r"|~?/\.local/bin|(?:~?/Applications/|~?/Library/Application Support/)(?:EastSea|Aether)(?:\.app|/[^\s]*)?)")
+                     r"|~?/\.local/bin|(?:~?/Applications/|~?/Library/Application Support/)(?:EastSea|Aether)(?:\.app|/[^\s]*)?)", re.IGNORECASE)
 # Human supplied data is not app copy. Exceptions are confined to the screens
 # that actually show these exact fixtures (DesignPreview / WalletScreens).
 TOKEN_NAME_SCREENS = {"home", "home-empty", "home-paused", "home-verifying", "home-alerts", "home-narrow",
                       "window", "window-network", "window-narrow", "two-accounts", "sheet-assets", "sheet-send-token", "developer"}
 TOKEN_NAMES = ("Test Nebula", "Test Orbit", "Test Comet", "Test Dollar", "Doubloon Cash", "Wrapped AETH")
 MEMOS = {"sheet-send-link": ("Coffee beans · order 1042",), "sheet-call": ("Swap on the EastSea DEX",)}
+MEMO_LINES = {"sheet-send-link": re.compile(r"(?<![A-Za-z])(?:Coffee\s+beans|order\s+1042)(?![A-Za-z])", re.IGNORECASE)}
 # The legacy-app alert displays this path as data, not instructions.
 FIXTURE_DATA = {"alert-legacy-aether": ("/Applications/Aether.app",),
+                "security": ("Shop",),
                 "developer": ("Shop", "localhost", "127.0.0.1")}
+RECOVERY_CODE_RE = re.compile(r"(?<![A-Za-z0-9])ae1[0-9a-z]{8,}(?:…|\.*)", re.IGNORECASE)
+# This is applied only to bounded Vision observations, not catalog/native
+# copy. An address-shaped token must have hex content or a placeholder; a
+# nearby ordinary word ("Send", "Copy") is never consumed.
+OCR_ADDRESS_RE = re.compile(r"(?<![A-Za-z0-9])(?:[0-9a-zø@日][x×])(?:[0-9a-fgiloq]{4,}(?:[.…⋯]+[0-9a-fgiloq]*)?|[.…⋯]{2,})", re.IGNORECASE)
+ICON_GLYPHS = {"く", "ロロ", "ロ：", "ロ:", "ロ円", "ロ3", "ロ口", "口口", "口0", "口：", "口:", "谷", "凸", "仚", "㕣", "园", "跆"}
+ICON_LETTERS = set("ACDFGNOQUVYacmnouv")
 NATIVE_NAMES = {"en": "English", "ko": "한국어", "ja": "日本語", "zh-Hans": "简体中文", "zh-Hant": "繁體中文"}
 LEGAL_SCREENS = {"sheet-terms"}
 # These are the nonsecret address fixtures DesignPreview places in each real
@@ -74,6 +88,7 @@ def normalize(value):
 
 
 def mask_allowed(text, screen, language):
+    text = unicodedata.normalize("NFKC", text)
     # Strip exact full phrases before component names (Wrapped AETH, EastSea DEX).
     phrases = list(MEMOS.get(screen, ())) + list(FIXTURE_DATA.get(screen, ()))
     if screen in TOKEN_NAME_SCREENS:
@@ -82,7 +97,11 @@ def mask_allowed(text, screen, language):
         phrases.append(NATIVE_NAMES[language])
     for phrase in sorted(phrases, key=len, reverse=True):
         text = text.replace(phrase, "")
+    if screen in MEMO_LINES:
+        text = MEMO_LINES[screen].sub("", text)
     text = re.sub(r"[⇧⌘⌥⌃]+[A-Za-z]", "", text)
+    if screen in ("security", "developer"):
+        text = RECOVERY_CODE_RE.sub("", text)
     text = DATA_RE.sub("", text)
     text = NAME_RE.sub("", text)
     return UNIT_RE.sub("", text)
@@ -122,6 +141,12 @@ def legal_allowed(text, screen, language, legal):
         body = normalize(re.sub(r"\d+", "", mask_allowed(SPEC.sub("", sentence), screen, language)))
         if fragment in body:
             return True
+    # A wrapped OCR line can contain the end of one reviewed paragraph and
+    # the start of the next. Every sentence fragment must still be present
+    # in the declared legal corpus; this does not exempt headings/buttons.
+    parts = [part.strip() for part in re.split(r"(?<!\d)\.(?!\d)|[;；!?]", text) if part.strip()]
+    if len(parts) > 1:
+        return all(legal_allowed(part, screen, language, legal) for part in parts)
     return False
 
 
@@ -166,12 +191,132 @@ def text_problems(text, screen, language, legal, foreign):
             problems.append("Korean/Japanese script in Chinese")
         if LATIN.search(remainder):
             problems.append("English words in Chinese")
-    normalized = normalize(remainder)
+    # Removing punctuation may otherwise invent a foreign phrase across a
+    # label/value boundary: Japanese "目的：API使用料" is not Chinese "的使用".
+    normalized_parts = [normalize(part) for part in re.split(r"[:：;；。！？.!?\n]", remainder)]
     if language in ("ja", "zh-Hans", "zh-Hant"):
-        match = next((phrase for phrase in foreign if phrase in normalized), None)
+        match = next((phrase for phrase in foreign if any(phrase in part for part in normalized_parts)), None)
         if match:
             problems.append(f"foreign-only catalog phrase {match!r}")
     return problems
+
+
+def observation_box(line):
+    if not isinstance(line, dict):
+        return None
+    box = line.get("box")
+    if (not isinstance(box, list) or len(box) != 4
+            or any(not isinstance(value, (int, float)) for value in box)):
+        return None
+    x, y, width, height = box
+    return box if x >= 0 and y >= 0 and width > 0 and height > 0 and x + width <= 1.01 and y + height <= 1.01 else None
+
+
+def overlapping(first, second):
+    a, b = observation_box(first), observation_box(second)
+    if a is None or b is None:
+        return False
+    width = max(0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
+    height = max(0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]))
+    # Both observations must cover essentially the same text, rather than
+    # an unrelated nearby label in the same card.
+    return width * height >= 0.65 * max(a[2] * a[3], b[2] * b[3])
+
+
+def catalog_fragments(catalog, language):
+    return [re.sub(r"\d", "", normalize(mask_allowed(SPEC.sub("", value), "catalog", language))) for entry in catalog["strings"].values()
+            for value in units(entry, language)]
+
+
+def catalog_fragment(text, fragments):
+    value = re.sub(r"\d", "", normalize(mask_allowed(text, "catalog", "en")))
+    return bool(value) and any(value in fragment for fragment in fragments)
+
+
+def chinese_variants(catalog, language):
+    variants = {}
+    if language not in ("zh-Hans", "zh-Hant"):
+        return variants
+    other = "zh-Hant" if language == "zh-Hans" else "zh-Hans"
+    for entry in catalog["strings"].values():
+        for foreign in units(entry, other):
+            for own in units(entry, language):
+                if HAN.search(foreign) and HAN.search(own):
+                    variants.setdefault(normalize(foreign), set()).add(normalize(own))
+    return variants
+
+
+def icon_observation(line, image_size):
+    box = observation_box(line)
+    if box is None:
+        return False
+    text = line.get("text", "").strip(" .…・")
+    if text not in ICON_GLYPHS and text not in ICON_LETTERS:
+        return False
+    width, height = box[2] * image_size[0], box[3] * image_size[1]
+    # SF symbols in the fixtures are at most 32 pt (64 retina pixels).
+    # Short words, full labels and large text cannot qualify as icons.
+    return max(width, height) <= 64 and 0.35 <= width / height <= 2.5
+
+
+def observation_text(line, screen, fragments):
+    text = line.get("text", "") if isinstance(line, dict) else line
+    if not isinstance(text, str) or observation_box(line) is None:
+        return text
+    original = unicodedata.normalize("NFKC", text)
+    text = OCR_ADDRESS_RE.sub("", original)
+    if text != original and text.strip() in ICON_LETTERS:
+        return ""
+    # Vision sometimes joins an SF warning/home glyph to its adjacent label.
+    # Remove only one isolated known glyph, and only when the remaining label
+    # is actual selected-locale catalog copy. "A Send" in Korean still fails.
+    prefix, separator, rest = text.partition(" ")
+    if separator and (prefix in ICON_GLYPHS or prefix in ICON_LETTERS) and catalog_fragment(rest, fragments):
+        return rest
+    # Japanese/Chinese OCR can join the symbol directly to a quoted title.
+    if (text[:1] in ICON_LETTERS and len(text) > 1 and
+            (HAN.match(text[1]) or KANA.match(text[1]) or HANGUL.match(text[1]) or text[1] in "‘’'\"「“")
+            and catalog_fragment(text[1:], fragments)):
+        return text[1:]
+    return text
+
+
+def corroborated_observation(line, others, screen, language, legal, foreign, fragments, variants):
+    text = observation_text(line, screen, fragments)
+    value = normalize(text)
+    if len(value) < 2:
+        return False
+    for other in others:
+        if not overlapping(line, other):
+            continue
+        candidate = observation_text(other, screen, fragments)
+        if not isinstance(candidate, str) or text_problems(candidate, screen, language, legal, foreign):
+            continue
+        # The independent pass must resolve to actual selected-locale copy,
+        # and differ only slightly from this OCR read. This does not bless
+        # arbitrary low-confidence English or a different Japanese sentence.
+        normalized = normalize(candidate)
+        if normalized in variants.get(value, ()):
+            return True
+        if not catalog_fragment(candidate, fragments):
+            continue
+        remainder = mask_allowed(text, screen, language)
+        words = LATIN.findall(remainder)
+        # A slightly misread brand can be corroborated. An actual English
+        # word such as "Send", including inside a long translated paragraph,
+        # cannot be excused by overall sentence similarity.
+        brands = [normalize(name) for name in NAMES if len(name) >= 3]
+        english_only = all(reason.startswith("English words in")
+                           for reason in text_problems(text, screen, language, legal, foreign))
+        brand_noise = (words and english_only
+                       and all(any(difflib.SequenceMatcher(None, word.casefold(), brand).ratio() >= 0.8
+                                   for brand in brands) for word in words))
+        legal_noise = (screen in LEGAL_SCREENS and len(value) >= 20
+                       and legal_allowed(candidate, screen, language, legal))
+        if ((brand_noise or legal_noise)
+                and difflib.SequenceMatcher(None, value, normalized).ratio() >= 0.9):
+            return True
+    return False
 
 
 def catalog_script_problems(catalog):
@@ -240,6 +385,8 @@ def run(args):
         problems.append("renderer has no matching screens")
     legal = legal_corpus(catalog)
     foreign = {language: foreign_phrases(catalog, language) for language in LANGUAGES}
+    fragments = {language: catalog_fragments(catalog, language) for language in LANGUAGES}
+    variants = {language: chinese_variants(catalog, language) for language in LANGUAGES}
     checked, lines_checked = 0, 0
     for screen in sorted(screens):
         for language in LANGUAGES:
@@ -250,8 +397,14 @@ def run(args):
                 if not png.is_file():
                     problems.append(f"{stem}: missing PNG")
                     continue
-                if png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+                pixels = png.read_bytes()
+                if len(pixels) < 24 or pixels[:8] != b"\x89PNG\r\n\x1a\n":
                     problems.append(f"{stem}: invalid PNG")
+                    continue
+                image_size = struct.unpack(">II", pixels[16:24])
+                if min(image_size) <= 0:
+                    problems.append(f"{stem}: invalid PNG dimensions")
+                    continue
                 if not sidecar.is_file():
                     problems.append(f"{stem}: missing visible-text sidecar")
                     continue
@@ -263,18 +416,25 @@ def run(args):
                 if (payload.get("screen"), payload.get("language"), payload.get("appearance")) != (screen, language, mode):
                     problems.append(f"{stem}: text metadata does not match screenshot")
                 lines = payload.get("lines", [])
+                multilingual = payload.get("multilingualLines", [])
                 if not lines:
                     problems.append(f"{stem}: no visible text was extracted")
                 checked += 1
-                for line in lines:
-                    text = line.get("text", "") if isinstance(line, dict) else line
-                    if not isinstance(text, str) or not text.strip():
-                        problems.append(f"{stem}: empty or invalid text observation")
-                        continue
-                    lines_checked += 1
-                    reasons = text_problems(text, screen, language, legal, foreign[language])
-                    if reasons:
-                        problems.append(f"{stem}: {'; '.join(reasons)}: {text!r}")
+                for observations, other in ((lines, multilingual), (multilingual, lines)):
+                    for line in observations:
+                        text = line.get("text", "") if isinstance(line, dict) else line
+                        if not isinstance(text, str) or not text.strip():
+                            problems.append(f"{stem}: empty or invalid text observation")
+                            continue
+                        lines_checked += 1
+                        vision = payload.get("engine") == "Vision" and observation_box(line) is not None
+                        if vision and icon_observation(line, image_size):
+                            continue
+                        observed = observation_text(line, screen, fragments[language]) if vision else text
+                        reasons = text_problems(observed, screen, language, legal, foreign[language])
+                        if reasons and not (vision and corroborated_observation(
+                                line, other, screen, language, legal, foreign[language], fragments[language], variants[language])):
+                            problems.append(f"{stem}: {'; '.join(reasons)}: {text!r}")
                 problems += [f"{stem}: {problem}" for problem in feature_problems(payload, screen, language, catalog)]
                 if screen == "sheet-terms" and language in ("ja", "zh-Hans", "zh-Hant"):
                     notice = catalog["strings"].get("This translation is for reference; the English text governs.", {})
@@ -282,6 +442,9 @@ def run(args):
                     joined = normalize(" ".join(line.get("text", "") if isinstance(line, dict) else line for line in lines))
                     if not values or normalize(values[0]) not in joined:
                         problems.append(f"{stem}: missing translated English-governs legal notice")
+    # The two passes may report the same faulty text. Check both, then report
+    # each distinct screenshot/copy failure once.
+    problems = list(dict.fromkeys(problems))
     for problem in problems:
         print(f"error: wallet-screens-language: {problem}")
     if problems:
@@ -292,14 +455,100 @@ def run(args):
     return 0
 
 
+def self_test():
+    # These are detector regressions, not screenshot exceptions. Catalog and
+    # native-copy checks continue to reject actual foreign letters/words.
+    clean = [
+        ("+12（今天）・24筆獎勵・最近一筆 剛剛", "zh-Hant", []),
+        ("正在證明區塊・本次執行 57 份", "zh-Hant", []),
+        ("0X77c4…1d2e에게 보냄", "ko", []),
+        ("０ｘ７７ｃ４…１ｄ２ｅ에게 보냄", "ko", []),
+        ("目的：API使用料", "ja", ["的使用"]),
+    ]
+    for text, language, foreign in clean:
+        assert not text_problems(text, "home", language, [], foreign), (language, text)
+    wrong_copy = [
+        ("Send", "ko", []),
+        ("Ｓｅｎｄ", "ko", []),
+        ("くり返す", "zh-Hant", []),
+        ("ｶﾀｶﾅ", "zh-Hant", []),
+        ("发送", "en", []),
+        ("已暂停", "zh-Hant", ["已暂停"]),
+        ("英文的使用", "ja", ["的使用"]),
+        ("0X77c4…1d2e Send", "ko", []),
+    ]
+    for text, language, foreign in wrong_copy:
+        assert text_problems(text, "home", language, [], foreign), (language, text)
+    assert not text_problems("받는 곳: Shop", "security", "ko", [], [])
+    assert text_problems("Shop", "home", "ko", [], [])
+    assert not text_problems("이 기기의 코드 ae1q7m3kx9w2c8v4…", "security", "ko", [], [])
+    assert text_problems("ae1q7m3kx9w2c8v4…", "home", "ko", [], [])
+    assert not text_problems("Coffee beans・", "sheet-send-link", "ja", [], [])
+    assert not text_problems("order 1042", "sheet-send-link", "ja", [], [])
+    assert text_problems("Send", "sheet-send-link", "ja", [], [])
+    assert text_problems("Coffee beans", "home", "ja", [], [])
+    reviewed = ["The rules change only by a committee-signed upgrade.",
+                "No token sale, no premine and no founder allocation; the rules are the same.",
+                "The floor is 0.1 DBLN a block.", "Testnet DBLN does not carry over.",
+                "Nothing here promises a price."]
+    assert legal_allowed("upgrade. No token sale, no premine and no founder allocation;", "sheet-terms", "ja", reviewed)
+    assert legal_allowed("0.1 DBLN a block. Testnet DBLN does not carry over. Nothing here", "sheet-terms", "zh-Hant", reviewed)
+    assert not legal_allowed("Cancel", "sheet-terms", "ja", reviewed)
+    assert not legal_allowed("Nothing here promises a price.", "home", "zh-Hant", reviewed)
+    keys = (*FEATURE_COPY["menubar-qr"], "Account %lld")
+    catalog = {"strings": {key: {"localizations": {"en": {"stringUnit": {"value": key}}}} for key in keys}}
+    payload = {"lines": [{"text": "Account 2 Receive Copy address Share"}],
+               "qrPayloads": [RECEIVE_ADDRESSES["menubar-qr"]]}
+    assert not feature_problems(payload, "menubar-qr", "en", catalog)
+    assert feature_problems({**payload, "qrPayloads": [RECEIVE_ADDRESSES["sheet-receive"]]},
+                            "menubar-qr", "en", catalog)
+    assert feature_problems({**payload, "lines": [{"text": "Account 1 Receive Copy address Share"}]},
+                            "menubar-qr", "en", catalog)
+    assert feature_problems({**payload, "lines": [{"text": "Account 2 Receive Copy address"}]},
+                            "menubar-qr", "en", catalog)
+    def observation(text, box=None):
+        return {"text": text, "confidence": 0.3, "box": box or [0.1, 0.2, 0.05, 0.025]}
+    assert icon_observation(observation("く"), (1000, 1000))
+    assert icon_observation(observation("G"), (1000, 1000))
+    assert not icon_observation(observation("く", [0.1, 0.2, 0.2, 0.1]), (1000, 1000))
+    assert not icon_observation(observation("Send"), (1000, 1000))
+    assert not icon_observation(observation("資產"), (1000, 1000))
+    assert not icon_observation({"text": "く"}, (1000, 1000))
+    assert text_problems("く", "catalog", "zh-Hant", [], [])
+    for value in ("Øx5397..e502", "8x5397.e502", "0×5397.e502", "日x5397.e502", "0x5397a1clde4b1b8f6a3cb2d1e0f9c7a6b5d4e502"):
+        assert not text_problems(observation_text(observation(value), "home", []), "home", "ko", [], [])
+    assert text_problems(observation_text(observation("Øx5397..e502 Send"), "home", []), "home", "ko", [], [])
+    assert text_problems(observation_text(observation("BxSend"), "home", []), "home", "ko", [], [])
+    copy = {"strings": {key: {"localizations": {
+        "zh-Hans": {"stringUnit": {"value": hans}}, "zh-Hant": {"stringUnit": {"value": hant}}
+    }} for key, hans, hant in [("Paused", "已暂停", "已暫停"), ("Assets", "资产", "資產"),
+                              ("Send", "发送", "傳送")]}}
+    fragments = catalog_fragments(copy, "zh-Hant")
+    variants = chinese_variants(copy, "zh-Hant")
+    foreign = ["已暂停", "资产"]
+    def corroborated(text, primary, box=None):
+        return corroborated_observation(observation(text), [observation(primary, box)], "home", "zh-Hant",
+                                        [], foreign, fragments, variants)
+    assert corroborated("已暂停", "已暫停")
+    assert corroborated("资产", "資產")
+    assert not corroborated("已暂停", "已暫停", [0.7, 0.7, 0.05, 0.025])
+    assert not corroborated("已暂停", "已暂停")
+    assert not corroborated("Send", "傳送")
+    print("wallet-screens-language self-test: OK punctuation, bounded OCR/icons, dual script evidence, foreign copy, QR, account and features")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=ROOT / "tmp/screens")
     parser.add_argument("--only", default="")
     parser.add_argument("--catalog", type=Path, default=CATALOG)
     parser.add_argument("--renderer", type=Path, default=RENDERER)
+    parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--renderer-fixture", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.self_test:
+        return self_test()
     if args.renderer_fixture:
         # Only parser/detector unit fixtures may omit the production source scan.
         try:

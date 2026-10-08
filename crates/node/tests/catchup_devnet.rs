@@ -1,17 +1,19 @@
 //! Real-process regression for jump-first catch-up and crash-safe backfill.
 //!
-//! `AETHER_CATCHUP_TEST_BIN` runs the exact same scenario against an older
-//! binary (both validators and follower), without changing the assertions.
+//! `AETHER_CATCHUP_TEST_BIN` selects the binary for validators and follower
+//! without changing the assertions. A same-source optimized build keeps
+//! fixture preparation fast.
 //! Set TMPDIR to the workspace's tmp directory, as for the other devnet tests.
 
 use aether_light::{verify_finalized_chain, ValidatorSet, VerifiedBlock};
 use aether_state::Proof;
+use aether_test_support::{Port, TestChild};
 use aether_types::{Address, U256};
 use axum::{extract::State, routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -20,14 +22,6 @@ const BLOCKS: u64 = 2_000;
 // The lead lane calibrates this bound from an actual run on the test Mac.
 const HEAD_BOUND: Duration = Duration::from_secs(60);
 const BACKFILL_BOUND: Duration = Duration::from_secs(180);
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
 
 #[derive(Clone)]
 struct Http(reqwest::blocking::Client);
@@ -57,9 +51,9 @@ impl Http {
 struct Devnet {
     bin: PathBuf,
     dir: PathBuf,
-    p2p: Vec<u16>,
-    rpc: Vec<u16>,
-    children: Vec<Option<Child>>,
+    p2p: Vec<Port>,
+    rpc: Vec<Port>,
+    children: Vec<Option<TestChild>>,
     http: Http,
 }
 
@@ -79,8 +73,12 @@ impl Devnet {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| env!("CARGO_BIN_EXE_aether").into()),
             dir,
-            p2p: (0..4).map(|_| free_port()).collect(),
-            rpc: (0..5).map(|_| free_port()).collect(),
+            p2p: (0..4)
+                .map(|_| Port::reserve().expect("reserve validator P2P port"))
+                .collect(),
+            rpc: (0..5)
+                .map(|_| Port::reserve().expect("reserve devnet RPC port"))
+                .collect(),
             children: (0..5).map(|_| None).collect(),
             http: Http::new(),
         };
@@ -123,19 +121,10 @@ impl Devnet {
         format!("http://127.0.0.1:{}", self.rpc[i])
     }
 
-    fn capture(&self, i: usize, mut cmd: Command) -> Child {
+    fn capture(&self, i: usize, mut cmd: Command) -> TestChild {
         let data = self.data(i);
-        std::fs::create_dir_all(&data).expect("create child directory");
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(data.join("node.log"))
-            .expect("open child log");
-        cmd.env("RUST_LOG", "info")
-            .stdout(log.try_clone().expect("clone child log"))
-            .stderr(log)
-            .spawn()
-            .expect("spawn aether test child")
+        cmd.env("RUST_LOG", "info");
+        TestChild::spawn(cmd, data.join("node.log")).expect("spawn aether test child")
     }
 
     fn spawn_follower(&mut self, proxy: &str) {
@@ -153,9 +142,10 @@ impl Devnet {
     }
 
     fn kill(&mut self, i: usize) {
-        if let Some(mut child) = self.children[i].take() {
-            // Child::kill is SIGKILL on Unix: exercise an ungraceful crash,
-            // rather than a shutdown that could flush the backfill cursor.
+        if let Some(child) = self.children[i].take() {
+            // TestChild kills the private process group with SIGKILL on Unix:
+            // an ungraceful crash cannot flush the backfill cursor or leave
+            // descendants holding the leased ports.
             child.kill().expect("SIGKILL owned test child");
             child.wait().expect("reap owned test child");
         }
@@ -195,18 +185,30 @@ impl Devnet {
         let started = Instant::now();
         let mut last = Value::Null;
         loop {
+            // Poll every startup, including validators not queried here:
+            // a failed listener can leave the rest of its process alive.
+            for (node, child) in self.children.iter().enumerate() {
+                if let Some(child) = child {
+                    assert!(
+                        child
+                            .try_wait()
+                            .unwrap_or_else(|error| {
+                                panic!("node {node}: {error}{}", self.logs())
+                            })
+                            .is_none(),
+                        "node {node} exited{}",
+                        self.logs()
+                    );
+                }
+            }
             if let Ok(status) = self.http.call(&self.url(i), "aether_status", json!([])) {
+                if let Some(child) = &self.children[i] {
+                    child.mark_started();
+                }
                 if status["height"].as_u64().is_some_and(|h| h >= height) {
                     return status;
                 }
                 last = status;
-            }
-            if let Some(child) = self.children[i].as_mut() {
-                assert!(
-                    child.try_wait().expect("poll child").is_none(),
-                    "node {i} exited{}",
-                    self.logs()
-                );
             }
             assert!(
                 started.elapsed() < bound,
@@ -247,7 +249,7 @@ impl Devnet {
 impl Drop for Devnet {
     fn drop(&mut self) {
         for child in &mut self.children {
-            if let Some(mut child) = child.take() {
+            if let Some(child) = child.take() {
                 let _ = child.kill();
                 let _ = child.wait();
             }

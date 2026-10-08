@@ -2453,6 +2453,14 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
         }
         let lease = adoption.expect("the real writer spawn delivers a valid lease");
         let lease = lease.expect("every supervisor writer receives its lease");
+        let inherited = lock_or_inherit_data_dir(&dir.join("node"), Some(&lease))
+            .expect("a supervised key writer reuses this directory's validated lease");
+        assert!(lock_data_dir(&dir.join("node")).is_err(), "owner rebind cannot race a supervised writer");
+        let other = lock_data_dir(&dir.join("other-node")).unwrap();
+        assert!(lock_or_inherit_data_dir(&dir.join("other-node"), Some(&lease)).is_err(),
+            "a lease never authorizes another key directory");
+        drop(other);
+        drop(inherited);
         if mode == "capability" {
             assert_eq!(crate::rpc::writer_lease_status_for_test()["writer_lease_protocol"], json!(1),
                 "R11 actual adopted guard attests the live writer contract");
@@ -3265,14 +3273,14 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
         let mut net = file(1, "aa");
         std::fs::write(&src, serde_json::to_vec(&net).unwrap()).unwrap();
         adopt_network_with_chain_data(&data, Some(&chain), Some(&src)).unwrap();
-        for k in ["validator.key", "validator.pub.json", "node-account.key"] {
+        for k in ["validator.key", "validator.pub.json", "node-account.key", "key-binding.json", "key-creation.json", "key-rebind.log", "key-binding-refused"] {
             std::fs::write(data.join(k), b"k").unwrap();
         }
         std::fs::write(chain.join("follow/state.redb"), b"blocks").unwrap();
         net.identity = Some("bb".into());
         std::fs::write(&src, serde_json::to_vec(&net).unwrap()).unwrap();
         adopt_network_with_chain_data(&data, Some(&chain), Some(&src)).unwrap();
-        for k in ["validator.key", "validator.pub.json", "node-account.key"] {
+        for k in ["validator.key", "validator.pub.json", "node-account.key", "key-binding.json", "key-creation.json", "key-rebind.log", "key-binding-refused"] {
             assert!(data.join(k).exists(), "{k} stays in the key directory");
             assert!(KEEP_ACROSS_NETWORKS.contains(&k));
         }

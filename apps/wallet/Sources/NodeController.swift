@@ -805,6 +805,8 @@ final class NodeController: ObservableObject {
         // from; the sample is a Mac that runs EastSea from Applications.
         wrongLocation = UserDefaults.standard.string(forKey: "previewWrongLocation") == "1"
         if wrongLocation { state = .failed(InstallLocation.moveSentence) }
+        // Fixture facts replace the renderer's real installation/helper state.
+        stopReason = wrongLocation ? .wrongLocation : nil
         candidate = Candidate(validatorKey: "0xpreview", nodeId: "preview", beaconer: "0xpreview")
         voting = VotingNodeStatus(registered: true, streak: 5, lastEpoch: 7_675, epoch: 7_676, voting: false, candidates: 3)
         history = HistoryKept(bytes: 12_884_901_888, shards: 12, windowDays: 7, passPercent: 98)

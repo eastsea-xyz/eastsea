@@ -22,7 +22,7 @@ expect(en.body.contains("No data is deleted") && ko.body.contains("데이터는 
        "the question says the data stays, in both languages")
 let ja = LegacyAether.question(locale: walletTestLocale("ja"), bundle: walletTestBundle("ja"))
 expect(ja.title == "以前のAetherアプリがまだこのMacにあります", "the removal question resolves in Japanese")
-expect(ja.body.contains("データは削除されません"), "the Japanese question keeps the data assurance")
+expect(ja.body.contains("データは削除しません"), "the Japanese question keeps the data assurance")
 expect(LegacyAether.removalFailure(locale: walletTestLocale("en"), bundle: walletTestBundle("en"))
        == "Aether could not be moved to the Trash. Move it there in Finder, then reopen EastSea.", "the removal failure gives a plain next step")
 expect(LegacyAether.removalFailure(locale: walletTestLocale("ko"), bundle: walletTestBundle("ko"))

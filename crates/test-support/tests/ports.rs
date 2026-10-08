@@ -291,6 +291,7 @@ fn contiguous_blocks_and_clones_hold_every_reservation() {
 #[ignore = "subprocess fixture"]
 fn group_parent_worker() {
     let dir = PathBuf::from(std::env::var_os("AETHER_PORT_WORKER").unwrap());
+    std::fs::write(dir.join("parent.pid"), std::process::id().to_string()).unwrap();
     let mut command = worker("group_listener_worker", &dir);
     command.env(
         "AETHER_BIND_ADDR",
@@ -318,6 +319,11 @@ fn cleanup_releases_supervisor_descendant_ports() {
     command.env("AETHER_BIND_ADDR", port.addr().to_string());
     let child = TestChild::spawn(command, root.join("node.log")).unwrap();
     wait_until(|| root.join("ready").exists());
+    assert_eq!(
+        child.id(),
+        std::fs::read_to_string(root.join("parent.pid")).unwrap().parse::<u32>().unwrap(),
+        "signals target the owned parent, rather than its listener descendant"
+    );
     child.mark_started();
     child.kill().unwrap();
     child.wait().unwrap();

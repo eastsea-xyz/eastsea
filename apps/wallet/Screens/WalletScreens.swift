@@ -120,6 +120,12 @@ final class Renderer {
             page("home-narrow", dark, width: 380) { HomePage(sheet: .constant(nil), showActivity: {}, showNetwork: {}) }
             page("activity", dark, ["historyNotice": "1"]) { ActivityPage() }
             page("network", dark, ["rewardStatus": "1"]) { NetworkPage() }
+            page("node-status", dark) { NetworkPage.nodeStatusForScreens() }
+            stagePage("validator-candidate", dark) { s in
+                Group {
+                    if let candidate = s.node.candidate { NetworkPage.validatorCandidateForScreens(candidate) }
+                }
+            }
             page("network-verifying", dark, ["designPreview": "verifying"]) { NetworkPage() }
             page("security", dark) { SecurityPage() }
             page("explore", dark) { ExplorePage(goHome: {}).frame(height: 640) }
@@ -231,6 +237,7 @@ final class Renderer {
         .diskFull(freeBytes: 3_000_000_000, resumeBytes: 7_000_000_000, volume: "Samsung T7"),
         .diskMissing(volume: "Samsung T7"), .diskNoAccess(volume: "Samsung T7"), .restarting(inSeconds: 20),
         .crashLoop(.other, retryInSeconds: 300), .needsAttention(.database), .upgradeNeeded, .identityLost,
+        .waitingForMacConfirmation, .keyElsewhere,
         .launchFailed("posix_spawn failed"), .movingStorage(percent: 42),
     ]
 
@@ -279,7 +286,11 @@ final class Renderer {
         a.window.orderFrontRegardless()
         settle(0.4)
         guard let view = a.window.contentView else { failed += 1; return }
-        write(view, name: name, dark: dark)
+        if let image = windowImage(a.window) {
+            writeImage(image, name: name, dark: dark)
+        } else {
+            write(view, name: name, dark: dark)
+        }
         writeText(view, name: name, dark: dark)
         a.window.orderOut(nil)
     }
@@ -304,7 +315,16 @@ final class Renderer {
         // A whole window (sidebar, toolbar, materials) is composited by the
         // window server, which a view's own cacheDisplay cannot draw: ask
         // the server for this process's own window. Pages draw themselves.
-        if full, let image = windowImage(win) {
+        if !full, name != "explore" {
+            let renderer = ImageRenderer(content: view.environment(\.colorScheme, dark ? .dark : .light))
+            renderer.proposedSize = ProposedViewSize(width: width, height: host.bounds.height)
+            renderer.scale = 4
+            if let image = renderer.cgImage {
+                writeImage(image, name: name, dark: dark)
+            } else {
+                write(host, name: name, dark: dark)
+            }
+        } else if full, let image = windowImage(win) {
             writeImage(image, name: name, dark: dark)
         } else {
             write(host, name: name, dark: dark)
@@ -369,27 +389,47 @@ final class Renderer {
     /// embedded web content. No accessibility permission or real app is used.
     /// Keep the boxes/confidence for reviewing a language-check failure.
     private func writeText(_ image: CGImage, name: String, dark: Bool) throws {
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
-        request.automaticallyDetectsLanguage = true
         let languageNames = ["en": "en-US", "ko": "ko-KR", "ja": "ja-JP", "zh-Hans": "zh-Hans", "zh-Hant": "zh-Hant"]
-        let supported = try request.supportedRecognitionLanguages()
+        let supported = try VNRecognizeTextRequest().supportedRecognitionLanguages()
+        func languages(_ preferred: [String]) -> [String] {
+            var result: [String] = []
+            for language in preferred where supported.contains(language) && !result.contains(language) {
+                result.append(language)
+            }
+            return result
+        }
+        func recognize(_ languages: [String], automaticallyDetectsLanguage: Bool) throws -> [[String: Any]] {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = !automaticallyDetectsLanguage
+            if !automaticallyDetectsLanguage {
+                request.customWords = ["EastSea", "Doubloon", "Aether", "DBLN", "Mac", "Touch ID", "Face ID",
+                                       "Secure Enclave", "Apple", "DeviceCheck", "Pipln", "Sparkle", "Safari", "WebKit",
+                                       "Samsung T7", "Finder", "FileVault", "iCloud", "macOS", "iOS", "Metal", "APFS",
+                                       "Mac OS Extended", "USDX", "VVDBLN", "NEB", "ORB", "CMT", "WAETH", "AETH"]
+            }
+            request.automaticallyDetectsLanguage = automaticallyDetectsLanguage
+            request.recognitionLanguages = languages
+            try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+            return (request.results ?? []).compactMap { observation in
+                guard let candidate = observation.topCandidates(1).first else { return nil }
+                let box = observation.boundingBox
+                return ["text": candidate.string, "confidence": candidate.confidence,
+                        "box": [box.origin.x, box.origin.y, box.width, box.height]]
+            }
+        }
+        // A broad model can convert Traditional Han glyphs to Simplified or
+        // read an SF Symbol as kana. Keep both readings so QA can distinguish
+        // recognizer disagreements from actual foreign copy in the pixels.
+        let primaryLanguages = languages([languageNames[lang] ?? "en-US", "en-US"])
         let preferred = [languageNames[lang] ?? "en-US", "en-US", "ko-KR", "ja-JP", "zh-Hans", "zh-Hant"]
-        var recognitionLanguages: [String] = []
-        for language in preferred where supported.contains(language) && !recognitionLanguages.contains(language) {
-            recognitionLanguages.append(language)
-        }
-        request.recognitionLanguages = recognitionLanguages
-        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-        let lines: [[String: Any]] = (request.results ?? []).compactMap { observation in
-            guard let candidate = observation.topCandidates(1).first else { return nil }
-            let box = observation.boundingBox
-            return ["text": candidate.string, "confidence": candidate.confidence,
-                    "box": [box.origin.x, box.origin.y, box.width, box.height]]
-        }
+        let multilingualLanguages = languages(preferred)
+        let lines = try recognize(primaryLanguages, automaticallyDetectsLanguage: false)
+        let multilingualLines = try recognize(multilingualLanguages, automaticallyDetectsLanguage: true)
         var payload: [String: Any] = ["screen": name, "language": lang, "appearance": dark ? "dark" : "light",
-                                     "engine": "Vision", "lines": lines]
+                                     "engine": "Vision", "lines": lines, "multilingualLines": multilingualLines,
+                                     "recognitionLanguages": primaryLanguages,
+                                     "multilingualLanguages": multilingualLanguages]
         if name == "menubar-qr" || name == "sheet-receive" {
             // Decode the saved pixels, so the gate proves the QR carries the
             // selected account's address rather than merely resembling a QR.

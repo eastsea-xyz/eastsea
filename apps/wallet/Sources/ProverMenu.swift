@@ -188,7 +188,7 @@ struct MenuBarPanel: View {
 extension ProverFacts {
     /// The node's `aether_proverStatus`, in the menu's terms.
     init(_ p: NodeController.ProverStatus) {
-        self.init(running: p.running, proving: p.proving != nil, proofs: p.proofs ?? 0, paused: p.paused,
+        self.init(running: p.running, stale: p.stale == true, proving: p.proving != nil, proofs: p.proofs ?? 0, paused: p.paused,
                   programUnknown: p.program_unknown == true, programMismatch: p.program_mismatch == true,
                   proofsFailing: p.proofs_failing == true, acceptancePercent: p.acceptance_rate_percent,
                   lastReward: p.last_reward.map { "\(Wei.format(LocalRPC.decimal($0))) \(Brand.networkCoinTicker)" },

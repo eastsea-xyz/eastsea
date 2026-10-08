@@ -7,6 +7,7 @@ import Foundation
 /// program: method not found: aether_proverProgram", cut off with "…").
 struct ProverFacts: Equatable {
     var running = true
+    var stale = false
     var proving = false
     var proofs: UInt64 = 0
     /// Why proving rests ("memory", "pressure", "battery", "disk", "program", "stalled").
@@ -28,6 +29,9 @@ enum ProverMenuText {
     static func line(_ f: ProverFacts, locale: Locale = .current, bundle: Bundle = .main) -> (text: String, warn: Bool) {
         if !f.running {
             return (String(localized: "The reward prover is not running. It restarts by itself.", bundle: bundle, locale: locale), true)
+        }
+        if f.stale {
+            return (String(localized: "Prover status is stale. The prover is restarting.", bundle: bundle, locale: locale), true)
         }
         if let paused = f.paused {
             switch paused {

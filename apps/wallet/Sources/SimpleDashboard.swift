@@ -604,7 +604,7 @@ struct NetworkPage: View {
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: narrow ? 130 : 150), spacing: 12)], spacing: 12) {
                 Tile(value: model.status.map { "#\(String($0.height))" } ?? "—", label: "Latest block", icon: "cube")
-                Tile(value: "\(model.validators)", label: "Signing Macs", icon: "person.3.fill")
+                Tile(value: "\(model.validators)", label: "Signing keys", icon: "person.3.fill")
                 Tile(value: blockTime, label: "Block time", icon: "timer")
                 Tile(value: model.status.map { Amount.fee($0.transferFeeWei) } ?? "—", label: "Transfer fee (max)", icon: "flame")
                 Tile(value: model.status.map { "\($0.mempool)" } ?? "—", label: "Waiting transactions", icon: "tray.full")
@@ -807,6 +807,15 @@ private struct PaperKeyPanel: View {
 }
 
 #if os(macOS)
+#if WALLET_SCREENS
+extension NetworkPage {
+    static func nodeStatusForScreens() -> some View { NodeCard() }
+    static func validatorCandidateForScreens(_ candidate: NodeController.Candidate) -> some View {
+        VotingNodeRow(candidate: candidate)
+    }
+}
+#endif
+
 /// The node switch, explained (Network page), and joining as a voting node.
 private struct NodeCard: View {
     @EnvironmentObject var node: NodeController

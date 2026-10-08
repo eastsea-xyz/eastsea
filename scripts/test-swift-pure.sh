@@ -22,7 +22,13 @@ run() {
   fi
   : > "tmp/sw-$n.err"
   : > "tmp/sw-$n.out"
-  if swiftc -module-cache-path "$root/tmp/swift-module-cache" -o "tmp/sw-$n" "${files[@]}" "$T/$n/main.swift" 2>"tmp/sw-$n.err" \
+  compiler_flags=(-Onone)
+  if [ "$n" = rename-migration ]; then
+    # Large migration fixtures hash hundreds of MB with the release code.
+    # Optimize that code while keeping Swift assertions and preconditions on.
+    compiler_flags=(-O -assert-config Debug)
+  fi
+  if swiftc "${compiler_flags[@]}" -module-cache-path "$root/tmp/swift-module-cache" -o "tmp/sw-$n" "${files[@]}" "$T/$n/main.swift" 2>"tmp/sw-$n.err" \
       && AETHER_AGENT_TEST_TMP="$root/tmp" WALLET_TEST_BUNDLE="$localizations" "./tmp/sw-$n" >"tmp/sw-$n.out" 2>&1; then
     echo "OK   $n"
   else

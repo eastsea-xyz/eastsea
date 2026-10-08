@@ -102,6 +102,24 @@ check(ProverMenuText.line(failing, locale: koLocale, bundle: koBundle).warn, "re
 var busy = ProverFacts(); busy.proving = true; busy.proofs = 3
 check(ProverMenuText.line(busy, locale: enLocale, bundle: enBundle).text == "Proving blocks · 3 this session", "proving line")
 
+// A live service with a broken sidecar must not present cached work as ready
+// or currently proving. Its warning follows the selected language bundle.
+let staleKey = "Prover status is stale. The prover is restarting."
+var stale = ProverFacts(running: true, stale: true, proving: true, proofs: 624,
+                        error: "sidecar: Broken pipe (os error 32)")
+for language in ["en", "ko", "ja", "zh-Hans", "zh-Hant"] {
+    let expected = walletExpectedTranslation(staleKey, language: language)
+    check(language == "en" ? expected == staleKey : expected != staleKey,
+          "stale warning has a translated catalog entry (\(language))")
+    let actual = ProverMenuText.line(stale, locale: walletTestLocale(language), bundle: walletTestBundle(language))
+    check(actual.text == expected && actual.warn, "stale warning is localized and visible (\(language))")
+    check(!actual.text.contains("Broken pipe"), "stale warning keeps raw errors behind Details")
+}
+stale.stale = false; stale.error = nil
+let recovered = ProverMenuText.line(stale, locale: enLocale, bundle: enBundle)
+check(recovered.text == "Proving blocks · 624 this session" && !recovered.warn,
+      "a recovered prover displays current work again")
+
 // A reward from 9-29 (0.6.6's proofs) must not read as today's.
 var r = ProverFacts(); r.lastReward = "1.0 EAST"; r.lastRewardStale = true
 check(ProverMenuText.reward(r, locale: koLocale, bundle: koBundle)?.hasPrefix("이 버전에서는 아직 받은 보상이 없어요") == true, "a stale reward is labelled old")

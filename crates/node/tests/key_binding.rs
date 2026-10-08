@@ -142,7 +142,7 @@ fn rebind_in_terminal(data: &Path, uuid: &str, confirmation: &str) -> (Option<i3
     use std::io::{Read as _, Write as _};
     use std::os::unix::io::FromRawFd as _;
     let (mut master, mut slave) = (-1, -1);
-    assert_eq!(unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) }, 0);
+    assert_eq!(unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) }, 0);
     for fd in [master, slave] { assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) }, 0); }
     let mut master = unsafe { std::fs::File::from_raw_fd(master) };
     let slave = unsafe { std::fs::File::from_raw_fd(slave) };

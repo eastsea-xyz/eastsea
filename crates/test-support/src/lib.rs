@@ -245,6 +245,11 @@ impl TestChild {
         self.state.lock().expect("test child lock").started = true;
     }
 
+    /// The current owned process; a startup retry may replace it before readiness.
+    pub fn id(&self) -> u32 {
+        self.state.lock().expect("test child lock").child.id()
+    }
+
     pub fn try_wait(&self) -> io::Result<Option<ExitStatus>> {
         let mut state = self.state.lock().expect("test child lock");
         let status = state.child.try_wait()?;

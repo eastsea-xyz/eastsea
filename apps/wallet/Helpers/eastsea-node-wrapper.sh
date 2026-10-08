@@ -14,18 +14,43 @@ marker=${1:-}
 
 pb=/usr/libexec/PlistBuddy
 data=$($pb -c 'Print :data' "$marker" 2>/dev/null) || exit 1
+case "$data" in /*) ;; *) exit 1 ;; esac
+if [ -e "$data/key-binding-refused" ] || [ -L "$data/key-binding-refused" ]; then
+  echo "key binding refused (persisted); automatic restart disabled; owner recovery is required" >&2
+  exit 15
+fi
 binary=$($pb -c 'Print :binary' "$marker" 2>/dev/null) || exit 1
 prove=$($pb -c 'Print :prove' "$marker" 2>/dev/null)
 
-# The argv array in order: the marker's XML is exactly
-# <key>argv</key><array><string>…</string>…</array>.
+# Read the native argv array, preserving XML escapes in paths and accepting
+# PlistBuddy's whitespace rather than relying on plutil's XML indentation.
 args=()
 while IFS= read -r line; do
   args+=("$line")
-done < <(/usr/bin/plutil -convert xml1 -o - "$marker" | sed -n '/<key>argv<\/key>/,/<\/array>/p' | sed -n 's/^ *<string>\(.*\)<\/string> *$/\1/p')
+done < <("$pb" -c 'Print :argv' "$marker" 2>/dev/null | sed -e '1d' -e 's/^ *//' -e 's/ *$//' -e '/^$/d' -e '/^}$/d')
 
 [ -x "$binary" ] || exit 1
 [ "${args[0]:-}" = "run" ] || exit 1
+data_seen=0
+needs_data=0
+for arg in "${args[@]}"; do
+  if [ "$needs_data" -eq 1 ]; then
+    [ "$arg" = "$data" ] || exit 1
+    needs_data=0
+    continue
+  fi
+  case "$arg" in
+    --) break ;;
+    --data)
+      [ "$data_seen" -eq 0 ] || exit 1
+      data_seen=1
+      needs_data=1 ;;
+    --data=*)
+      [ "$data_seen" -eq 0 ] && [ "${arg#--data=}" = "$data" ] || exit 1
+      data_seen=1 ;;
+  esac
+done
+[ "$data_seen" -eq 1 ] && [ "$needs_data" -eq 0 ] || exit 1
 mkdir -p "$data" || exit 1
 
 echo $$ > "$data/unattended.pid"

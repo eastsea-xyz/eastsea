@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # Keep this Mac's testnet validators running across logins and crashes (launchd).
 #   scripts/testnet-launchagent.sh install | uninstall
-# One LaunchAgent per validator (KeepAlive): launchd restarts a validator that
-# exits and starts all of them at login. Chain data is never wiped. Each runs
+# One LaunchAgent per validator: launchd restarts a validator that exits,
+# except a terminal key-binding refusal (15). Starts all at login. Each runs
 # `aether run`: a validator while the network keeps it in the voting set, a
 # verifying follower once registered Macs take the seats.
 # The binary is signed with the Developer ID (SIGN_IDENTITY) and the agents name
 # the EastSea app, so System Settings ▸ Login Items lists them as EastSea (Pipln),
 # not as an unidentified command-line tool.
-# `caffeinate -s` wraps each validator: the Mac does not sleep while on power
-# (a sleeping validator is a missing vote). `--exit-with-parent` stops the node
-# if caffeinate is killed, so nothing is left running outside launchd.
+# The wrapper keeps the Mac awake on power and preserves terminal exits.
+# `--exit-with-parent` stops the node if its wrapper is killed.
 set -euo pipefail
 T=${AETHER_TESTNET:-$HOME/aether-testnet}
 A="$T/bin/aether"
@@ -20,6 +19,9 @@ label() { echo "com.pipln.aether.testnet.v$1"; }
 case "${1:-}" in
   install)
     mkdir -p "$LA"
+    wrapper="$T/bin/aether-launchd-wrapper.sh"
+    cp -f "$(dirname "$0")/aether-launchd-wrapper.sh" "$wrapper"
+    chmod 755 "$wrapper"
     codesign --force --options runtime --timestamp --sign "${SIGN_IDENTITY:-Developer ID Application: Pipln (45WU468FZE)}" "$A"
     "$(dirname "$0")/testnet.sh" stop >/dev/null 2>&1 || true
     for i in $(seq 1 "$N"); do
@@ -40,7 +42,7 @@ case "${1:-}" in
   <key>AssociatedBundleIdentifiers</key><array><string>com.pipln.eastsea</string></array>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/caffeinate</string><string>-s</string>
+    <string>/bin/bash</string><string>$wrapper</string>
     <string>$A</string><string>run</string>
     <string>--network</string><string>$T/$i/network.json</string>
     <string>--port</string><string>$((9100 + i))</string>
@@ -50,7 +52,7 @@ case "${1:-}" in
     $extra
   </array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <!-- The vote journal keeps one file per section: launchd's default of 256 open files is too few. -->
   <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>65536</integer></dict>
   <key>HardResourceLimits</key><dict><key>NumberOfFiles</key><integer>65536</integer></dict>

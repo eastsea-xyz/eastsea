@@ -556,6 +556,22 @@ final class WalletModel: ObservableObject {
     }
 
     #if os(macOS)
+    /// Local node recovery uses the same owner-presence Secure Enclave path
+    /// as wallet actions. The signature stays local and is never a transaction.
+    func authorizeNodeKeyRebind(validatorAddress: String, typedAddress: String,
+                                dataDirectory: String) async throws -> NodeKeyRebind.Approval {
+        guard let enclave, enclave.isSecureEnclave, enclave.requiresUserPresence,
+              keyError == nil, !busy else { throw NodeKeyRebind.Refusal.ownerKeyUnavailable }
+        busy = true
+        defer { busy = false }
+        return try await Task.detached {
+            try NodeKeyRebind.authorize(validatorAddress: validatorAddress, typedAddress: typedAddress,
+                                        dataDirectory: dataDirectory) { message in
+                _ = try enclave.sign(message)
+            }
+        }.value
+    }
+
     /// Register this Mac as a voting node, operated by this wallet (one Touch ID).
     /// Apple's DeviceCheck token proves it is a real Mac that never registered
     /// before: one Mac, one voting node.

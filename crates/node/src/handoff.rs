@@ -81,6 +81,7 @@ fn ready_message(chain_id: u64, round: u64, output: &str, members: &[(String, St
 
 /// Prove the staged share can produce a partial under this exact polynomial.
 pub fn sign_ready(chain_id: u64, round: u64, output: &str, members: &[(String, String)], share: &Share) -> String {
+    crate::key_binding::check_process();
     hex::encode(ops::threshold::sign_message::<MinSig>(share, READY_NAMESPACE, &ready_message(chain_id, round, output, members)).encode())
 }
 
@@ -117,6 +118,7 @@ pub fn verify_seed(chain_id: u64, identity: &Identity, s: &aether_light::block::
 /// One running member's partial signature on draw `draw`'s seed (hex codec
 /// bytes), as the committee actor produces them.
 pub fn sign_seed_partial(chain_id: u64, draw: u64, share: &Share) -> String {
+    crate::key_binding::check_process();
     hex::encode(ops::threshold::sign_message::<MinSig>(share, SEED_NAMESPACE, &seed_message(chain_id, draw)).encode())
 }
 
@@ -167,6 +169,7 @@ fn message(chain_id: u64, h: &Handoff) -> Vec<u8> {
 
 /// One running member's partial signature (hex codec bytes).
 pub fn sign_partial(chain_id: u64, h: &Handoff, share: &Share) -> String {
+    crate::key_binding::check_process();
     hex::encode(ops::threshold::sign_message::<MinSig>(share, NAMESPACE, &message(chain_id, h)).encode())
 }
 
@@ -320,7 +323,7 @@ impl Service {
         }
         *last = Some((draw, std::time::Instant::now()));
         drop(last);
-        let partial = hex::encode(ops::threshold::sign_message::<MinSig>(&self.share, SEED_NAMESPACE, &seed_message(self.chain_id, draw)).encode());
+        let partial = sign_seed_partial(self.chain_id, draw, &self.share);
         if let Err(e) = self.accept_seed(draw, &partial) {
             tracing::debug!(%e, "own seed partial");
         }

@@ -63,6 +63,7 @@ zstd = "0.13"
 
 [features]
 # Compiles the resource-reading test seam (resources.rs `set_test_readings`)
+# and debug-only UUID/internal-key-volume overrides for isolated fixtures.
 # so integration tests (tests/) can pin the pressure level and available
 # memory the snapshot gate sees. Never a default feature and never enabled by
 # another crate's [dependencies]: the only place it is turned on is this
@@ -89,7 +90,7 @@ rand_chacha = "0.10"
 tower = "0.5"
 # The reserve-hardening tests capture the chain's overdue warning (finding 6).
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# Lets this crate's integration tests reach the test-only seam in resources.rs
+# Lets this crate's integration tests reach the test-only resource/key seams
 # (tokio does the same self-reference for its test-util features).
 aether-node = { path = ".", features = ["test-seam"] }
 # The follower-transport test (follow.rs) stands up local-only iroh endpoints

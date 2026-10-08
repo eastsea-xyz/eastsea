@@ -204,6 +204,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let check: () -> Void = { [weak self] in self?.updater.updater.checkForUpdatesInBackground() }
         node.onUpgradeNeeded = check
         node.onUpdateMomentChanged = { [weak self] in self?.installIfSafe() }
+        node.authorizeKeyRebind = { [weak model] address, typed, directory in
+            guard let model else { throw NodeKeyRebind.Refusal.ownerKeyUnavailable }
+            return try await model.authorizeNodeKeyRebind(validatorAddress: address, typedAddress: typed,
+                                                         dataDirectory: directory)
+        }
         model.onOutdated = check
         pauseWatch = model.$chainPausedSince
             .removeDuplicates { ($0 == nil) == ($1 == nil) }

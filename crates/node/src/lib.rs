@@ -20,6 +20,7 @@ pub mod follow;
 pub mod handoff;
 pub mod mainnet;
 pub mod inclusion;
+pub mod key_binding;
 pub mod p2p;
 pub mod prover;
 pub mod prover_input;

@@ -216,6 +216,7 @@ async fn start_validator_with_delay(context: &Ctx, oracle: &Oracle<Pk, Ctx>, i: 
             provider: oracle.manager(),
             partition_prefix: format!("v{i}"),
             journal_dir: None,
+            key_binding: None,
             me,
             scheme,
             identity,

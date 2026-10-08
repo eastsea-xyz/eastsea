@@ -42,6 +42,10 @@ enum NodeStopReason: Equatable {
     case upgradeNeeded
     /// This Mac's node key cannot be read.
     case identityLost
+    /// The node is alive and retrying an unavailable Mac-identity read.
+    case waitingForMacConfirmation
+    /// A successful identity read proved these keys are bound to another Mac.
+    case keyElsewhere
     /// The process could not even be launched (an OS error).
     case launchFailed(String)
     /// The block data is moving to another disk (0…100).
@@ -65,6 +69,8 @@ enum NodeStopReason: Equatable {
         case .needsAttention: return "needs_attention"
         case .upgradeNeeded: return "upgrade_needed"
         case .identityLost: return "identity_lost"
+        case .waitingForMacConfirmation: return "waiting_for_mac_confirmation"
+        case .keyElsewhere: return "key_elsewhere"
         case .launchFailed: return "launch_failed"
         case .movingStorage: return "moving_storage"
         }
@@ -76,7 +82,7 @@ enum NodeStopReason: Equatable {
     /// not raised as incidents.
     var isIncident: Bool {
         switch self {
-        case .switchedOff, .onBattery, .migrating, .restarting, .movingStorage: return false
+        case .switchedOff, .onBattery, .migrating, .restarting, .movingStorage, .waitingForMacConfirmation: return false
         default: return true
         }
     }
@@ -93,6 +99,7 @@ enum NodeStopAction: Equatable {
     case chooseDisk
     case openPrivacySettings
     case copyDiagnostics
+    case rebindKeys
 }
 
 /// What a reason says, in the app's language.
@@ -214,6 +221,17 @@ extension NodeStopReason {
             return NodeStopCopy(title: ko ? "노드 키를 읽을 수 없음" : "Node key unreadable",
                                 detail: NodeWatchdog.Failure.identityLost.sentence,
                                 resume: "", action: .copyDiagnostics, actionLabel: ko ? "진단 정보 복사" : "Copy Diagnostics")
+        case .waitingForMacConfirmation:
+            return NodeStopCopy(title: ko ? "이 Mac 확인 대기" : "Waiting to confirm this Mac",
+                                detail: ko ? "지금은 이 Mac의 노드 키를 확인할 수 없어요. 노드는 실행 중이며 확인될 때까지 서명을 기다려요."
+                                    : "This Mac's node keys cannot be confirmed right now. The node keeps running and waits before signing.",
+                                resume: ko ? "저절로 다시 확인해요. 따로 할 일은 없어요." : "It checks again by itself. No action is needed.",
+                                action: nil, actionLabel: nil)
+        case .keyElsewhere:
+            return NodeStopCopy(title: ko ? "다른 Mac의 노드 키" : "Node keys from another Mac",
+                                detail: ko ? "이 노드의 키가 다른 Mac에서 옮겨 왔어요. 원래 Mac에 복원하거나, 노드를 의도적으로 옮겼다면 이 Mac에 키를 다시 연결해 주세요."
+                                    : "This node's keys came from another Mac. Restore them on the original Mac, or rebind them here if you intentionally moved this node.",
+                                resume: "", action: .rebindKeys, actionLabel: ko ? "노드 키 다시 연결…" : "Rebind Node Keys…")
         case .launchFailed(let why):
             return NodeStopCopy(title: ko ? "노드를 시작하지 못함" : "The node could not start",
                                 detail: (ko ? "macOS가 노드 실행을 거부했어요: " : "macOS refused to launch the node: ") + why,
@@ -239,6 +257,109 @@ extension NodeStopReason {
     }
 }
 
+/// The node reports an unavailable read while staying alive. These markers
+/// are state transitions, not exit reasons; unrelated output retains the
+/// previous state until a successful retry confirms this Mac.
+enum NodeMacConfirmation {
+    static func waiting(in log: String, previously: Bool = false) -> Bool {
+        var waiting = previously
+        for line in log.split(separator: "\n") {
+            if line.contains("waiting to confirm this Mac") { waiting = true }
+            if line.contains("Mac key binding confirmed") { waiting = false }
+        }
+        return waiting
+    }
+}
+
+/// Written by the node only after a successful hardware read proves a
+/// mismatch. It survives daemon/app exits and is removed only by owner rebind.
+enum NodeBindingRefusal {
+    static let fileName = "key-binding-refused"
+
+    static func exists(in dataDirectory: URL) -> Bool {
+        FileManager.default.fileExists(atPath: dataDirectory.appendingPathComponent(fileName).path)
+    }
+}
+
+/// Rebinding is an owner action for a proven mismatch. A successful owner
+/// authentication creates the only approval the terminal runner accepts.
+/// The approval is local: its message cannot be submitted as a transaction.
+enum NodeKeyRebind {
+    struct Approval: Sendable {
+        let validatorAddress: String
+        let dataDirectory: String
+        let confirmationLine: String
+        fileprivate init(validatorAddress: String, dataDirectory: String, confirmationLine: String) {
+            self.validatorAddress = validatorAddress
+            self.dataDirectory = dataDirectory
+            self.confirmationLine = confirmationLine
+        }
+    }
+
+    enum Refusal: LocalizedError {
+        case invalidValidatorAddress
+        case confirmationDidNotMatch
+        case ownerKeyUnavailable
+        case nodeRunning
+
+        var errorDescription: String? {
+            let ko = Locale.preferredLanguages.first?.hasPrefix("ko") ?? false
+            switch self {
+            case .invalidValidatorAddress:
+                return ko ? "검증인 주소를 읽을 수 없어요. 키를 복원한 뒤 다시 시도해 주세요."
+                    : "The validator address cannot be read. Restore the keys and try again."
+            case .confirmationDidNotMatch:
+                return ko ? "입력한 검증인 주소가 일치하지 않아요. 키는 바뀌지 않았어요."
+                    : "The typed validator address did not match. The keys were not changed."
+            case .ownerKeyUnavailable:
+                return ko ? "소유자 인증을 할 수 없어요. 지갑 키를 사용할 수 있을 때 다시 시도해 주세요."
+                    : "Owner authentication is unavailable. Try again when the wallet key is ready."
+            case .nodeRunning:
+                return ko ? "노드가 실행 중이에요. 노드를 완전히 종료한 뒤 다시 시도해 주세요."
+                    : "The node is running. Wait for it to stop completely and try again."
+            }
+        }
+    }
+
+    static func canOffer(reason: NodeStopReason?, processRunning: Bool, attached: Bool, lockHeld: Bool) -> Bool {
+        reason == .keyElsewhere && !processRunning && !attached && !lockHeld
+    }
+
+    static func warning(ko: Bool) -> String {
+        ko ? "이 Mac의 노드를 의도적으로 옮긴 경우에만 진행하세요. 같은 키를 두 Mac에서 실행하면 검증인이 슬래싱됩니다."
+            : "Only do this if you moved this Mac's node on purpose; running the same keys on two Macs gets the validator slashed."
+    }
+
+    /// The validator address is its 32-byte Ed25519 public key, not the
+    /// wallet account. Read only the public entry; never open private keys.
+    static func validatorAddress(in data: Data) throws -> String {
+        struct PublicEntry: Decodable { let key: String }
+        guard data.count <= 4_096,
+              let entry = try? JSONDecoder().decode(PublicEntry.self, from: data),
+              let address = normalized(entry.key) else { throw Refusal.invalidValidatorAddress }
+        return address
+    }
+
+    static func normalized(_ address: String) -> String? {
+        var text = address.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if text.hasPrefix("0x") { text.removeFirst(2) }
+        guard text.utf8.count == 64,
+              text.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
+        return text
+    }
+
+    static func authorize(validatorAddress: String, typedAddress: String, dataDirectory: String,
+                          authenticate: (Data) throws -> Void) throws -> Approval {
+        guard let address = normalized(validatorAddress) else { throw Refusal.invalidValidatorAddress }
+        guard normalized(typedAddress) == address else { throw Refusal.confirmationDidNotMatch }
+        let message = Data(("Aether local node key rebind approval v1\n"
+                            + "validator: \(address)\ndata: \(dataDirectory)\nchallenge: \(UUID().uuidString)\n").utf8)
+        try authenticate(message)
+        return Approval(validatorAddress: address, dataDirectory: dataDirectory,
+                        confirmationLine: typedAddress.trimmingCharacters(in: .whitespacesAndNewlines) + "\n")
+    }
+}
+
 /// Where the block data lives, as the start gate sees it.
 enum NodeStorageState: Equatable {
     /// Application Support on the internal disk.
@@ -259,6 +380,8 @@ struct NodeResumeFacts: Equatable {
     var movingStoragePercent: Int?
     /// Our own child process is alive.
     var processRunning = false
+    /// The alive node has paused signing while it retries Mac verification.
+    var confirmingMac = false
     /// Attached to a node someone else started (the unattended daemon's).
     var attached = false
     /// `run.lock` is held by a process that is not our child: an exclusive
@@ -274,6 +397,9 @@ struct NodeResumeFacts: Equatable {
     var isValidator = false
     /// The watchdog's terminal decision, and how long ago it was made.
     var blocked: NodeWatchdog.Failure?
+    /// A proven mismatch persisted by the node, including exits the wallet
+    /// did not observe because it was attached to the unattended daemon.
+    var keyBindingRefused = false
     var blockedForSeconds: Int = 0
     /// Free space on the volume that holds the block data, and its name
     /// (nil: the internal disk).
@@ -309,6 +435,9 @@ enum NodeResume {
 
     static func decide(_ f: NodeResumeFacts) -> NodeResumeDecision {
         guard f.enabled else { return .wait(.switchedOff) }
+        // This must precede attached takeover, retry timers and crash-loop
+        // recovery. A terminal refusal does not expire when the app relaunches.
+        if f.keyBindingRefused || f.blocked == .keyElsewhere { return .wait(.keyElsewhere) }
         if f.wrongLocation { return .wait(.wrongLocation) }
         // Attached to a node someone else started: it is alive exactly while
         // it holds run.lock. Once nobody does, it is gone — take the data
@@ -337,6 +466,7 @@ enum NodeResume {
                     : .wait(.diskFull(freeBytes: free, resumeBytes: resumeBytes, volume: f.volumeName))
             case .upgradeNeeded: return .wait(.upgradeNeeded)
             case .identityLost: return .wait(.identityLost)
+            case .keyElsewhere: return .wait(.keyElsewhere)
             case .database, .handoff, .storage: return .wait(.needsAttention(failure))
             case .alreadyRunning:
                 return f.lockHeldByOther ? .wait(.otherNodeRunning) : .start(detach: false)
@@ -376,7 +506,8 @@ enum NodeStatusLog {
             case .standard: storage = "internal"
             case .chosen(let v, let m, let w): storage = "\(v)(mounted=\(m),writable=\(w))"
             }
-            s += " | enabled=\(f.enabled) proc=\(f.processRunning) attached=\(f.attached) lockOther=\(f.lockHeldByOther)"
+            s += " | enabled=\(f.enabled) proc=\(f.processRunning) confirmingMac=\(f.confirmingMac) attached=\(f.attached) lockOther=\(f.lockHeldByOther)"
+                + " keyBindingRefused=\(f.keyBindingRefused)"
                 + " battery=\(f.onBattery) onlyOnPower=\(f.onlyOnPower) blocked=\(f.blocked.map { "\($0)" } ?? "-")"
                 + " blockedFor=\(f.blockedForSeconds)s restartIn=\(f.restartInSeconds.map(String.init) ?? "-")"
                 + " free=\(free) storage=\(storage) migrating=\(f.migrating) gate=\(f.migrationGate == nil ? "open" : "shut")"

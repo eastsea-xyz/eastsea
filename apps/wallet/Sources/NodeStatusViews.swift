@@ -22,6 +22,11 @@ struct NodeStopRow: View {
             if let action = c.action, let label = c.actionLabel {
                 Button(label) { node.perform(action) }
                     .controlSize(compact ? .small : .regular)
+                    .disabled(node.keyRebindInProgress)
+            }
+            if reason == .keyElsewhere, let error = node.keyRebindError {
+                Text(error).font(compact ? .aeCaption : .aeFootnote).foregroundStyle(Color.warn)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

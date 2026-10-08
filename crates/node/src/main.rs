@@ -3052,7 +3052,11 @@ fn run_follow(
         // data is never moved aside or written — the node stops with the
         // update-required exit code, which the supervisor and the app already
         // turn into "install the newer release" (`is_too_new_error`).
+        #[cfg(test)]
+        let mut test_store = tests::RESTORE_DISK_TEST_STORE.with(|store| store.borrow_mut().take());
         let opened = match dev_storage_fault {
+            #[cfg(test)]
+            _ if test_store.is_some() => Ok((test_store.take().expect("test store present"), false)),
             Some(ms) => {
                 tracing::warn!(ms, "--dev-storage-fault: this disk fails from now on (self-healing test)");
                 follow::open_store_with(
@@ -3096,6 +3100,13 @@ fn run_follow(
                 tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
             }
         }
+        let restore_error = |e: aether_node::store::StoreError| {
+            if e.is_disk() {
+                eprintln!("error: restore state: {e}");
+                std::process::exit(aether_node::store::EXIT_STORAGE);
+            }
+            format!("restore state (delete the data dir to resync): {e}")
+        };
         let (chain, _) = match Chain::open(cfg.clone(), store) {
             Ok(opened) => opened,
             // Bad data only the full check catches (the rebuilt state does not
@@ -3109,9 +3120,9 @@ fn run_follow(
                         tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
                     }
                 }
-                Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?
+                Chain::open(cfg, store).map_err(restore_error)?
             }
-            Err(e) => return Err(format!("restore state (delete the data dir to resync): {e}")),
+            Err(e) => return Err(restore_error(e)),
         };
         install_verifier(&chain, &data, true);
         let archive = Arc::new(FinalityArchive::new(chain.store()));
@@ -3900,6 +3911,69 @@ fn print_blocks(v: &Value) {
 
 #[cfg(test)]
 mod tests {
+    std::thread_local! {
+        pub(super) static RESTORE_DISK_TEST_STORE: std::cell::RefCell<Option<aether_node::store::Store>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[test]
+    fn restore_disk_failure_exits_with_storage_code() {
+        const CHILD: &str = "AETHER_TEST_RESTORE_DISK_CHILD";
+        if let Some(data) = std::env::var_os(CHILD) {
+            use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+            let data = std::path::PathBuf::from(data);
+            let full = Arc::new(AtomicBool::new(false));
+            let fault = full.clone();
+            let store = aether_node::store::Store::open_with(&data.join("state.redb"), Arc::new(move |path| {
+                let fault = fault.clone();
+                aether_node::store::open_on_a_full_disk(path, Arc::new(move || fault.load(Ordering::Acquire)))
+            })).expect("open the store before filling the disk");
+            full.store(true, Ordering::Release);
+            RESTORE_DISK_TEST_STORE.with(|slot| *slot.borrow_mut() = Some(store));
+            let result = super::run_follow(
+                None, vec!["http://127.0.0.1:1".into()], data.to_str().unwrap().into(), 0, 4,
+                None, None, false, None, true,
+                super::HistoryArgs {
+                    history: Some("archive".into()), retain_days: aether_node::prune::DEFAULT_RETAIN_DAYS,
+                    drop_era_files: false, max_shards: aether_node::shards::DEFAULT_MAX_SHARDS,
+                },
+                super::ResourceArgs { min_free_disk: Some("0".into()), ..Default::default() },
+                None, None, data.join("wallet-node-key"),
+            );
+            // The same fallback main uses when follower startup returns an error.
+            if let Err(error) = result {
+                eprintln!("error: {error}");
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let data = workspace.join("tmp").join(format!("restore-disk-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&data).unwrap();
+        let log = std::fs::File::create(data.join("node.log")).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::restore_disk_failure_exits_with_storage_code", "--nocapture"])
+            .env(CHILD, &data)
+            .stdout(log.try_clone().unwrap()).stderr(log).spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() { break status; }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("restore fixture never exited: {}", std::fs::read_to_string(data.join("node.log")).unwrap_or_default());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let log = std::fs::read_to_string(data.join("node.log")).unwrap();
+        assert!(data.join("state.redb").is_file(), "a disk failure preserves the database");
+        assert!(!std::fs::read_dir(&data).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with("corrupt-")),
+            "a disk failure must not quarantine the database");
+        assert_eq!(status.code(), Some(aether_node::store::EXIT_STORAGE), "restore disk failure must exit with the storage code: {log}");
+        assert!(log.contains("No space left on device"), "the fixture must exercise restore ENOSPC: {log}");
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
     #[cfg(all(feature = "test-seam", debug_assertions))]
     #[test]
     fn fixture_key_volume_allowance_is_exact_and_confined_to_workspace_tmp() {

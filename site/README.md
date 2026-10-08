@@ -51,7 +51,17 @@ python3 -m http.server -d site                  # 미리보기 http://localhost:
   - 창 안은 앱과 같은 Apple 시스템 글꼴(SF Pro, Apple SD Gothic Neo)을 쓴다.
 - **모션:** `prefers-reduced-motion: no-preference`일 때만 켜진다.
   - 해가 떠오르고, 햇살이 나타나고, 물결이 천천히 흐르고, 창이 떠오르고, 상단 점이 깜박인다.
-- **외부 요청:** 없다 (CDN·분석·쿠키 0).
+- **실시간 지구본:** `#live-network`의 “지금 동해를 돌리는 Mac” 섹션은 홈 릴레이의 대륙별 연결 수를 보여 준다.
+  - `live-network.json`의 `rpc`(기본 공개 게이트웨이)에서 `aether_presence`만 10초마다 읽는다. 기존 섹션에는 라이브 RPC 위젯이 없었다.
+  - 캡션은 “이 노드가 보고 있는 Mac들”이다. 정확한 위치, IP, 노드 ID, 개별 노드 목록을 읽거나 표시하지 않는다.
+  - 국가는 직접 동의한 Mac이 3대 이상일 때 목록에만 표시한다. 지구본의 점은 항상 대륙 합계이다.
+  - Natural Earth 110m에서 만든 점 지도가 로컬에 포함되어 있다. WebGL 지구본, 가로 드래그, 방향키, 일시정지와 동작 줄이기의 정적인 지도 대체를 지원한다.
+  - 탭이 숨겨지거나 섹션이 화면 밖에 있으면 렌더링과 폴링을 멈춘다. 실패 시 불러오기 실패/마지막 현황을 명시하며, 예시 수로 대체하지 않는다.
+  - 예시 미리보기: `?globe=fixture#live-network` (실제 연결 수가 아님을 표시한다).
+  - 정식 공개 데이터 연결 전 `docs/design/38-live-globe.md`의 집계 전용 RPC 계약과 서버의 k=3 필터를 반드시 맞춰야 한다.
+  - 공유 원본: `apps/explorer/live-globe/`. 수정 후 루트에서 `node scripts/sync-live-globe.mjs`; 체크는 `--check`. 서빙에는 빌드가 필요 없다.
+- **외부 요청:** 설정된 공개 RPC의 집계 읽기만 있다 (CDN·외부 지도·분석·쿠키 0). 글꼴도 자체 호스팅한다.
+  새 제목의 `돌` 한 글자는 `fonts/hahmlet-globe-subset.woff2`(기존 SIL OFL Hahmlet의 1,408바이트 보충 서브셋)로 제공하여 기존 제목용 서브셋을 변경하지 않았다.
 - **Lighthouse (2026-10-07, 로컬):**
   - 모바일: 성능 98, 접근성 100, 권장사항 100, SEO 100
   - 데스크톱: 성능 100

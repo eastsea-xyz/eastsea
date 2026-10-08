@@ -41,7 +41,8 @@ never a write. Clear the gateway field in Settings to read your node only.
 
 | Page | What it shows |
 |---|---|
-| Home | finalized height (hero), tx rate over the newest 30 blocks, committee (registry candidates + epoch), protocol (with node/scheduled versions and an update pill), mempool, base fee, prover status, Live network (Macs online by role, version, and home-relay continent, refreshed every 10 seconds), latest blocks, chain facts |
+| Home | finalized height (hero), tx rate over the newest 30 blocks, committee (registry candidates + epoch), protocol (with node/scheduled versions and an update pill), mempool, base fee, prover status, Live network (anonymous cohort observations, withheld for groups smaller than three), latest blocks, chain facts |
+| Live network (`#/network`) | privacy-safe continent totals on a draggable WebGL globe, opted-in countries only at k ≥ 3, accessible list, static reduced-motion map; public gateway presence only, separate from account/peer reads |
 | Block | every header field the RPC serves, neighbor links, this node's prover view of the block's proof, the transactions with their receipts (a pruned block shows what the era record still carries) |
 | Transaction | receipt (status, gas, contract creation, output), events decoded as ERC-20 `Transfer`/`Approval` with symbol and amount, raw logs for anything else |
 | Account | balance/nonce/code with a committee-certificate badge (`verified by committee certificate` only when the wallet's own wasm check passed — `js/verify.js`), token detection, latest rewards (`aether_rewards`), ERC-20 transfers to/from the address in the node's log window |
@@ -68,10 +69,14 @@ the bundled `token-sources.json` (kept in sync with `apps/wallet` and
 The wasm and `network.json` (the pinned committees) are build products here;
 without them the account page says `not verified`, never pretends.
 
-Live network is **what this node can see**: signed presence observed within
-180 seconds, separate from consensus and with no chain writes. Regions follow
-home relays and do not identify physical locations. An older node, stale snapshot,
-or unavailable presence read displays `Unavailable`, rather than claiming zero Macs online.
+The **Live network** route polls `aether_presence` at the configured public
+gateway while visible. Presence is an unverified, frozen cohort observation,
+separate from consensus. The privacy producer serves thresholded schema-2
+counts; the integration adapts that aggregate contract to the globe. Missing
+geography and quality evidence must remain unavailable, and withheld counts
+must not become zero. Fixture views are explicitly labeled and are never an
+automatic fallback for failed live reads. Shared globe assets are bundled
+locally, without map, tracker or geolocation requests.
 
 ## CORS and the node's endpoint
 
@@ -120,6 +125,21 @@ classifier and resolver, the live presence shape and unavailable states,
 continent breakdowns and ten-second polling, and the JSON-RPC client (injected
 `fetch`, endpoint persistence, error and timeout paths). `test/live.mjs` is a manual smoke test
 in a minimal DOM stub — it is deliberately not part of `npm test`.
+
+Globe tests cover country folding/duplicate buckets, sanitized output, stable
+session jitter, safe request envelopes, bundle drift, local land geometry and
+the 300 KB gzipped JS budget. Real-browser offline smoke (from the repo root):
+
+```bash
+mkdir -p tmp
+# Uses existing Playwright tooling and installed Chrome; never a live node.
+TMPDIR="$(git rev-parse --show-toplevel)/tmp" PLAYWRIGHT_MODULE=/path/to/playwright node scripts/test-live-globe.mjs
+```
+
+The runner intercepts the public RPC with fixtures, verifies both deployments
+in light/dark and mobile, reduced motion, language switching,
+unavailable/empty/stale states, drag/keyboard/pause, 10-second polling and
+hidden-tab idle. Artifacts stay under `tmp/live-globe/`.
 
 ## Layout
 

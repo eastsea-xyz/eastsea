@@ -15,6 +15,7 @@ import { accountView, blockView, errorView, homeView, notFoundView, tokenView, t
 import { detectVerifier } from './verify.js';
 import { h, loading, message } from './dom.js';
 import { pollCurrentPage } from './polling.js';
+import { mountLiveGlobe } from '../live-globe/live-globe.js';
 
 const view = document.getElementById('view');
 const top = document.getElementById('top');
@@ -86,6 +87,7 @@ function showLocalNotice(show) {
 
 /** FailoverNode hands us ({from, to}) whenever the source in use changes. */
 function onSourceChange(n, { from, to } = {}) {
+  if (isNetworkRoute()) return;
   updateSourcePill(n);
   showLocalNotice(from === 'node' && to === 'gateway');
 }
@@ -94,6 +96,9 @@ top.append(
   h('a', { class: 'brand', href: '#/' },
     h('span', { class: 'logo', 'aria-hidden': 'true' }),
     h('span', { class: 'brand-name' }, 'EastSea Explorer')),
+  h('nav', { class: 'explorer-nav', 'aria-label': 'Explorer pages' },
+    h('a', { href: '#/' }, 'Blocks'),
+    h('a', { href: '#/network' }, 'Live network')),
   chainPill,
   sourcePill,
   h('form', {
@@ -148,6 +153,9 @@ foot.append(
     h('em', {}, 'marked on the page'), '; everything else is node-read and unverified. ',
     'No analytics, no external requests, no prices.'),
 );
+const defaultFoot = [...foot.childNodes];
+const searchForm = document.getElementById('search');
+const settings = document.getElementById('settings');
 
 // A storage handle that is null when the browser denies access outright; every
 // user of it already treats null as "keep the defaults".
@@ -156,6 +164,7 @@ const store = (() => { try { return localStorage; } catch { return null; } })();
 // ---- sources, chain pill ----
 
 function connect() {
+  if (isNetworkRoute()) { render(); return; }
   const nodeUrl = loadEndpoint(store);
   const gatewayUrl = loadGateway(store);
   nodeInput.value = nodeUrl;
@@ -191,10 +200,59 @@ const routes = [
 
 // A slow page never overwrites a newer one: only the newest render may paint.
 let renderSeq = 0;
+let liveGlobe = null;
+let nodeViewReady = false;
+let nodeViewBoot = null;
+
+function isNetworkRoute() { return /^#\/network\/?$/.test(location.hash); }
+
+// The globe has a deliberately separate read boundary: no loopback, committee
+// pins, peer identifiers or block details are requested on this route.
+function renderNetwork() {
+  document.documentElement.dataset.page = 'network';
+  settings.remove();
+  searchForm.remove();
+  chainPill.remove();
+  nodeInput.value = '';
+  gatewayInput.value = '';
+  sourcePill.className = 'pill plain';
+  sourcePill.textContent = 'Presence · node view, unverified';
+  sourcePill.title = 'Aggregated counts from the configured public read gateway';
+  notice.replaceChildren();
+  foot.replaceChildren(h('p', { class: 'small muted' },
+    'Counts are one node’s view, not a network census. No analytics or location services.'));
+  const globeRoot = h('div', {});
+  view.replaceChildren(h('section', { class: 'network-page', 'aria-labelledby': 'network-title' },
+    h('h1', { id: 'network-title' }, 'Live network'),
+    h('p', { class: 'network-intro' }, 'Macs keeping EastSea connected, seen a continent at a time.'),
+    globeRoot));
+  const fixture = new URLSearchParams(location.search).get('globe') === 'fixture';
+  liveGlobe = mountLiveGlobe(globeRoot, {
+    endpoint: loadGateway(store), fixture,
+    ...(fixture ? { seed: 'fixture-smoke' } : {}),
+  });
+}
+
+function restoreExplorer() {
+  delete document.documentElement.dataset.page;
+  if (!settings.isConnected) top.insertBefore(settings, themeButton);
+  if (!searchForm.isConnected) top.insertBefore(searchForm, settings);
+  if (!chainPill.isConnected) top.insertBefore(chainPill, sourcePill);
+  nodeInput.value = loadEndpoint(store);
+  gatewayInput.value = loadGateway(store) || '';
+  foot.replaceChildren(...defaultFoot);
+  if (ctx.node) updateSourcePill(ctx.node);
+}
 
 async function render() {
   ctx.pollNow = false;
   const mine = ++renderSeq;
+  liveGlobe?.destroy();
+  liveGlobe = null;
+  if (isNetworkRoute()) { renderNetwork(); return; }
+  restoreExplorer();
+  if (!nodeViewReady) { void bootNodeView(); return; }
+  if (!ctx.node) { connect(); return; }
   const hash = location.hash || '#/';
   view.replaceChildren(loading());
   let out;
@@ -245,12 +303,18 @@ function cycleTheme() {
 // ---- boot ----
 
 applyTheme();
-// Sources first, so the first chain pill and origin scan already have them.
-try {
-  ctx.sourcesRaw = await (await fetch('token-sources.json')).json();
-} catch { /* no sources: origin falls back to "not in any list" */ }
-// The verifier before the first render: the app's native bridge inside the
-// Explore tab, else the wasm module when this deployment carries it, else
-// none — pages then badge what was actually verified.
-ctx.verifier = await detectVerifier(window);
-connect();
+function bootNodeView() {
+  if (nodeViewBoot) return nodeViewBoot;
+  view.replaceChildren(loading());
+  nodeViewBoot = (async () => {
+    try {
+      ctx.sourcesRaw = await (await fetch('token-sources.json')).json();
+    } catch { /* token origins remain unavailable */ }
+    ctx.verifier = await detectVerifier(window);
+    nodeViewReady = true;
+    if (!isNetworkRoute()) connect();
+  })();
+  return nodeViewBoot;
+}
+if (isNetworkRoute()) render();
+else void bootNodeView();

@@ -43,6 +43,8 @@ body {
 .brand { display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--text); font-weight: 700; }
 .logo { width: 20px; height: 20px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent-2)); flex: none; }
 .brand-name { white-space: nowrap; }
+.explorer-nav { display: flex; gap: 12px; align-items: center; font-size: 13px; }
+.explorer-nav a { padding: 10px 0; }
 .pill { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
 .pill.good { color: var(--good); }
 .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn) 10%, var(--panel)); }
@@ -94,6 +96,19 @@ a { color: var(--accent); }
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .card > h2 { font-size: 13px; margin: 0; color: var(--muted); font-weight: 600; }
+
+/* The live globe uses the shared EastSea brand without changing older views. */
+:root[data-page="network"] body {
+  --bg: var(--c-bg); --panel: var(--c-surface); --panel-2: var(--c-surface-sunken);
+  --line: var(--c-line); --text: var(--c-text); --muted: var(--c-text-muted);
+  --accent: var(--c-accent); --accent-2: var(--c-accent);
+}
+html[data-page="network"] body { background: var(--c-bg); }
+html[data-page="network"] .logo { background: var(--c-gold); }
+.network-page { padding: clamp(24px, 4vw, 48px) 0 20px; }
+.network-page h1 { margin: 0; font-size: clamp(32px, 5vw, 48px); letter-spacing: -.025em; font-weight: 500; }
+.network-intro { margin: 8px 0 28px; color: var(--c-text-muted); font-size: 16px; }
+@media (max-width: 680px) { html[data-page="network"] #top { gap: 6px 16px; } }
 
 .kv { display: grid; grid-template-columns: 150px 1fr; gap: 6px 12px; font-size: 13px; }
 .kv > :nth-child(odd) { color: var(--muted); }

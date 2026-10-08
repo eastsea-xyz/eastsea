@@ -399,20 +399,22 @@ impl Upstream {
         match self.raw() {
             Self::Http(_) => {
                 let mut seen = HashSet::new();
-                let urls: Vec<_> = self.http_urls().into_iter().filter(|u| http_source(u).is_some_and(|k| seen.insert(k))).collect();
-                let replies: Vec<_> = futures::stream::iter(urls.iter().map(|url| async move {
-                    let status = tokio::time::timeout(HEAD_RESPONSE, http_call(url, "aether_status", &json!([]))).await.ok()?.ok()?;
+                let urls: Vec<String> = self.http_urls().into_iter().filter(|u| http_source(u).is_some_and(|k| seen.insert(k))).map(str::to_owned).collect();
+                // Own probe inputs so this future stays Send when the follower
+                // runs in a spawned task, without borrowing iterator items.
+                let replies: Vec<_> = futures::stream::iter(urls.clone().into_iter().map(|url| async move {
+                    let status = tokio::time::timeout(HEAD_RESPONSE, http_call(&url, "aether_status", &json!([]))).await.ok()?.ok()?;
                     let claimed = status["height"].as_u64()?;
                     drop(status);
-                    let value = tokio::time::timeout(HEAD_RESPONSE, http_call(url, "aether_getFinalized", &json!([claimed]))).await.ok()?.ok()?;
-                    Some(HeadReply {source:http_source(url)?, path:aether_net::RpcPath::Unknown, claimed, value})
+                    let value = tokio::time::timeout(HEAD_RESPONSE, http_call(&url, "aether_getFinalized", &json!([claimed]))).await.ok()?.ok()?;
+                    Some(HeadReply {source:http_source(&url)?, path:aether_net::RpcPath::Unknown, claimed, value})
                 })).buffer_unordered(8).filter_map(|v| async move {v}).collect().await;
                 for reply in replies { retain_verified_head(set, reply, &mut heads, &mut peers); }
                 let candidate = heads.first().map(|(_, b, _, _)| b.height.get());
                 if let Some(claimed) = candidate {
-                    let replies: Vec<_> = futures::stream::iter(urls.iter().map(|url| async move {
-                        let value = tokio::time::timeout(HEAD_RESPONSE, http_call(url, "aether_getFinalized", &json!([claimed]))).await.ok()?.ok()?;
-                        Some(HeadReply {source:http_source(url)?, path:aether_net::RpcPath::Unknown, claimed, value})
+                    let replies: Vec<_> = futures::stream::iter(urls.into_iter().map(|url| async move {
+                        let value = tokio::time::timeout(HEAD_RESPONSE, http_call(&url, "aether_getFinalized", &json!([claimed]))).await.ok()?.ok()?;
+                        Some(HeadReply {source:http_source(&url)?, path:aether_net::RpcPath::Unknown, claimed, value})
                     })).buffer_unordered(8).filter_map(|v| async move {v}).collect().await;
                     for reply in replies { retain_verified_head(set, reply, &mut heads, &mut peers); }
                 }
@@ -423,9 +425,9 @@ impl Upstream {
                     // Discard unrelated status payload before certificate I/O.
                     source.value = json!({"height": source.value["height"].as_u64()});
                 }
-                let replies: Vec<_> = futures::stream::iter(statuses.iter().map(|source| async move {
+                let replies: Vec<_> = futures::stream::iter(statuses.into_iter().map(|source| async move {
                     let claimed = source.value["height"].as_u64()?;
-                    let o = c.observe_source(source, "aether_getFinalized", json!([claimed])).await?;
+                    let o = c.observe_source(&source, "aether_getFinalized", json!([claimed])).await?;
                     Some(HeadReply {source:o.peer.to_string(), path:o.path, claimed, value:o.value})
                 })).buffer_unordered(16).filter_map(|v| async move {v}).collect().await;
                 for reply in replies { retain_verified_head(set, reply, &mut heads, &mut peers); }
@@ -1906,6 +1908,14 @@ pub async fn forward(upstream: std::sync::Arc<Upstream>, mut rx: tokio::sync::mp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn guarded_head_checks_can_run_in_a_spawned_task() {
+        let upstream = Upstream::Http(Vec::new()).guarded(2).unwrap();
+        let set = ValidatorSet::devnet(4);
+        let result = tokio::spawn(async move { upstream.trusted_height(&set, 0).await }).await.unwrap();
+        assert_eq!(result, Err("no corroborated certified head: no source supplied a valid certificate".into()));
+    }
 
     #[tokio::test]
     async fn rel24_an_ahead_but_stale_source_cannot_hide_the_newer_head() {

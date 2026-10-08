@@ -1024,7 +1024,7 @@ fn rel24_follower_rejects_a_stale_path_and_waits_for_two_current_sources() {
         let copy = std::path::Path::new(&copy);
         std::fs::create_dir_all(copy).unwrap();
         std::fs::copy(net.data(0).join("state.redb"), copy.join("state.redb")).unwrap();
-        let store = aether_node::store::Store::open(&copy.join("state.redb")).unwrap();
+        let store = aether_node::store::Store::open_for_maintenance(&copy.join("state.redb")).unwrap();
         for (h, proof) in proofs.iter() {
             store.put_proof(*h, proof.to_string().as_bytes()).unwrap();
         }

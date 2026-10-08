@@ -1372,6 +1372,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
     }
 }
 
+#[cfg(test)]
 fn last_proof_reward(rows: Vec<Value>) -> Value {
     rows.into_iter().rev()
         .find(|r| r["kind"] == "proof")
@@ -1481,7 +1482,7 @@ mod compression_tests {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp").canonicalize().unwrap();
         let path = path.canonicalize().expect("measurement DB copy exists");
         assert!(path.starts_with(&root), "measure only an isolated devnet DB copy under worktree tmp/");
-        let store = Arc::new(crate::store::Store::open(&path).unwrap());
+        let store = Arc::new(crate::store::Store::open_for_maintenance(&path).unwrap());
         let height = store.head().unwrap().expect("copy has a devnet finalized head").0;
         // This fixture asks only for persisted summaries/certificates and
         // the head height. No genesis/state is inferred, served or changed.

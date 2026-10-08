@@ -461,7 +461,7 @@ pub fn meta_digest_with_archive(
 /// Parent metadata authenticated by the finalized head's payload. A restored
 /// checkpoint may not retain its parent yet; no witness is served in that case.
 pub fn upgrade_metadata(g: &Inner) -> Option<Value> {
-    let head = g.recent.back().filter(|b|
+    let head = g.finalized_block.as_ref().filter(|b|
         b.digest() == g.finalized.digest && b.height.get() == g.finalized.height
     )?;
     let parent = g.executed.get(&head.parent)?;
@@ -612,8 +612,19 @@ pub struct Inner {
     pub proof_pool: Vec<aether_light::block::ProofClaim>,
     /// The last finalized blocks (the prover builds its inputs from them).
     recent: std::collections::VecDeque<Block>,
+    /// The full finalized head, including quiet blocks, authenticates the
+    /// parent's metadata independently of the prover's statement window.
+    finalized_block: Option<Block>,
     /// Heights this node's prover already took up.
     attempted: std::collections::BTreeSet<u64>,
+    /// Verified competing proofs are permanent local losses, even if a pool
+    /// entry is subsequently dropped. A sidecar restart must not retry them.
+    lost_proofs: std::collections::BTreeSet<u64>,
+    /// Local proving input retention, independent of consensus validation.
+    prover_window: usize,
+    proof_observers: Vec<std::sync::mpsc::Sender<(u64, Instant)>>,
+    /// The running job may outlive eviction from the scheduling window.
+    proving_height: Option<u64>,
     /// When the proof RPC last started a verification (rate limit).
     last_proof_check: Option<Instant>,
     /// This node's last proposal carrying proofs: (height, block).
@@ -771,7 +782,12 @@ impl Chain {
             verifier: None,
             proof_pool: Vec::new(),
             recent: Default::default(),
+            finalized_block: None,
             attempted: Default::default(),
+            lost_proofs: Default::default(),
+            prover_window: crate::prover_assignment::Config::default().window,
+            proof_observers: Vec::new(),
+            proving_height: None,
             last_proof_check: None,
             proof_proposal: None,
             proof_backoff_until: 0,
@@ -975,6 +991,13 @@ impl Chain {
         let old = g.blocks.insert(height, summary);
         g.caches_bytes = g.caches_bytes.saturating_add(sb).saturating_sub(old.as_ref().map(summary_bytes).unwrap_or(0));
         g.finalized = exec;
+        let mut proven: Vec<_> = g.attempted.iter().copied().chain(g.proving_height)
+            .filter(|h| aether_execution::proofs::prover(&g.finalized.state, *h).is_some()).collect();
+        proven.sort_unstable();
+        proven.dedup();
+        for height in proven {
+            g.notice_proof(height);
+        }
         // The new head's base fee re-sorts the pool between paying and free
         // lanes; keep the quota's count and byte share true to it until the
         // next finalize.
@@ -998,6 +1021,7 @@ impl Chain {
         // Old finalized blocks are no longer provable here (their states are
         // gone); do not let them hold the prover's queue.
         g.recent.clear();
+        g.finalized_block = None;
     }
 
     /// Key rounds only go up: a handoff built on `parent` must carry a round
@@ -1677,35 +1701,68 @@ impl Chain {
         Ok((std::borrow::Cow::Owned(state), payouts))
     }
 
-    /// The newest finalized block nobody proved yet that this node can build a
-    /// prover input for (its parent's state is still in memory); taken once.
-    pub fn provable(&self) -> Option<(Arc<Executed>, Arc<Executed>, Block)> {
+    /// Local assignment over the finalized registry. The consensus proof
+    /// market still accepts any operator's valid proof at any age.
+    pub fn provable_for(
+        &self,
+        prover: Address,
+        config: &crate::prover_assignment::Config,
+        now_ms: u64,
+    ) -> Option<(Arc<Executed>, Arc<Executed>, Block)> {
         let mut g = self.lock();
-        let head = g.finalized.clone();
-        // Oldest first among the recent blocks: none left behind to expire.
-        let pick = g.recent.iter().find_map(|b| {
+        let head = &g.finalized;
+        let operators: Vec<_> = aether_execution::registry::candidates(&head.state)
+            .into_iter().map(|c| c.operator).collect();
+        let open: Vec<_> = g.recent.iter().filter_map(|b| {
             let h = b.height().get();
-            if g.attempted.contains(&h)
+            if g.attempted.contains(&h) || g.lost_proofs.contains(&h)
+                || g.proof_pool.iter().any(|c| c.height == h)
                 || aether_execution::proofs::prover(&head.state, h).is_some()
+                || (h != head.height && aether_execution::proofs::claimable(&head.state, h, head.height + 1).is_err())
                 || !records_statement(&g.cfg, &b.payload()?)
+                || !g.executed.contains_key(&b.digest()) || !g.executed.contains_key(&b.parent)
             {
                 return None;
             }
-            Some((
-                g.executed.get(&b.digest())?.clone(),
-                g.executed.get(&b.parent)?.clone(),
-                b.clone(),
-            ))
-        })?;
-        g.attempted.insert(pick.0.height);
+            Some(crate::prover_assignment::OpenBlock { height: h, timestamp_ms: b.timestamp })
+        }).collect();
+        let height = crate::prover_assignment::select(&open, &operators, prover, now_ms, config)?;
+        let block = g.recent.iter().find(|b| b.height().get() == height)?.clone();
+        let pick = (g.executed.get(&block.digest())?.clone(), g.executed.get(&block.parent)?.clone(), block);
+        g.attempted.insert(height);
         Some(pick)
+    }
+
+    pub fn set_prover_window(&self, window: usize) {
+        self.lock().prover_window = window.clamp(1, crate::prover_assignment::MAX_WINDOW);
+    }
+
+    /// Only verified pool entries or finalized state count as proof sightings.
+    pub fn proof_seen(&self, height: u64) -> bool {
+        let g = self.lock();
+        g.lost_proofs.contains(&height)
+            || g.proof_pool.iter().any(|c| c.height == height)
+            || aether_execution::proofs::prover(&g.finalized.state, height).is_some()
+    }
+
+    pub(crate) fn observe_proofs(&self) -> std::sync::mpsc::Receiver<(u64, Instant)> {
+        let (send, recv) = std::sync::mpsc::channel();
+        self.lock().proof_observers.push(send);
+        recv
+    }
+
+    pub(crate) fn set_proving_height(&self, height: Option<u64>) {
+        self.lock().proving_height = height;
     }
 
     /// A proving attempt at `height` failed for the prover's own sake — its
     /// sidecar died or could not be talked to, not the block — so the height
     /// may be picked again once the sidecar is replaced.
     pub fn retry_proof(&self, height: u64) {
-        self.lock().attempted.remove(&height);
+        let mut g = self.lock();
+        if !g.lost_proofs.contains(&height) {
+            g.attempted.remove(&height);
+        }
     }
 
     /// Inclusion proof of block `height` under the history root of block
@@ -2055,6 +2112,7 @@ impl Chain {
         // Still open after the (slow) check: not proven or expired meanwhile.
         open(&g, claim.height)?;
         if !g.proof_pool.iter().any(|c| c.height == claim.height) {
+            g.notice_proof(claim.height);
             g.proof_pool.push(claim);
         }
         Ok(())
@@ -2950,8 +3008,6 @@ impl Chain {
             keep(&g.store, POOL, &g.pool);
             keep(&g.store, PROPOSAL, &g.proposal);
         }
-        let floor = exec.height.saturating_sub(64);
-        g.executed.retain(|_, e| e.height >= floor);
         for (proven, prover, amount) in &exec.payouts {
             let kind = if *proven == exec.height {
                 "node"
@@ -2977,17 +3033,32 @@ impl Chain {
             g.proof_backoff_until = exec.height + PROOF_BACKOFF;
             g.proof_proposal = None;
         }
-        g.recent.push_back(block.clone());
-        while g.recent.len() > 32 {
+        for claim in &payload.proofs {
+            g.notice_proof(claim.height);
+        }
+        g.finalized_block = Some(block.clone());
+        // Keep W unproven statements, not W heights: quiet blocks must not
+        // evict a job before its grace expires. Pin each retained parent state
+        // as well, even after it leaves the ordinary execution cache.
+        g.recent.retain(|b| aether_execution::proofs::claimable(&exec.state, b.height().get(), exec.height + 1).is_ok());
+        if records_statement(&g.cfg, &payload) {
+            g.recent.push_back(block.clone());
+        }
+        while g.recent.len() > g.prover_window {
             g.recent.pop_front();
         }
+        let pinned: std::collections::HashSet<_> = g.recent.iter().flat_map(|b| [b.digest(), b.parent]).collect();
+        let floor = exec.height.saturating_sub(64);
+        g.executed.retain(|digest, e| e.height >= floor || pinned.contains(digest));
         // Proofs of blocks now proven (or expired) leave the pool.
         let now = exec.height;
         let state = &exec.state;
         g.proof_pool.retain(|c| {
             aether_execution::proofs::claimable(state, c.height, now + 1).is_ok() || c.height == now
         });
-        g.attempted.retain(|h| *h + 64 >= now);
+        let oldest = g.recent.front().map_or(now, |b| b.height().get());
+        g.attempted.retain(|h| *h >= oldest);
+        g.lost_proofs.retain(|h| *h >= oldest);
         // Answers recorded, or of slots whose window closed, leave the pool.
         if !g.beacon_pool.is_empty() {
             use aether_rewards::beacons;
@@ -3248,6 +3319,12 @@ fn first_missing_nonces(pool: &BTreeMap<TxHash, TxEnvelope>, state: &WorldState)
 }
 
 impl Inner {
+    fn notice_proof(&mut self, height: u64) {
+        self.lost_proofs.insert(height);
+        let seen = Instant::now();
+        self.proof_observers.retain(|observer| observer.send((height, seen)).is_ok());
+    }
+
     /// Count `tx`'s nonce in its sender's index (before it enters the pool).
     fn index_nonce(&mut self, tx: &TxEnvelope) {
         *self.nonces_by_sender.entry(tx.header.sender).or_default().entry(tx.header.nonce).or_default() += 1;
@@ -4171,6 +4248,52 @@ mod pool_tests {
             "the proof would state what the chain recorded"
         );
         assert!(matches!(crate::prover::next_job(&chain, prover), Ok(None)), "each block is taken once");
+    }
+
+    #[test]
+    fn quiet_heads_keep_their_authenticated_parent_metadata() {
+        for (protocol, history_v2) in [(1, false), (3, true)] {
+            let mut config = cfg(vec![]);
+            config.protocol = protocol;
+            config.history_v2 = history_v2;
+            let (chain, genesis) = Chain::new(config);
+            let mut parent = chain.lock().finalized.clone();
+            let mut last = genesis;
+            for _ in 0..3 {
+                let (block, exec) = build(&chain, &parent, &last, vec![]);
+                chain.finalize(&block).unwrap();
+                assert_eq!(exec.statement, Statement::default());
+                let witness = upgrade_metadata(&chain.lock()).expect("quiet finalized heads still authenticate their parent's metadata");
+                assert_eq!(witness["height"], parent.height);
+                let encoded = aether_light::from_hex(witness["encoded"].as_str().unwrap()).unwrap();
+                assert_eq!(aether_light::chain_meta_digest(&encoded, witness["archive_excess"].as_u64().unwrap()), block.payload().unwrap().parent_meta);
+                (parent, last) = (exec, block);
+            }
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_proof_notifies_a_flight_evicted_from_a_small_window() {
+        let mut config = cfg(vec![]);
+        config.protocol = 2;
+        let (chain, genesis) = Chain::new(config);
+        chain.set_prover_window(1);
+        let parent = chain.lock().finalized.clone();
+        let (first, parent) = build(&chain, &parent, &genesis, vec![]);
+        chain.finalize(&first).unwrap();
+        chain.lock().attempted.insert(1);
+        chain.set_proving_height(Some(1));
+        let notices = chain.observe_proofs();
+        let (second, _) = build(&chain, &parent, &first, vec![]);
+        chain.finalize(&second).unwrap();
+        assert!(!chain.lock().attempted.contains(&1), "the pending window already evicted this job");
+        // Adopt's input is certified by its caller. Here construct the paid
+        // proof marker directly to isolate the notification bookkeeping.
+        let mut imported = (*chain.lock().finalized).clone();
+        aether_execution::proofs::pay(&mut imported.state, 1, 3, Address::repeat_byte(0x88)).unwrap();
+        let summary = chain.lock().blocks[&2].clone();
+        chain.adopt(Arc::new(imported), summary);
+        assert_eq!(notices.recv_timeout(std::time::Duration::from_secs(1)).unwrap().0, 1);
     }
 
     #[test]

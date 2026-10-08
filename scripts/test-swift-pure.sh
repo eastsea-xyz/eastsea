@@ -3,8 +3,14 @@
 # A new Tests/<name> directory must be added to the table below, or scripts/verify.sh will not run it.
 # The Aether 0.6.7 bridge (apps/bridge) has its own Sources/Tests: the `bridge` lines at the end.
 cd "$(dirname "$0")/.."
+mkdir -p tmp
+task_root=$(pwd -P)
+export TMPDIR="$task_root/tmp"
+compile_gate="$HOME/.claude/playbooks/aether-team/wait-compile.sh"
+[ -x "$compile_gate" ] || { echo "FAIL compile gate is missing: $compile_gate" >&2; exit 1; }
 W=apps/wallet/Sources; T=apps/wallet/Tests; bad=0
 run() { n=$1; shift; files=(); for f in "$@"; do files+=("$W/$f"); done
+  "$compile_gate" || { echo "FAIL $n :: compile gate refused"; bad=$((bad+1)); return; }
   if swiftc -o tmp/sw-$n "${files[@]}" $T/$n/main.swift 2>tmp/sw-$n.err && AETHER_AGENT_TEST_TMP=$PWD/tmp ./tmp/sw-$n > tmp/sw-$n.out 2>&1; then echo "OK   $n"; else echo "FAIL $n :: $(head -c 160 tmp/sw-$n.err | tr '\n' ' ') $(tail -2 tmp/sw-$n.out | tr '\n' ' ')"; bad=$((bad+1)); fi; }
 run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
@@ -45,6 +51,8 @@ run update-channel UpdateChannel.swift
 run update-state Brand.swift DataMigration.swift UpdateTracker.swift
 run update-window UpdateWindow.swift
 run watchdog Brand.swift Clock.swift NodeWatchdog.swift
+run wallet-push WalletPush.swift
+run wallet-push-wiring
 # The agent's payment history (aether-agent): pending context, drops, receipts.
 W=apps/agent/Sources; T=apps/agent/Tests
 run history History.swift AgentPolicy.swift
@@ -54,6 +62,7 @@ run bridge-plan BridgePlan.swift
 # Native identity fixtures need signed task-owned executables and arguments.
 if [ "$(uname -s)" = Darwin ]; then
   for fixture in update-daemon update-listener; do
+    "$compile_gate" || { echo "FAIL $fixture :: compile gate refused"; bad=$((bad+1)); continue; }
     if bash "scripts/test-$fixture.sh" > "tmp/sw-$fixture.out" 2> "tmp/sw-$fixture.err"; then
       echo "OK   $fixture"
     else

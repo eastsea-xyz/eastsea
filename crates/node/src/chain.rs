@@ -537,6 +537,8 @@ fn trim_caches(g: &mut Inner, budget: u64) {
 
 pub struct Inner {
     pub cfg: ChainConfig,
+    /// Node-local bounded delivery; consensus only publishes a height reference.
+    pub push: Arc<crate::rpc_push::Hub>,
     executed: HashMap<Digest, Arc<Executed>>,
     pub finalized: Arc<Executed>,
     pub blocks: BTreeMap<u64, BlockSummary>,
@@ -727,6 +729,7 @@ impl Chain {
         let caches_bytes = blocks.values().map(summary_bytes).sum::<u64>();
         let inner = Inner {
             cfg,
+            push: Arc::new(crate::rpc_push::Hub::default()),
             executed,
             finalized: exec,
             blocks,
@@ -901,6 +904,16 @@ impl Chain {
         self.lock().executed.get(d).cloned()
     }
 
+    /// A shared immutable recent execution for RPC fanout. Never copies a
+    /// block's receipts or state while holding the consensus lock.
+    pub(crate) fn executed_at(&self, height: u64) -> Option<Arc<Executed>> {
+        let g = self.lock();
+        let finalized_hash = &g.blocks.get(&height)?.hash;
+        // The cache also holds speculative forks at this height. Only the
+        // digest in the finalized summary may label subscription receipts.
+        g.executed.values().find(|e| e.height == height && e.digest.to_string() == *finalized_hash).cloned()
+    }
+
     /// The durable store, if any (finality proofs a follower kept).
     pub fn store(&self) -> Option<Arc<Store>> {
         self.lock().store.clone()
@@ -998,6 +1011,7 @@ impl Chain {
         // Old finalized blocks are no longer provable here (their states are
         // gone); do not let them hold the prover's queue.
         g.recent.clear();
+        g.push.publish(height);
     }
 
     /// Key rounds only go up: a handoff built on `parent` must carry a round
@@ -3039,6 +3053,10 @@ impl Chain {
         if let Some(budget) = crate::resources::monitor().map(|m| m.limits.max_memory) {
             trim_caches(&mut g, budget);
         }
+        // Disk and execution succeeded. Registration takes this same lock to
+        // capture its watermark, so replay/live cannot miss a commit. This
+        // bounded synchronous send never waits for a client or builds a proof.
+        g.push.publish(exec.height);
         Ok(())
     }
 }

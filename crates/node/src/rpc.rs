@@ -1,4 +1,4 @@
-//! JSON-RPC 2.0 over HTTP (POST /). Serves the finalized state.
+//! JSON-RPC 2.0 over HTTP (POST /) and WebSocket (GET / or /ws).
 //!
 //! `aether_getAccount` returns an EIP-7864 Merkle proof so clients can verify
 //! balances against the state root instead of trusting this server.
@@ -276,7 +276,9 @@ pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
         .allow_origin(tower_http::cors::Any)
         .allow_methods([axum::http::Method::POST, axum::http::Method::GET, axum::http::Method::OPTIONS])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
-    let mut app = Router::new().route("/", post(handle));
+    let mut app = Router::new()
+        .route("/", post(handle).get(crate::rpc_push::upgrade))
+        .route("/ws", get(crate::rpc_push::upgrade));
     if !public {
         // Era files as plain GETs (roadmap B6): the same bytes `aether_eraChunk`
         // hands out hex-encoded, for torrent webseeds and curl — a node's own

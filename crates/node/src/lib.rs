@@ -31,6 +31,7 @@ pub mod roster;
 pub mod rewards_view;
 pub mod rotation;
 pub mod rpc;
+pub mod rpc_push;
 pub mod shards;
 pub mod shadow;
 pub mod snapshot;

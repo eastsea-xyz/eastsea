@@ -5,7 +5,8 @@
 //! lists get a censored sender's tx into a block.
 
 use serde_json::{json, Value};
-use std::net::TcpListener;
+use std::io::{Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -370,6 +371,574 @@ fn faucet_grant(net: &Net, i: usize, addr: &str) {
         assert!(Instant::now() < end, "the faucet on node {i} would not grant {addr}");
         std::thread::sleep(Duration::from_millis(1_100));
     }
+}
+
+/// A loopback WebSocket client without another test dependency. Keep received
+/// frames buffered across timeout boundaries; notifications can precede the
+/// response to a request on the same socket.
+struct RpcSocket {
+    stream: TcpStream,
+    input: Vec<u8>,
+    pending: Vec<Value>,
+    id: u64,
+    closed: bool,
+}
+
+impl RpcSocket {
+    fn connect(net: &Net, node: usize) -> Self {
+        let mut stream = TcpStream::connect(("127.0.0.1", net.rpc[node])).expect("connect RPC websocket");
+        stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+        let request = format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            net.rpc[node]
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut response = Vec::new();
+        while !response.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).expect("RPC websocket handshake response");
+            response.push(byte[0]);
+            assert!(response.len() <= 16 * 1024, "bounded websocket handshake");
+        }
+        let headers = String::from_utf8(response).unwrap();
+        assert!(headers.starts_with("HTTP/1.1 101 "), "RPC must upgrade to websocket: {headers}");
+        assert!(
+            headers.to_ascii_lowercase().contains("sec-websocket-accept: s3pplmbitxaq9kygzzhzrbk+xoo="),
+            "valid websocket handshake: {headers}"
+        );
+        Self { stream, input: Vec::new(), pending: Vec::new(), id: 0, closed: false }
+    }
+
+    fn receive_buffer(&self, bytes: i32) -> i32 {
+        use std::os::fd::AsRawFd;
+        let result = unsafe {
+            libc::setsockopt(
+                self.stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVBUF,
+                (&bytes as *const i32).cast(), std::mem::size_of_val(&bytes) as libc::socklen_t,
+            )
+        };
+        assert_eq!(result, 0, "set RPC client receive buffer: {}", std::io::Error::last_os_error());
+        let mut actual = 0i32;
+        let mut len = std::mem::size_of_val(&actual) as libc::socklen_t;
+        let result = unsafe {
+            libc::getsockopt(
+                self.stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVBUF,
+                (&mut actual as *mut i32).cast(), &mut len,
+            )
+        };
+        assert_eq!(result, 0, "read RPC client receive buffer: {}", std::io::Error::last_os_error());
+        actual
+    }
+
+    fn frame(&mut self, opcode: u8, payload: &[u8]) {
+        let mut frame = vec![0x80 | opcode];
+        if payload.len() < 126 {
+            frame.push(0x80 | payload.len() as u8);
+        } else if payload.len() <= u16::MAX as usize {
+            frame.push(0x80 | 126);
+            frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        } else {
+            frame.push(0x80 | 127);
+            frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        }
+        let mask = [0x12, 0x34, 0x56, 0x78];
+        frame.extend_from_slice(&mask);
+        frame.extend(payload.iter().enumerate().map(|(i, byte)| byte ^ mask[i % 4]));
+        self.stream.write_all(&frame).expect("write masked websocket frame");
+    }
+
+    fn receive(&mut self, deadline: Instant) -> Option<Value> {
+        loop {
+            if self.input.len() >= 2 {
+                let opcode = self.input[0] & 0x0f;
+                assert_ne!(self.input[0] & 0x80, 0, "server sends complete JSON frames");
+                assert_eq!(self.input[1] & 0x80, 0, "server frames are unmasked");
+                let short_len = self.input[1] & 0x7f;
+                let header = match short_len { 126 => 4, 127 => 10, _ => 2 };
+                if self.input.len() >= header {
+                    let len = match short_len {
+                        126 => u16::from_be_bytes(self.input[2..4].try_into().unwrap()) as usize,
+                        127 => usize::try_from(u64::from_be_bytes(self.input[2..10].try_into().unwrap())).unwrap(),
+                        other => other as usize,
+                    };
+                    assert!(len <= 256 * 1024, "subscription frame exceeds 256 KiB");
+                    if self.input.len() >= header + len {
+                        let payload = self.input[header..header + len].to_vec();
+                        self.input.drain(..header + len);
+                        match opcode {
+                            1 => return Some(serde_json::from_slice(&payload).expect("JSON websocket frame")),
+                            8 => { self.closed = true; return None; }
+                            9 => self.frame(10, &payload),
+                            10 => {},
+                            other => panic!("unexpected server websocket opcode {other}"),
+                        }
+                        continue;
+                    }
+                }
+            }
+            if self.closed || Instant::now() >= deadline { return None; }
+            self.stream.set_read_timeout(Some(deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1)))).unwrap();
+            let mut chunk = [0; 4096];
+            match self.stream.read(&mut chunk) {
+                Ok(0) => { self.closed = true; return None; }
+                Ok(n) => self.input.extend_from_slice(&chunk[..n]),
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => return None,
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted) => {
+                    self.closed = true;
+                    return None;
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
+                Err(e) => panic!("read RPC websocket: {e}"),
+            }
+        }
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Value {
+        self.id += 1;
+        let id = self.id;
+        self.frame(1, &serde_json::to_vec(&json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params})).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let message = self.receive(deadline).expect("websocket RPC response before timeout");
+            if message["id"] == id { return message; }
+            self.pending.push(message);
+            assert!(self.pending.len() <= 1024, "bounded test notification buffer");
+        }
+    }
+
+    fn result(&mut self, method: &str, params: Value) -> Value {
+        let answer = self.request(method, params);
+        assert!(answer.get("error").is_none(), "{method}: {answer}");
+        answer.get("result").cloned().expect("websocket RPC result")
+    }
+
+    fn subscribe(&mut self, method: &str, params: Value) -> String {
+        let result = self.result(method, params);
+        let id = result.as_str().expect("hex subscription identifier");
+        assert!(id.starts_with("0x") && id.len() > 2 && id[2..].bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        id.to_string()
+    }
+
+    fn notification(&mut self, subscription: &str, wait: Duration) -> Option<Value> {
+        let matches = |v: &Value| v["params"]["subscription"].as_str() == Some(subscription);
+        if let Some(i) = self.pending.iter().position(matches) { return Some(self.pending.remove(i)); }
+        let deadline = Instant::now() + wait;
+        while let Some(v) = self.receive(deadline) {
+            if matches(&v) { return Some(v); }
+            self.pending.push(v);
+            assert!(self.pending.len() <= 1024, "bounded test notification buffer");
+        }
+        None
+    }
+
+    fn close(&mut self) {
+        self.frame(8, &1000u16.to_be_bytes());
+        let _ = self.stream.shutdown(Shutdown::Both);
+        self.closed = true;
+    }
+}
+
+impl Drop for RpcSocket {
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
+    }
+}
+
+fn hex_quantity(value: &Value) -> u64 {
+    u64::from_str_radix(value.as_str().expect("hex quantity").strip_prefix("0x").expect("0x prefix"), 16).unwrap()
+}
+
+fn slow_websocket_reader_is_evicted_while_validators_finalize(net: &Net) {
+    const CALLS_PER_BURST: u64 = 12;
+    const BURSTS: u64 = 2;
+    const LOGS_PER_CALL: usize = 4;
+    const DATA_BYTES: usize = 32 * 1024;
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(60);
+    // Four LOG0 instructions reuse the same zeroed 32 KiB memory region.
+    // Gas: 21,000 intrinsic + 4*(375+8*32,768) + 5,120 memory + 24 pushes
+    // = 1,076,220. The 2,000,000 cap leaves room without filling a whole block.
+    let runtime = format!("{}00", "6180006000a0".repeat(LOGS_PER_CALL));
+    let len = runtime.len() / 2;
+    let init = format!("60{len:02x}600c60003960{len:02x}6000f3{runtime}");
+    let out = net.cli(&["deploy", "--rpc", &net.url(1), "--from-dev", "2", "--code", &init]);
+    let emitter = out.lines().find_map(|line| line.strip_prefix("contract: ")).expect("backpressure log emitter").trim().to_string();
+    let deploy_hash = out.split_whitespace().nth(1).expect("deployment transaction hash");
+    wait_receipt(net, 0, deploy_hash, 15);
+    let mut slow = RpcSocket::connect(net, 0);
+    let slow_buffer = slow.receive_buffer(1024);
+    assert!(slow_buffer <= 4096, "tiny slow-reader TCP receive window: {slow_buffer}");
+    let slow_id = slow.subscribe("eth_subscribe", json!(["logs", {"address":emitter}]));
+    let mut fast = RpcSocket::connect(net, 0);
+    fast.receive_buffer(1024 * 1024);
+    let fast_id = fast.subscribe("eth_subscribe", json!(["logs", {"address":emitter}]));
+    let expected_logs = CALLS_PER_BURST as usize * BURSTS as usize * LOGS_PER_CALL;
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut received = std::collections::BTreeMap::<String, usize>::new();
+        ready_tx.send(()).unwrap();
+        for _ in 0..expected_logs {
+            let notification = fast.notification(&fast_id, deadline.saturating_duration_since(Instant::now())).expect("healthy websocket reader receives every emitted log");
+            let log = &notification["params"]["result"];
+            assert_eq!(notification["method"], "eth_subscription");
+            assert!(log.get("kind").is_none(), "healthy reader must not receive a gap: {log}");
+            assert_eq!(log["data"].as_str().unwrap().len(), DATA_BYTES * 2 + 2);
+            assert_eq!(log["removed"], false);
+            let hash = log["transactionHash"].as_str().unwrap().to_string();
+            *received.entry(hash).or_default() += 1;
+        }
+        assert_eq!(fast.result("eth_unsubscribe", json!([fast_id])), true);
+        fast.close();
+        received
+    });
+    ready_rx.recv_timeout(Duration::from_secs(2)).expect("healthy reader active before emissions");
+    let status = net.rpc(0, "aether_status", json!([])).unwrap();
+    let chain_id = status["chain_id"].as_u64().unwrap();
+    let signer = aether_crypto::P256Signer::from_seed(&aether_node::chain::dev_seed(1)).unwrap();
+    let sender = dev_address(1);
+    let nonce = hex_quantity(&net.rpc(0, "eth_getTransactionCount", json!([sender])).unwrap());
+    let call = aether_execution::EvmCall {
+        to: Some(emitter.parse().unwrap()), value: aether_types::U256::ZERO,
+        input: aether_types::Bytes::new(), gas_limit: 2_000_000, delegate: None,
+    };
+    let mut hashes = Vec::new();
+    let mut finalized_height = 0;
+    for burst in 0..BURSTS {
+        let begin = hashes.len();
+        for i in 0..CALLS_PER_BURST {
+            assert!(Instant::now() < deadline, "bounded backpressure submission phase");
+            let tx = aether_execution::sign_call(&signer, chain_id, nonce + burst * CALLS_PER_BURST + i, 100_000_000_000, &call).unwrap();
+            let hash = format!("{:#x}", aether_execution::tx_hash(&tx));
+            let sent = net.rpc(3, "aether_sendTransaction", json!([tx])).expect("submit bounded backpressure call");
+            assert_eq!(sent["hash"], hash);
+            hashes.push(hash);
+        }
+        // Separate the bursts at finality: 48 logs (~3 MiB JSON) fit beneath
+        // the per-height aggregate cap, while both bursts exceed ordinary TCP
+        // send buffers. The slow client performs no reads after its ack.
+        let mut waiting: std::collections::BTreeSet<_> = hashes[begin..].iter().cloned().collect();
+        while !waiting.is_empty() {
+            let mut included = Vec::new();
+            for hash in &waiting {
+                assert!(Instant::now() < deadline, "bounded backpressure finality phase");
+                if let Some(receipt) = net.rpc(0, "aether_getReceipt", json!([hash])) {
+                    if let Some(height) = receipt["height"].as_u64() {
+                        assert_eq!(receipt["receipt"]["success"], true, "log fixture must execute: {receipt}");
+                        assert_eq!(receipt["receipt"]["events"].as_array().unwrap().len(), LOGS_PER_CALL);
+                        finalized_height = finalized_height.max(height);
+                        included.push(hash.clone());
+                    }
+                }
+            }
+            for hash in included { waiting.remove(&hash); }
+            if !waiting.is_empty() { std::thread::sleep(Duration::from_millis(50)); }
+        }
+    }
+    let received = reader.join().expect("healthy websocket reader thread");
+    assert_eq!(received.len(), hashes.len());
+    for hash in hashes { assert_eq!(received.get(&hash), Some(&LOGS_PER_CALL), "healthy reader receives all four logs of {hash}"); }
+
+    // Keep the slow reader paused through the writer's two-second deadline,
+    // and prove all four nodes make progress before draining its receive side.
+    let reader_done = Instant::now();
+    let target = finalized_height + 3;
+    loop {
+        assert!(Instant::now() < deadline, "node consensus continues under client backpressure");
+        let progressed = (0..4).all(|i| net.height(i) >= target);
+        if progressed && reader_done.elapsed() >= Duration::from_secs(3) { break; }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for node in 0..4 {
+        let b = block(net, node, target);
+        assert_eq!(b["hash"], block(net, 0, target)["hash"], "all validators agree while slow reader is paused");
+    }
+    slow.receive_buffer(256 * 1024);
+    let mut gap_seen = false;
+    let mut slow_logs = 0;
+    while let Some(notification) = slow.notification(&slow_id, deadline.saturating_duration_since(Instant::now())) {
+        let result = &notification["params"]["result"];
+        if result["kind"] == "gap" {
+            gap_seen = true;
+            assert!(matches!(result["reason"].as_str(), Some("slow_reader" | "queue_overflow")), "backpressure emits an explicit gap: {result}");
+        } else {
+            slow_logs += 1;
+        }
+    }
+    assert!(slow.closed, "slow TCP client is evicted with a gap or EOF within 60 seconds");
+    assert!(gap_seen || slow_logs < expected_logs, "the slow reader does not silently remain subscribed after missing deliveries");
+    eprintln!("backpressure: {expected_logs} healthy logs, {slow_logs} buffered slow logs, receive_buffer={slow_buffer}, gap={gap_seen}, validators agree at {target}, elapsed={:?}", started.elapsed());
+}
+
+#[test]
+fn four_validators_websocket_heads_unsubscribe_and_subscriber_limits() {
+    let _serial = serial();
+    let net = Net::start_with("rpc-push-heads", vec![vec![]; 4]);
+    for i in 0..4 { net.wait_height(i, 3, 60); }
+    let mut first = RpcSocket::connect(&net, 0);
+    let first_id = first.subscribe("eth_subscribe", json!(["newHeads"]));
+    let mut other = RpcSocket::connect(&net, 0);
+    let other_id = other.subscribe("eth_subscribe", json!(["newHeads"]));
+    aether_node::rpc_push::assert_backpressure_isolated();
+    assert_ne!(first_id, other_id);
+    assert_eq!(other.result("eth_unsubscribe", json!([first_id])), false, "a connection cannot cancel another's subscription");
+    let head = first.notification(&first_id, Duration::from_secs(30)).expect("finalized newHeads notification");
+    assert_eq!(head["method"], "eth_subscription");
+    let height = hex_quantity(&head["params"]["result"]["number"]);
+    let finalized = block(&net, 0, height);
+    assert_eq!(head["params"]["result"]["hash"].as_str().unwrap().trim_start_matches("0x"), finalized["hash"].as_str().unwrap().trim_start_matches("0x"));
+    assert_eq!(head["params"]["result"]["stateRoot"], finalized["state_root"]);
+    let inactive = json!(["logs", {"address":"0x0000000000000000000000000000000000000000"}]);
+    let log_id = first.subscribe("eth_subscribe", inactive.clone());
+    let excess = first.request("eth_subscribe", inactive.clone());
+    assert_eq!(excess["error"]["code"], -32002, "two subscriptions per connection: {excess}");
+    assert_eq!(first.result("eth_unsubscribe", json!([first_id])), true);
+    assert_eq!(first.result("eth_unsubscribe", json!([first_id])), false);
+    first.pending.retain(|v| v["params"]["subscription"] != first_id);
+    assert!(first.notification(&first_id, Duration::from_millis(750)).is_none(), "no notifications after unsubscribe acknowledges");
+    assert!(other.notification(&other_id, Duration::from_secs(30)).is_some(), "other connection stays subscribed");
+    assert_eq!(first.result("eth_unsubscribe", json!([log_id])), true);
+    first.close();
+    assert_eq!(other.result("eth_unsubscribe", json!([other_id])), true);
+    other.close();
+
+    slow_websocket_reader_is_evicted_while_validators_finalize(&net);
+
+    // Quiet log filters make the exact node-wide cap deterministic: no socket
+    // is evicted by a queue filled with notifications while slots are counted.
+    let mut sockets = Vec::new();
+    let mut ids = Vec::new();
+    for _ in 0..64 {
+        let mut socket = RpcSocket::connect(&net, 0);
+        ids.push(socket.subscribe("eth_subscribe", inactive.clone()));
+        socket.subscribe("eth_subscribe", inactive.clone());
+        sockets.push(socket);
+    }
+    let mut overflow = RpcSocket::connect(&net, 0);
+    let refused = overflow.request("eth_subscribe", inactive.clone());
+    assert_eq!(refused["error"]["code"], -32002, "128 subscriptions per node: {refused}");
+    let mut independent = RpcSocket::connect(&net, 1);
+    independent.subscribe("eth_subscribe", inactive.clone());
+    assert_eq!(sockets[0].result("eth_unsubscribe", json!([ids[0]])), true);
+    overflow.subscribe("eth_subscribe", inactive.clone());
+    sockets[0].close();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let reply = overflow.request("eth_subscribe", inactive.clone());
+        if reply.get("result").is_some() { break; }
+        assert_eq!(reply["error"]["code"], -32002, "{reply}");
+        assert!(Instant::now() < deadline, "closing a connection must release its remaining subscription");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let next = net.height(0) + 2;
+    for i in 0..4 { net.wait_height(i, next, 30); }
+    assert_agree(&net, &[0, 1, 2, 3], next);
+}
+
+#[test]
+fn four_validators_websocket_logs_match_filters_and_finalized_receipts() {
+    let _serial = serial();
+    let net = Net::start_with("rpc-push-logs", vec![vec![]; 4]);
+    for i in 0..4 { net.wait_height(i, 3, 60); }
+    // This handshake is also the old-code RED gate, before fixture deployment.
+    let mut socket = RpcSocket::connect(&net, 0);
+    let topic_a = format!("0x{}", "11".repeat(32));
+    let topic_b = format!("0x{}", "22".repeat(32));
+    let noise = format!("0x{}", "aa".repeat(32));
+    let indexed = "bb".repeat(32);
+    // Emit a noise LOG2 first, then LOG2(calldata[0], calldata[32]). This makes
+    // the matched log's block index independent of its filtered result index.
+    let runtime = format!("6020357f{}60006000a260203560003560006000a200", "aa".repeat(32));
+    let len = runtime.len() / 2;
+    let init = format!("60{len:02x}600c60003960{len:02x}6000f3{runtime}");
+    let deploy = |dev: &str| {
+        let out = net.cli(&["deploy", "--rpc", &net.url(1), "--from-dev", dev, "--code", &init]);
+        out.lines().find_map(|l| l.strip_prefix("contract: ")).expect("log emitter deployed").trim().to_string()
+    };
+    let emitter = deploy("2");
+    let other_emitter = deploy("3");
+    net.wait_height(0, net.height(1), 30);
+    let filter = json!({"address":[emitter], "topics":[[topic_a, topic_b], null]});
+    let filtered = socket.subscribe("eth_subscribe", json!(["logs", filter]));
+    let noisy = socket.subscribe("eth_subscribe", json!(["logs", {"address":emitter, "topics":[noise]}]));
+    let mut excluded = RpcSocket::connect(&net, 0);
+    let absent = excluded.subscribe("eth_subscribe", json!(["logs", {"address":"0x0000000000000000000000000000000000000000"}]));
+    let from = net.height(0) + 1;
+    let mut matching = Vec::new();
+    let mut all_hashes = Vec::new();
+    for (address, topic, expected) in [(&emitter, &topic_a, true), (&emitter, &topic_b, true), (&emitter, &format!("0x{}", "99".repeat(32)), false), (&other_emitter, &topic_a, false)] {
+        let data = format!("{}{indexed}", topic.trim_start_matches("0x"));
+        let out = net.cli(&["call", "--rpc", &net.url(3), "--from-dev", "4", "--to", address, "--data", &data, "--wait"]);
+        assert!(out.contains("success=true"), "{out}");
+        let hash = out.split_whitespace().nth(1).expect("call transaction hash").to_string();
+        let receipt = wait_receipt(&net, 0, &hash, 30);
+        assert_eq!(receipt["receipt"]["events"].as_array().unwrap().len(), 2);
+        if expected { matching.push((hash.clone(), receipt)); }
+        all_hashes.push(hash);
+    }
+    let to = net.height(0);
+    let mut query = filter;
+    query["fromBlock"] = json!(format!("0x{from:x}"));
+    query["toBlock"] = json!(format!("0x{to:x}"));
+    let expected = net.rpc(0, "eth_getLogs", json!([query])).unwrap();
+    let expected = expected.as_array().unwrap();
+    assert_eq!(expected.len(), 2, "OR topics match both target logs and exclude another topic/emitter");
+    for (i, (hash, receipt)) in matching.iter().enumerate() {
+        let notification = socket.notification(&filtered, Duration::from_secs(30)).expect("matching finalized log notification");
+        assert_eq!(notification["method"], "eth_subscription");
+        let log = &notification["params"]["result"];
+        assert_eq!(log, &expected[i], "subscription and historical log RPC agree");
+        assert_eq!(log["transactionHash"], *hash);
+        assert_eq!(hex_quantity(&log["blockNumber"]), receipt["height"].as_u64().unwrap());
+        let b = block(&net, 0, receipt["height"].as_u64().unwrap());
+        let tx_index = b["txs"].as_array().unwrap().iter().position(|tx| tx == hash).unwrap() as u64;
+        assert_eq!(hex_quantity(&log["transactionIndex"]), tx_index);
+        assert_eq!(log["logIndex"], "0x1", "noise log consumes block log index zero");
+        assert_eq!(log["removed"], false, "only finalized logs are pushed");
+        assert_eq!(log["topics"][1], format!("0x{indexed}"), "null positional filter preserves the indexed topic");
+        for node in 1..4 { wait_receipt(&net, node, hash, 30); }
+    }
+    for hash in &all_hashes[..3] {
+        let notification = socket.notification(&noisy, Duration::from_secs(30)).expect("independent topic filter");
+        assert_eq!(notification["params"]["result"]["transactionHash"], *hash);
+        assert_eq!(notification["params"]["result"]["logIndex"], "0x0");
+    }
+    assert!(socket.notification(&filtered, Duration::from_millis(750)).is_none(), "excluded topic and emitter do not leak into the subscription");
+    assert!(excluded.notification(&absent, Duration::from_millis(750)).is_none(), "address filter excludes other emitters");
+}
+
+fn has_wallet_topic(notification: &Value, topic: &str) -> bool {
+    notification["params"]["result"]["topics"].as_array().is_some_and(|topics| topics.iter().any(|t| t == topic))
+}
+
+#[test]
+fn four_validators_own_node_wallet_push_replays_and_reports_gap() {
+    let _serial = serial();
+    let net = Net::start_with("rpc-push-wallet", vec![vec![]; 4]);
+    for i in 0..4 { net.wait_height(i, 3, 60); }
+    let mut socket = RpcSocket::connect(&net, 0);
+    let address = dev_address(2);
+    let chain_id = net.rpc(0, "aether_status", json!([])).unwrap()["chain_id"].as_u64().unwrap();
+    let signer = aether_crypto::P256Signer::from_seed(&aether_node::chain::dev_seed(1)).unwrap();
+    let transfer = |nonce, value| {
+        aether_execution::sign_call(&signer, chain_id, nonce, 100_000_000_000, &aether_execution::EvmCall {
+            to: Some(address.parse().unwrap()), value: aether_types::U256::from(value),
+            input: aether_types::Bytes::new(), gas_limit: 21_000, delegate: None,
+        }).unwrap()
+    };
+    // Know both hashes before subscription, including the transaction that
+    // will finalize while this wallet is disconnected.
+    let tx = transfer(0, 777u64);
+    let offline_tx = transfer(1, 888u64);
+    let hash = format!("{:#x}", aether_execution::tx_hash(&tx));
+    let offline_hash = format!("{:#x}", aether_execution::tx_hash(&offline_tx));
+    let subscription = socket.subscribe("aether_subscribe", json!(["wallet", {"address":address, "transactions":[hash, offline_hash]}]));
+    let initial = socket.notification(&subscription, Duration::from_secs(5)).expect("wallet initial snapshot");
+    assert_eq!(initial["method"], "aether_subscription");
+    assert_eq!(initial["params"]["result"]["kind"], "wallet");
+    for topic in ["head", "balance", "tx_status", "release"] {
+        assert!(has_wallet_topic(&initial, topic), "initial wallet view includes {topic}: {initial}");
+    }
+    let initial_height = initial["params"]["result"]["height"].as_u64().unwrap();
+    let sent = net.rpc(3, "aether_sendTransaction", json!([tx])).expect("submit tracked transfer");
+    assert_eq!(sent["hash"], hash);
+    let receipt = wait_receipt(&net, 0, &hash, 30);
+    assert_eq!(receipt["receipt"]["success"], true);
+    let height = receipt["height"].as_u64().unwrap();
+    assert!(height > initial_height, "subscribed before transaction finality");
+    let mut last = initial_height;
+    loop {
+        let notification = socket.notification(&subscription, Duration::from_secs(30)).expect("live own-node wallet watermark");
+        let current = notification["params"]["result"]["height"].as_u64().unwrap();
+        assert!(current == last || current == last + 1, "every finalized height advances the wallet, including empty blocks");
+        assert!(has_wallet_topic(&notification, "head"));
+        last = current;
+        if current == height {
+            assert!(has_wallet_topic(&notification, "balance"), "recipient balance change is pushed at finality: {notification}");
+            assert!(has_wallet_topic(&notification, "tx_status"), "watched transaction finality is pushed: {notification}");
+            break;
+        }
+        assert!(current < height, "must not skip the finalized transfer height");
+    }
+
+    // Legacy devnet release notices already carry the committee threshold
+    // signature. Announce one far beyond this test's lifetime, so no protocol
+    // transition or update installer is triggered by the fixture.
+    let (_, sharing, shares) = aether_light::devnet_threshold(4);
+    let upgrade = aether_node::upgrade::Upgrade {
+        chain_id, protocol: 2, activate_at: net.height(0) + aether_node::upgrade::MAINNET_NOTICE_BLOCKS + 10_000, emergency: false,
+        releases: vec![aether_node::upgrade::Release {
+            platform: "macos-arm64-dmg".to_string(), version: "0.0.0-rpc-push-fixture".to_string(),
+            blake3: "ab".repeat(32), url: "https://example.invalid/rpc-push-fixture.dmg".to_string(),
+        }],
+        notes: "isolated wallet push integration fixture".to_string(), registrar: None,
+    };
+    let partials = shares.iter().take(3).map(|(_, share)| aether_node::upgrade::sign_partial(&upgrade, share)).collect::<Vec<_>>();
+    let signed = aether_node::upgrade::combine(&sharing, &partials).unwrap();
+    let signed_bytes = serde_json::to_vec(&signed).unwrap();
+    for node in 0..4 {
+        let dir = net.data(node).join("upgrades");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rpc-push-fixture.json"), &signed_bytes).unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let notification = socket.notification(&subscription, deadline.saturating_duration_since(Instant::now())).expect("finalized release notice is pushed");
+        let current = notification["params"]["result"]["height"].as_u64().unwrap();
+        assert!(current == last || current == last + 1, "release notice stream has complete finalized head watermarks");
+        if current > height {
+            assert!(!has_wallet_topic(&notification, "balance"), "unchanged balances must not trigger repeated wallet refreshes");
+            assert!(!has_wallet_topic(&notification, "tx_status"), "unchanged watched receipts must not trigger repeated wallet refreshes");
+        }
+        last = current;
+        if has_wallet_topic(&notification, "release") {
+            let status = net.rpc(0, "aether_status", json!([])).unwrap();
+            assert!(status["upcoming_upgrades"].as_array().unwrap().iter().any(|notice| notice == &json!(signed)), "release hint comes from a finalized committee-signed notice: {status}");
+            break;
+        }
+    }
+    socket.close();
+    net.rpc(2, "aether_sendTransaction", json!([offline_tx])).expect("transfer while wallet disconnected");
+    let offline_receipt = wait_receipt(&net, 0, &offline_hash, 30);
+    assert_eq!(offline_receipt["receipt"]["success"], true);
+    let offline_height = offline_receipt["height"].as_u64().unwrap();
+    net.wait_height(0, offline_height + 2, 30);
+    let watermark = net.height(0);
+    let mut resumed = RpcSocket::connect(&net, 0);
+    let resumed_id = resumed.subscribe("aether_subscribe", json!(["wallet", {"address":address, "transactions":[hash, offline_hash], "after":last}]));
+    let mut received = std::collections::BTreeSet::new();
+    let mut previous = last;
+    let mut offline_hint = false;
+    loop {
+        let notification = resumed.notification(&resumed_id, Duration::from_secs(30)).expect("bounded reconnect replay");
+        assert_eq!(notification["params"]["result"]["kind"], "wallet", "retained history resumes without a gap: {notification}");
+        let current = notification["params"]["result"]["height"].as_u64().unwrap();
+        assert!(current >= previous, "replay stays ordered across initial snapshot and live registration");
+        assert!(current >= last, "a durable cursor is never rolled backwards");
+        previous = current;
+        received.insert(current);
+        if current == offline_height {
+            offline_hint |= has_wallet_topic(&notification, "balance") && has_wallet_topic(&notification, "tx_status");
+        }
+        if current >= watermark { break; }
+    }
+    for expected in last + 1..=watermark {
+        assert!(received.contains(&expected), "no replay-to-live height gap at {expected}");
+    }
+    assert!(offline_hint, "offline transaction is present in the own-node catch-up view");
+    assert_eq!(resumed.result("eth_unsubscribe", json!([resumed_id])), true);
+    resumed.close();
+
+    // A cursor outside the node's retained finalized history cannot look like
+    // an empty inbox. The explicit gap is followed by stream termination.
+    let mut gap_socket = RpcSocket::connect(&net, 0);
+    let gap_id = gap_socket.subscribe("aether_subscribe", json!(["wallet", {"address":address, "transactions":[], "after":u64::MAX}]));
+    let gap = gap_socket.notification(&gap_id, Duration::from_secs(5)).expect("explicit history-unavailable gap");
+    assert_eq!(gap["params"]["result"]["kind"], "gap");
+    assert_eq!(gap["params"]["result"]["reason"], "history_unavailable");
+    assert!(gap_socket.receive(Instant::now() + Duration::from_secs(5)).is_none());
+    assert!(gap_socket.closed, "gap terminates the stream");
+    assert_agree(&net, &[0, 1, 2, 3], offline_height);
 }
 
 /// Every validator leaves dev 3 out of its own ordering, and validator 1 also

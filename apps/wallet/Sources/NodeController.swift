@@ -1414,6 +1414,10 @@ final class NodeController: ObservableObject {
         return (rows, total)
     }
 
+    /// Release/upgrade hints and disconnected-stream fallback wake discovery;
+    /// ordinary node health polling retains only its existing safety checks.
+    func walletReleaseNotice() { refreshUpgrade() }
+
     private func refreshUpgrade() {
         guard !upgradeAsked else { return }
         let port = Self.port
@@ -1464,7 +1468,6 @@ final class NodeController: ObservableObject {
         applyDuty()
         refreshProver()
         refreshHistoryKept()
-        refreshUpgrade()
         refreshDisk()
         guard !checkInFlight else { return }
         checkInFlight = true

@@ -98,7 +98,7 @@ struct UpdateTracker {
     private(set) var state: State = .idle
     /// The item this cycle is about (version·build·signature·URL, as the
     /// release gate identifies it), persisted with the state.
-    private var itemKey: String?
+    private(set) var itemKey: String?
     /// The item that must not be retried: a gate refusal, or an install that
     /// already failed three times.
     private var blockedKey: String?

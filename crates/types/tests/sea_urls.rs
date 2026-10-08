@@ -10,7 +10,9 @@ fn result(input: &str, operation: &str, chain_id: u64) -> Value {
                 value["kind"] = json!("name");
                 value
             }
-            Ok(BrowserInput::Action { host, raw }) => json!({"kind":"action","host":host,"raw":raw}),
+            Ok(BrowserInput::Action { host, raw }) => {
+                json!({"kind":"action","host":host,"raw":raw})
+            }
             Ok(BrowserInput::Web(url)) => json!({"kind":"web","url":url}),
             Err(error) => json!({"error":error.as_str()}),
         }
@@ -29,23 +31,39 @@ fn result(input: &str, operation: &str, chain_id: u64) -> Value {
 
 #[test]
 fn shared_sea_url_golden_contract() {
-    let fixture: Value = serde_json::from_str(include_str!("../../../tests/fixtures/sea-urls.json")).unwrap();
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../../tests/fixtures/sea-urls.json")).unwrap();
     for row in fixture["cases"].as_array().unwrap() {
         let input = row["input"].as_str().unwrap();
         assert_eq!(
-            result(input, row["operation"].as_str().unwrap(), row["chainID"].as_u64().unwrap()),
+            result(
+                input,
+                row["operation"].as_str().unwrap(),
+                row["chainID"].as_u64().unwrap()
+            ),
             row["expected"],
-            "{}: {input:?}", row["id"]
+            "{}: {input:?}",
+            row["id"]
         );
-        if let https = row["suggestedHTTPS"].as_str() {
-            assert_eq!(suggested_https(input).as_deref(), Some(https), "{} HTTPS offer", row["id"]);
+        if let Some(https) = row["suggestedHTTPS"].as_str() {
+            assert_eq!(
+                suggested_https(input).as_deref(),
+                Some(https),
+                "{} HTTPS offer",
+                row["id"]
+            );
         }
     }
 }
 
 #[test]
 fn https_offer_never_reinterprets_an_invalid_authority() {
-    for input in ["sea://user@harbor.com", "sea://harbor.com:443", "sea://harbor.com\\evil", "sea://harbor.com/#pay"] {
+    for input in [
+        "sea://user@harbor.com",
+        "sea://harbor.com:443",
+        "sea://harbor.com\\evil",
+        "sea://harbor.com/#pay",
+    ] {
         assert_eq!(suggested_https(input), None, "{input}");
     }
 }

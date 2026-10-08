@@ -5,6 +5,7 @@ export const reservedHosts = Object.freeze([
   'send', 'receive', 'sign', 'deploy', 'open',
 ]);
 const actions = new Set(reservedHosts);
+const legacyActions = new Set(['pay', 'call', 'connect', 'tx']);
 
 export function externalNameMessage(language = 'en') {
   const messages = {
@@ -39,6 +40,29 @@ function parts(raw) {
   const tail = end < 0 ? '' : raw.slice(end);
   if (!host || /[@:\[\]\\]/.test(host)) fail('invalidURL');
   return { host, tail };
+}
+
+// URLComponents historically ignored userinfo/ports and decoded a legacy
+// action's hostname (or compact path). Preserve only the four old actions;
+// all names and the new sea scheme still use the strict raw authority.
+function legacyActionHost(raw, authority) {
+  let host = raw;
+  if (authority) {
+    host = raw.split(/[/?#]/, 1)[0];
+    if (/%(?![0-9a-fA-F]{2})/.test(host)) return null;
+    const fields = host.split('@');
+    if (fields.length > 2) return null;
+    if (fields.length === 2 && !/^[a-zA-Z0-9!$&'()*+,;=:\-._~%]*$/.test(fields[0])) return null;
+    host = fields.at(-1);
+    const colon = host.indexOf(':');
+    if (colon >= 0) {
+      if (!/^[0-9]*$/.test(host.slice(colon + 1))) return null;
+      host = host.slice(0, colon);
+    }
+  }
+  try { host = decodeURIComponent(host); }
+  catch { return null; }
+  return legacyActions.has(host) ? host : null;
 }
 
 function nameLink(raw, chainID) {
@@ -80,11 +104,14 @@ export function parseSeaURL(raw, chainID = 1) {
   // Before the rename, URLComponents also accepted aether:pay?… and
   // eastsea:pay?… through its path fallback. Keep those action bytes too.
   if (!body.startsWith('//')) {
-    const host = body.split(/[?#]/, 1)[0];
+    const rawHost = body.split(/[?#]/, 1)[0];
+    const host = scheme === 'sea' ? rawHost : legacyActionHost(rawHost, false) || rawHost;
     if (scheme !== 'sea' && actions.has(host)) return { kind: 'action', host, raw };
     fail('invalidURL');
   }
   const authority = body.slice(2);
+  const legacyHost = scheme === 'sea' ? null : legacyActionHost(authority, true);
+  if (legacyHost) return { kind: 'action', host: legacyHost, raw };
   const { host } = parts(authority);
   if (actions.has(host)) return { kind: 'action', host, raw };
   if (scheme === 'aether') fail('unsupportedScheme');

@@ -11,6 +11,14 @@ interface Vm {
     function expectRevert(bytes calldata) external;
 }
 
+/// Keep the new API behind an interface so these regressions run (and fail)
+/// against the old contract before the implementation is changed.
+interface SeaNameSubdomains {
+    function isValidHostname(string calldata name) external pure returns (bool);
+    function createSubdomain(string calldata name, address a) external;
+    function deleteSubdomain(string calldata name) external;
+}
+
 /// A payer whose receive() calls back into the names contract while its
 /// refund is in flight. `armCall` re-sends an arbitrary raw call (zero
 /// value); `armRegister` registers a second, separately committed name with
@@ -188,6 +196,11 @@ contract EastSeaNamesTest {
 
     /// The independently written grammar reference for the fuzz test.
     function refValid(bytes memory b) private pure returns (bool) {
+        if (b.length >= 4 && b[b.length - 4] == 0x2e && b[b.length - 3] == 0x73 && b[b.length - 2] == 0x65 && b[b.length - 1] == 0x61) {
+            bytes memory labelOnly = new bytes(b.length - 4);
+            for (uint256 i; i < labelOnly.length; i++) labelOnly[i] = b[i];
+            b = labelOnly;
+        }
         if (b.length < 3 || b.length > 32) return false;
         bool charsOk = true;
         for (uint256 i = 0; i < b.length; i++) {
@@ -197,7 +210,14 @@ contract EastSeaNamesTest {
         }
         if (!charsOk) return false;
         if (b[0] == 0x2d || b[b.length - 1] == 0x2d) return false;
-        if (b.length >= 4 && b[2] == 0x2d && b[3] == 0x2d) return false;
+        bytes32 label = keccak256(b);
+        if (
+            label == keccak256("pay") || label == keccak256("call") || label == keccak256("connect")
+                || label == keccak256("tx") || label == keccak256("app") || label == keccak256("follow")
+                || label == keccak256("name") || label == keccak256("wallet") || label == keccak256("settings")
+                || label == keccak256("send") || label == keccak256("receive") || label == keccak256("sign")
+                || label == keccak256("deploy") || label == keccak256("open")
+        ) return false;
         return true;
     }
 
@@ -444,7 +464,7 @@ contract EastSeaNamesTest {
             "abc",
             "007",
             "a-9",
-            "a--b", // double hyphen at 2-3: only positions 3-4 are banned
+            "a--b", // DNS LDH allows interior double hyphens
             "a-b-c",
             "abcdefghijabcdefghijabcdefghij12", // 32 chars
             "ab",
@@ -452,7 +472,7 @@ contract EastSeaNamesTest {
             "-ab",
             "ab-",
             "-a-",
-            "ab--c", // double hyphen at 3-4: the punycode shape
+            "ab--c",
             "xn--pay",
             "xn--",
             "Abc",
@@ -476,8 +496,8 @@ contract EastSeaNamesTest {
             false,
             false,
             false,
-            false,
-            false,
+            true,
+            true,
             false,
             false,
             false,
@@ -498,11 +518,222 @@ contract EastSeaNamesTest {
 
     function test_InvalidNameRejectedAtRegister() public {
         vm.prank(alice);
-        names.commit{value: bond}(commitFor("xn--pay", alice, SALT, address(0)));
+        names.commit{value: bond}(commitFor("pay", alice, SALT, address(0)));
         vm.warp(block.timestamp + names.MIN_COMMIT_AGE());
         vm.prank(alice);
         vm.expectRevert(err(EastSeaNames.InvalidName.selector));
-        names.register{value: 10 ether}("xn--pay", alice, SALT, address(0));
+        names.register{value: 10 ether}("pay", alice, SALT, address(0));
+    }
+
+    function _repeat(bytes1 c, uint256 length) private pure returns (string memory) {
+        bytes memory b = new bytes(length);
+        for (uint256 i; i < length; i++) b[i] = c;
+        return string(b);
+    }
+
+    function _registerHarbor() private returns (bytes32 node) {
+        commitAndAge("harbor", alice, SALT);
+        vm.prank(alice);
+        names.register{value: 0.1 ether - bond}("harbor", alice, SALT, address(0));
+        return names.nodeFor("harbor");
+    }
+
+    function test_DNSHostnameGrammarRules() public view {
+        SeaNameSubdomains sea = SeaNameSubdomains(address(names));
+        string[13] memory accepted = [
+            "harbor.sea", "a.sea", "12.sea", "ab--c.sea", "xn--label.sea", "0.harbor.sea",
+            "a-b.harbor.sea", "pay.harbor.sea", "a.b.harbor.sea", "007.sea", "a--b.sea",
+            "a-b-c.sea", "abcdefghijklmnopqrstuvwxyz123456.sea"
+        ];
+        for (uint256 i; i < accepted.length; i++) assertTrue(sea.isValidHostname(accepted[i]));
+        string[20] memory rejected = [
+            "", "sea", ".sea", "harbor", "Harbor.sea", "harbor.SEA", "harbor.sea.",
+            "-harbor.sea", "harbor-.sea", "a..harbor.sea", "a_b.harbor.sea", "a b.harbor.sea",
+            "harbor.com", "harbor.xyz", "harbor.aeth", "harbor.sea.com", "pay.sea", "wallet.sea",
+            "settings.sea", "sign.sea"
+        ];
+        for (uint256 i; i < rejected.length; i++) assertTrue(!sea.isValidHostname(rejected[i]));
+        assertTrue(sea.isValidHostname(string(abi.encodePacked(_repeat(0x61, 63), ".sea"))));
+        assertTrue(!sea.isValidHostname(string(abi.encodePacked(_repeat(0x61, 64), ".sea"))));
+        assertTrue(sea.isValidHostname(string(abi.encodePacked(_repeat(0x61, 63), ".harbor.sea"))));
+        assertTrue(!sea.isValidHostname(string(abi.encodePacked(_repeat(0x61, 64), ".harbor.sea"))));
+        string memory prefix = string(abi.encodePacked(_repeat(0x61, 63), ".", _repeat(0x62, 63), ".", _repeat(0x63, 63), "."));
+        string memory longest = string(abi.encodePacked(prefix, _repeat(0x64, 50), ".harbor.sea"));
+        assertEq(bytes(longest).length, 253);
+        assertTrue(sea.isValidHostname(longest));
+        assertTrue(!sea.isValidHostname(string(abi.encodePacked(prefix, _repeat(0x64, 51), ".harbor.sea"))));
+    }
+
+    function test_CanonicalSeaNamesKeepBareLabelNodesAndFees() public {
+        assertTrue(names.isValidName("abc.sea"));
+        assertTrue(!names.isValidName("ab.sea"));
+        assertTrue(!names.isValidName("child.abc.sea"));
+        assertTrue(!names.isValidName("abcdefghijklmnopqrstuvwxyz1234567.sea"));
+        assertEq(names.feeFor("abc.sea"), 2 ether);
+        assertEq(names.feeFor("abcd.sea"), 0.5 ether);
+        assertEq(names.feeFor("abcde.sea"), 0.1 ether);
+        assertTrue(names.nodeFor("harbor") == names.nodeFor("harbor.sea"));
+        assertTrue(names.nodeFor("harbor.sea") == keccak256("harbor"));
+        assertTrue(names.nodeFor("child.harbor.sea") == keccak256("child.harbor.sea"));
+
+        commitAndAge("abc.sea", alice, SALT);
+        vm.prank(alice);
+        names.register{value: 2 ether - bond}("abc.sea", alice, SALT, address(0));
+        assertEq(names.ownerOf(names.nodeFor("abc")), alice);
+        assertEq(names.totalBurned(), 2 ether);
+        vm.prank(alice);
+        names.setAddr("abc", bob);
+        assertEq(names.addrOf(names.nodeFor("abc.sea")), bob);
+        commitAndAge("abc", bob, SALT);
+        vm.prank(bob);
+        vm.expectRevert(err(EastSeaNames.NameTaken.selector));
+        names.register{value: 2 ether - bond}("abc", bob, SALT, address(0));
+    }
+
+    function test_ReservedActionHostsCannotBeRegistered() public view {
+        string[14] memory reserved = ["pay", "call", "connect", "tx", "app", "follow", "name", "wallet", "settings", "send", "receive", "sign", "deploy", "open"];
+        for (uint256 i; i < reserved.length; i++) {
+            assertTrue(!names.isValidName(reserved[i]));
+            assertTrue(!names.isValidName(string(abi.encodePacked(reserved[i], ".sea"))));
+        }
+    }
+
+    function test_SubdomainCreateResolveDeleteIsFreeAndHierarchical() public {
+        _registerHarbor();
+        SeaNameSubdomains sea = SeaNameSubdomains(address(names));
+        uint256 burned = names.totalBurned();
+        uint256 before = alice.balance;
+        vm.prank(alice);
+        sea.createSubdomain("a.harbor.sea", bob);
+        vm.prank(alice);
+        sea.createSubdomain("b.a.harbor.sea", carol);
+        bytes32 a = names.nodeFor("a.harbor.sea");
+        bytes32 b = names.nodeFor("b.a.harbor.sea");
+        assertEq(names.addrOf(a), bob);
+        assertEq(names.addrOf(b), carol);
+        assertEq(names.ownerOf(a), alice);
+        assertEq(names.ownerOf(b), alice);
+        assertEq(names.totalBurned(), burned);
+        assertEq(alice.balance, before);
+        assertEq(address(names).balance, 0);
+        vm.prank(alice);
+        names.setText("b.a.harbor.sea", "app", "content-123");
+        assertTrue(keccak256(bytes(names.textOf(b, "app"))) == keccak256("content-123"));
+        vm.prank(alice);
+        sea.deleteSubdomain("a.harbor.sea");
+        assertEq(names.addrOf(a), address(0));
+        assertEq(names.addrOf(b), address(0));
+        assertEq(names.ownerOf(b), address(0));
+        assertTrue(bytes(names.textOf(b, "app")).length == 0);
+        vm.prank(alice);
+        sea.createSubdomain("a.harbor.sea", bob);
+        assertEq(names.addrOf(b), address(0)); // an ancestor recreation cannot resurrect children
+        vm.prank(alice);
+        sea.createSubdomain("b.a.harbor.sea", carol);
+        assertEq(names.addrOf(b), carol);
+        assertTrue(bytes(names.textOf(b, "app")).length == 0); // recreation sweeps stale texts
+    }
+
+    function test_SubdomainOnlyRootOwnerAndExistingParent() public {
+        _registerHarbor();
+        SeaNameSubdomains sea = SeaNameSubdomains(address(names));
+        vm.prank(bob);
+        vm.expectRevert(err(EastSeaNames.NotOwner.selector));
+        sea.createSubdomain("a.harbor.sea", bob);
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.Unregistered.selector));
+        sea.createSubdomain("b.a.harbor.sea", bob);
+        vm.prank(alice);
+        sea.createSubdomain("a.harbor.sea", bob);
+        vm.prank(bob);
+        vm.expectRevert(err(EastSeaNames.NotOwner.selector));
+        sea.deleteSubdomain("a.harbor.sea");
+        vm.prank(bob);
+        vm.expectRevert(err(EastSeaNames.NotOwner.selector));
+        names.setAddr("a.harbor.sea", bob);
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.InvalidName.selector));
+        sea.createSubdomain("harbor.sea", alice);
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.InvalidName.selector));
+        sea.createSubdomain("a.harbor.aeth", alice);
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.InvalidName.selector));
+        sea.createSubdomain("a_.harbor.sea", alice);
+    }
+
+    function test_SubdomainExpiryAtParentExpiryAndGraceRenewalCannotResurrect() public {
+        bytes32 root = _registerHarbor();
+        SeaNameSubdomains sea = SeaNameSubdomains(address(names));
+        vm.prank(alice);
+        sea.createSubdomain("a.harbor.sea", bob);
+        bytes32 child = names.nodeFor("a.harbor.sea");
+        uint64 expires = names.expiresOf(root);
+        vm.warp(uint256(expires) - 1);
+        assertEq(names.addrOf(child), bob);
+        vm.warp(expires);
+        assertEq(names.ownerOf(root), alice); // root grace remains for renewal
+        assertEq(names.addrOf(child), address(0));
+        assertEq(names.ownerOf(child), address(0));
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.NotOwner.selector));
+        names.setAddr("a.harbor.sea", carol);
+        vm.prank(alice);
+        names.renew{value: 0.1 ether}("harbor.sea");
+        assertEq(names.addrOf(child), address(0)); // renewal after expiry does not revive old children
+        vm.prank(alice);
+        sea.createSubdomain("a.harbor.sea", carol);
+        assertEq(names.addrOf(child), carol);
+    }
+
+    function test_SubdomainEarlyRenewalExtendsChildrenAndReregistrationSweepsThem() public {
+        bytes32 root = _registerHarbor();
+        SeaNameSubdomains sea = SeaNameSubdomains(address(names));
+        vm.prank(alice);
+        sea.createSubdomain("a.harbor.sea", bob);
+        bytes32 child = names.nodeFor("a.harbor.sea");
+        uint64 expires = names.expiresOf(root);
+        vm.prank(carol);
+        names.renew{value: 0.1 ether}("harbor");
+        vm.warp(expires);
+        assertEq(names.addrOf(child), bob); // uninterrupted renewal preserves live children
+        assertEq(uint256(names.expiresOf(child)), uint256(expires) + 365 days);
+        vm.warp(uint256(names.expiresOf(root)) + names.GRACE_PERIOD());
+        commitAndAge("harbor.sea", carol, SALT);
+        vm.prank(carol);
+        names.register{value: 0.1 ether - bond}("harbor.sea", carol, SALT, address(0));
+        assertEq(names.addrOf(child), address(0));
+        vm.prank(carol);
+        sea.createSubdomain("a.harbor.sea", carol);
+        assertEq(names.ownerOf(child), carol);
+        assertEq(names.addrOf(child), carol);
+    }
+
+    function test_SubdomainTransferInvalidatesOldRecordsAndAuthority() public {
+        _registerHarbor();
+        SeaNameSubdomains sea = SeaNameSubdomains(address(names));
+        vm.prank(alice);
+        sea.createSubdomain("a.harbor.sea", alice);
+        vm.prank(alice);
+        names.setReverse("a.harbor.sea");
+        vm.prank(alice);
+        sea.createSubdomain("b.a.harbor.sea", carol);
+        vm.prank(alice);
+        names.transferPropose("harbor.sea", bob);
+        vm.prank(bob);
+        names.transferAccept("harbor");
+        bytes32 child = names.nodeFor("a.harbor.sea");
+        assertEq(names.addrOf(child), address(0));
+        assertEq(names.pendingOwnerOf(child), address(0));
+        assertTrue(bytes(names.reverseOf(alice)).length == 0);
+        vm.prank(alice);
+        vm.expectRevert(err(EastSeaNames.NotOwner.selector));
+        sea.createSubdomain("a.harbor.sea", alice);
+        vm.prank(bob);
+        sea.createSubdomain("a.harbor.sea", bob);
+        assertEq(names.ownerOf(child), bob);
+        assertEq(names.addrOf(child), bob);
+        assertEq(names.addrOf(names.nodeFor("b.a.harbor.sea")), address(0));
     }
 
     function test_ZeroOwnerRejectedAtRegister() public {

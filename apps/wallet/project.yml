@@ -22,6 +22,10 @@ targets:
       - path: Sources
         excludes: ["**/.omc/**", ".omc/**"]
       - path: Resources
+        excludes: ["LiveGlobe"]
+        buildPhase: resources
+      - path: Resources/LiveGlobe
+        type: folder
         buildPhase: resources
       - Assets.xcassets
       - path: Generated/aether_ffi.swift
@@ -129,6 +133,10 @@ targets:
       - path: Sources
         excludes: ["**/.omc/**", ".omc/**"]
       - path: Resources
+        excludes: ["LiveGlobe"]
+        buildPhase: resources
+      - path: Resources/LiveGlobe
+        type: folder
         buildPhase: resources
       - Assets.xcassets
       - path: Generated/aether_ffi.swift
@@ -184,6 +192,10 @@ targets:
       - path: Sources
         excludes: ["**/.omc/**", ".omc/**", "AetherWalletApp.swift"]
       - path: Resources
+        excludes: ["LiveGlobe"]
+        buildPhase: resources
+      - path: Resources/LiveGlobe
+        type: folder
         buildPhase: resources
       - Assets.xcassets
       - path: Generated/aether_ffi.swift

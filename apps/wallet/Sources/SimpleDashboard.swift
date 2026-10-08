@@ -81,6 +81,9 @@ struct SimpleDashboard: View {
             .onChange(of: model.resendRequest) { _, r in if r != nil { sheet = .send } }
             .onChange(of: model.agentTransactionHash) { _, hash in if hash != nil { page = .security } }
             #if os(macOS)
+            .onAppear { openRequestedNetwork() }
+            .onChange(of: sheet) { _, s in if s == nil { inviteIfReady() } }
+            .onChange(of: model.networkRequested) { _, _ in openRequestedNetwork() }
             // Once the node has caught up and this Mac is not registered, ask once.
             .onChange(of: node.voting) { _, _ in inviteIfReady() }
             .onChange(of: node.state) { _, _ in inviteIfReady() }
@@ -137,6 +140,12 @@ struct SimpleDashboard: View {
     #endif
 
     #if os(macOS)
+    private func openRequestedNetwork() {
+        guard model.networkRequested else { return }
+        page = .network
+        model.networkRequested = false
+    }
+
     private func inviteIfReady() {
         guard !inviteAnswered, acceptedTerms >= Terms.version, !node.needsCountryNotice,
               sheet == nil, node.state == .running,
@@ -589,6 +598,9 @@ struct NetworkPage: View {
 
     var body: some View {
         VStack(spacing: 16) {
+            #if os(macOS)
+            LiveGlobeView()
+            #endif
             ForEach(model.scheduledUpgrades) { upgrade in
                 UpgradeNoticeCard(upgrade: upgrade)
             }

@@ -5,19 +5,21 @@
   --lg-coast: #C9EDFA;
   --lg-quality-start: #7CC4DC;
   --lg-quality-end: #5CCB98;
+  --lg-quality-unknown: #94A4B5;
   --lg-marker-text: #F1F7F8;
   color: var(--c-text);
   font: 400 16px/1.6 var(--font-text, system-ui);
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(260px, .8fr);
-  align-items: center;
-  gap: clamp(24px, 4vw, 64px);
+  grid-template-columns: minmax(0, 1.55fr) minmax(220px, .85fr);
+  align-items: start;
+  gap: 24px clamp(20px, 3vw, 48px);
   width: 100%;
 }
 .live-globe *, .live-globe *::before, .live-globe *::after { box-sizing: border-box; }
 .live-globe [hidden] { display: none !important; }
-.lg-figure { margin: 0; min-width: 0; }
-.lg-stage { position: relative; width: 100%; aspect-ratio: 1; max-height: 580px; }
+.lg-heading { grid-column: 1 / -1; min-width: 0; }
+.lg-figure { position: sticky; top: 16px; align-self: start; margin: 0; min-width: 0; }
+.lg-stage { position: relative; width: min(100%, 580px); aspect-ratio: 1; margin-inline: auto; }
 .lg-canvas { display: block; width: 100%; height: 100%; touch-action: pan-y; cursor: grab; }
 .lg-canvas:active { cursor: grabbing; }
 .lg-canvas[data-renderer="map"] { cursor: default; }
@@ -60,6 +62,7 @@
 .lg-marker-outline { stroke: rgb(201 237 250 / .35); }
 .lg-markers[data-animated="true"] .lg-marker-orb { animation-play-state: running; }
 .lg-marker-label {
+  z-index: 1;
   position: absolute;
   top: 50%;
   left: calc(50% + var(--marker-size, 36px) / 2 + 8px);
@@ -77,9 +80,13 @@
   transform: translateY(-50%);
   pointer-events: none;
 }
-.lg-marker[data-label-side="left"] .lg-marker-label {
-  right: calc(50% + var(--marker-size, 36px) / 2 + 8px);
-  left: auto;
+.lg-marker-leader {
+  position: absolute;
+  height: 1px;
+  background: var(--marker-color, var(--lg-quality-start));
+  opacity: .65;
+  transform-origin: 0 50%;
+  pointer-events: none;
 }
 .lg-marker[data-active="true"] { z-index: 2; }
 .lg-marker[data-active="true"] .lg-marker-label {
@@ -109,19 +116,18 @@
 .lg-art-caption { margin: 12px 0 0; max-width: 65ch; }
 .lg-art-caption-line, .lg-art-legend { margin: 0; }
 .lg-art-legend { margin-top: 12px; max-width: 360px; }
-.lg-quality-gradient, .lg-quality-density { display: block; height: 8px; background: linear-gradient(to right, var(--lg-quality-start), var(--lg-quality-end)); }
+.lg-quality-status { margin: 12px 0 0; }
+.lg-quality-gradient { display: block; height: 8px; background: linear-gradient(to right, var(--lg-quality-start), var(--lg-quality-end)); }
 .lg-quality-gradient { border: 1px solid var(--c-line-strong); }
 .lg-quality-labels { display: flex; justify-content: space-between; gap: 16px; margin: 4px 0 0; font-size: 12px; }
-.lg-quality-strip { position: relative; grid-column: 1 / -1; width: min(100%, 180px); height: 8px; margin: 4px 4px 8px; background: var(--c-surface-sunken); }
-.lg-quality-mean { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--c-text); transform: translateX(-1px); }
 .lg-summary { min-width: 0; }
-.lg-caption { margin: 0; font-size: 18px; }
-.lg-total { display: block; font-size: clamp(44px, 6vw, 64px); line-height: 1.15; font-weight: 500; font-variant-numeric: tabular-nums; margin: 8px 0 10px; letter-spacing: -.025em; }
-.lg-status { margin: 0 0 16px; min-height: 2em; color: var(--c-text-muted); font-size: 13px; }
+.lg-caption { margin: 0; font-size: clamp(22px, 3vw, 32px); font-weight: 500; line-height: 1.35; letter-spacing: -.025em; }
+.lg-total { font-weight: inherit; font-variant-numeric: tabular-nums; }
+.lg-status { margin: 8px 0 0; color: var(--c-text-muted); font-size: 13px; }
 .lg-status[data-state="stale"], .lg-status[data-state="unavailable"] { color: var(--c-gold-text); }
 .lg-status[data-state="fixture"] { margin-bottom: 2px; color: var(--c-gold-text); }
 .lg-snapshot-date { display: block; margin: 0 0 14px; color: var(--c-text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.lg-role-summary { margin: 0 0 18px; color: var(--c-text-muted); font-size: 13px; line-height: 1.7; }
+.lg-role-summary { margin: 8px 0 0; color: var(--c-text-muted); font-size: 13px; line-height: 1.7; }
 .lg-regions { margin: 0; padding: 0; }
 .lg-region { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 14px; padding: 5px 0; border-top: 1px solid var(--c-line); }
 .lg-region-name { min-width: 0; }
@@ -146,16 +152,14 @@
 .lg-region[data-active="true"] { background: var(--c-surface-sunken); border-top-color: var(--c-accent); }
 .lg-region[data-active="true"] > .lg-region-name .lg-region-button, .lg-region[data-active="true"] > .lg-region-value,
 .lg-country[data-active="true"] .lg-country-button, .lg-country[data-active="true"] .lg-region-value { color: var(--c-accent); }
-.lg-region-position { grid-column: 1 / -1; margin: -2px 4px 0; color: var(--c-text-muted); font-size: 12px; line-height: 1.6; }
-.lg-region[data-visibility="back"] .lg-region-position { color: var(--c-accent); }
-.lg-region[data-visibility="back"], .lg-region[data-visibility="unknown"] { background: var(--c-surface-sunken); }
 .lg-countries { grid-column: 1 / -1; margin: 0 0 0 14px; color: var(--c-text-muted); font-size: 13px; }
 .lg-country { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 14px; border-top: 1px solid var(--c-line); }
-.lg-country[data-active="true"], .lg-country[data-visibility="back"] { background: var(--c-surface-sunken); }
+.lg-country[data-active="true"] { background: var(--c-surface-sunken); }
 .lg-privacy { margin: 20px 0 0; color: var(--c-text-muted); font-size: 13px; line-height: 1.7; max-width: 65ch; }
 @media (max-width: 680px) {
   .live-globe { grid-template-columns: 1fr; gap: 28px; }
-  .lg-stage { max-height: 440px; }
+  .lg-figure { position: static; }
+  .lg-stage { width: min(100%, 440px); }
   .lg-controls { justify-content: center; }
   .lg-art-caption { text-align: center; }
   .lg-art-legend { margin-inline: auto; }
@@ -167,4 +171,7 @@
   .lg-canvas { cursor: default; }
   .lg-marker-orb { animation: none; }
 }
+.live-globe[data-reduced-motion="true"] .lg-stage { aspect-ratio: 1.8; }
+.live-globe[data-reduced-motion="true"] .lg-marker-orb { animation: none; }
 .lg-stage[data-crowded-map="true"] { aspect-ratio: 1; }
+.live-globe[data-reduced-motion="true"] .lg-stage[data-crowded-map="true"] { aspect-ratio: 1; }

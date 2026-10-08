@@ -2,7 +2,7 @@ import Foundation
 
 /// An unverified cohort observation, independent of chain state. The public
 /// protocol contains thresholded counts, never individual node records.
-struct LivePresence: Decodable, Equatable, Sendable {
+struct LivePresence: Codable, Equatable, Sendable {
     let schema: Int
     let available: Bool
     let total: Int?
@@ -82,7 +82,7 @@ struct LivePresence: Decodable, Equatable, Sendable {
     }
 }
 
-/// Country sharing is an explicit choice, separate from the relay's continent.
+/// Country comes from the Mac region setting by default, separate from its relay continent.
 /// Codes match the node's strict ISO 3166-1 alpha-2 validator; CLDR's extra
 /// region codes must never produce an argument that prevents node startup.
 enum PresenceCountry {

@@ -91,6 +91,7 @@ enum DesignPreview {
 
 extension WalletModel {
     func loadPreview() {
+        loadPreviewGlobe()
         let v = DesignPreview.variant, empty = v == "empty"
         address = accountStore.activeAccount?.address ?? DesignPreview.primaryAddress
         let secondary = accountStore.activeAccount?.id == 2

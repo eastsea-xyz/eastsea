@@ -1,4 +1,4 @@
-import { normalizePresence, regionKey, sessionJitter } from './data.js';
+import { continentTotals, normalizePresence, regionKey, sessionJitter } from './data.js';
 import { qualityMean, qualityColor } from './quality.js';
 import { COUNTRY_CENTROIDS } from './countries.js';
 import { LAND_POINTS, COASTLINE_POINTS } from './land.js';
@@ -18,6 +18,7 @@ const IDLE_DELAY = 10_000;
 const COLORS = {
   sphere: '#071320', land: '#7CC4DC', coast: '#B7E2EF',
   'quality-start': '#7CC4DC', 'quality-end': '#5CCB98',
+  'quality-unknown': '#94A4B5',
 };
 
 function vector(longitude, latitude) {
@@ -180,7 +181,10 @@ function readColor(element, name) {
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 
-export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = () => {} } = {}) {
+export function createGlobe(canvas, {
+  seed, onSelect = () => {}, onVisibility = () => {},
+  paused: initiallyPaused = false, reducedMotion = false,
+} = {}) {
   const document = canvas.ownerDocument;
   const window = document.defaultView;
   const stage = canvas.parentElement || canvas;
@@ -221,14 +225,16 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     orb.append(outline, core, ring);
     const label = document.createElement('span'); label.className = 'lg-marker-label';
     label.style.right = 'auto'; label.style.transform = 'none';
-    button.append(orb, label); overlay.append(button);
+    const leader = document.createElement('span'); leader.className = 'lg-marker-leader';
+    leader.setAttribute('aria-hidden', 'true');
+    button.append(orb, label, leader); overlay.append(button);
     const select = () => { interact(); onSelect(key); };
     const deselect = () => { if (document.activeElement !== button) onSelect(null); };
     button.addEventListener('pointerenter', select); button.addEventListener('pointerleave', deselect);
     button.addEventListener('focus', select); button.addEventListener('blur', () => onSelect(null));
     button.addEventListener('click', select);
     return {
-      ...region, key, count: 0, score: 0, button, core, ring, label,
+      ...region, key, count: 0, score: 0, button, core, ring, label, leader,
       position: new Float32Array([Math.cos(latitude) * Math.sin(longitude), Math.sin(latitude), Math.cos(latitude) * Math.cos(longitude)]),
     };
   }
@@ -248,7 +254,8 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
   let homeYaw = yaw, homePitch = pitch, centered = false, idleUntil = 0;
   let labels = { continents: {}, regions: {}, quality: 'Operator quality' }, visibilityKey = '';
   let unknownCount = 0;
-  let frame = 0, lastFrame = 0, paused = false, visible = true, destroyed = false;
+  let frame = 0, lastFrame = 0, paused = Boolean(initiallyPaused), visible = true, destroyed = false;
+  let hostReducedMotion = Boolean(reducedMotion);
   let staticMode = true, pointer = null;
 
   function releaseResources() {
@@ -322,8 +329,9 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
 
   function reconcile() {
     if (destroyed) return;
-    if (!motion.matches && !contextLost) ensureGL();
-    staticMode = motion.matches || contextLost || !resources;
+    const reduced = motion.matches || hostReducedMotion;
+    if (!reduced && !contextLost) ensureGL();
+    staticMode = reduced || contextLost || !resources;
     canvas.hidden = staticMode;
     map.hidden = !staticMode;
     canvas.style.display = staticMode ? 'none' : original.display;
@@ -336,15 +344,17 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     if (active()) frame = window.requestAnimationFrame(animate);
   }
 
-  function drawWebGL() {
-    if (!resources || contextLost || destroyed || !visible || document.hidden) return;
+  function drawWebGL(force = false) {
+    if (!resources || contextLost || destroyed || (!force && (!visible || document.hidden))) return false;
     const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
     rotation[0] = cy; rotation[1] = sp * sy; rotation[2] = -cp * sy;
     rotation[3] = 0; rotation[4] = cp; rotation[5] = sp;
     rotation[6] = sy; rotation[7] = -sp * cy; rotation[8] = cp * cy;
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // Shaders emit straight RGB; retain source-over coverage alpha so the
+    // canvas compositor receives valid premultiplied pixels, not alpha squared.
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     const sphere = resources.sphere;
     gl.useProgram(sphere.handle);
     gl.uniform2fv(sphere.u_scale, scale);
@@ -405,10 +415,12 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     }
 
     positionMarkers();
+    if (force) gl.flush();
+    return true;
   }
 
-  function drawMap() {
-    if (!context || destroyed || !visible || document.hidden) return;
+  function drawMap(force = false) {
+    if (!context || destroyed || (!force && (!visible || document.hidden))) return false;
     const mapWidth = Math.min(width * 0.92, height * 1.5);
     const mapHeight = mapWidth / 2;
     const left = (width - mapWidth) / 2, top = (height - mapHeight) / 2;
@@ -462,6 +474,7 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     context.stroke();
     context.globalAlpha = 1;
     positionMarkers();
+    return true;
   }
 
   function positionMarkers() {
@@ -478,56 +491,52 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
       const x = staticMode ? left + (Math.atan2(p[0], p[2]) / (2 * Math.PI) + 0.5) * mapWidth : width / 2 + radius * (rotation[0] * p[0] + rotation[3] * p[1] + rotation[6] * p[2]);
       const y = staticMode ? top + (0.5 - Math.asin(clamp(p[1], -1, 1)) / Math.PI) * mapHeight : height / 2 - radius * (rotation[1] * p[0] + rotation[4] * p[1] + rotation[7] * p[2]);
       marker.button.style.transform = `translate3d(${x.toFixed(2)}px,${y.toFixed(2)}px,0)`;
-      marker.button.dataset.labelSide = x > width * 0.58 ? 'left' : 'right';
-      front.push({ marker, x, y });
+      // Include pulse animation, outline and shadow in the exclusion radius.
+      const pulseRadius = parseFloat(marker.button.style.getPropertyValue('--marker-size')) / 2 * 1.035 + 5;
+      front.push({ marker, x, y, pulseRadius });
     }
-    // Cache text metrics outside animation, then choose
-    // the closest in-bounds position that doesn't collide with another label.
-    // Markers themselves stay anchored to their bundled region centroids.
+    // Text metrics are cached outside animation. Labels avoid every visible
+    // pulse as well as previous labels; pulses retain their geographic anchors.
     const occupied = [];
-    let crowded = false;
     const overlaps = (a, b) => a.x < b.x + b.w + 4 && a.x + a.w + 4 > b.x && a.y < b.y + b.h + 4 && a.y + a.h + 4 > b.y;
-    front.sort((a, b) => a.y - b.y || a.x - b.x);
-    for (const { marker, x, y } of front) {
+    const coversPulse = rect => front.some(pulse => {
+      const dx = pulse.x - clamp(pulse.x, rect.x, rect.x + rect.w);
+      const dy = pulse.y - clamp(pulse.y, rect.y, rect.y + rect.h);
+      return dx * dx + dy * dy < pulse.pulseRadius * pulse.pulseRadius;
+    });
+    front.sort((a, b) => Number(b.marker.button.dataset.active === 'true') - Number(a.marker.button.dataset.active === 'true') || a.y - b.y || a.x - b.x);
+    for (const { marker, x, y, pulseRadius } of front) {
       const w = marker.labelWidth, h = marker.labelHeight;
-      const gap = parseFloat(marker.button.style.getPropertyValue('--marker-size')) / 2 + 8;
-      const sides = marker.button.dataset.labelSide === 'left' ? [-1, 1] : [1, -1];
+      const gap = pulseRadius + 4;
+      const sides = x > width * 0.58 ? [-1, 1] : [1, -1];
       let placement;
       const rightEdge = Math.max(4, width - w - 4);
-      const candidates = [...sides.map(side => clamp(side === 1 ? x + gap : x - gap - w, 4, rightEdge)), 4, rightEdge];
-      for (let step = 0; step <= Math.ceil(height / (h + 5)) * 2; step++) {
+      const candidates = [...new Set([...sides.map(side => clamp(side === 1 ? x + gap : x - gap - w, 4, rightEdge)), 4, rightEdge, (width - w) / 2])];
+      for (let step = 0; step <= Math.ceil(height / 8) * 2; step++) {
         const shift = step ? Math.ceil(step / 2) * (step % 2 ? 1 : -1) : 0;
         for (const labelX of candidates) {
-          const candidate = { x: labelX, y: y - h / 2 + shift * (h + 5), w, h };
-          if (candidate.y < 4 || candidate.y + h > height - 4 || occupied.some(rect => overlaps(candidate, rect))) continue;
+          const candidate = { x: labelX, y: y - h / 2 + shift * 8, w, h };
+          if (candidate.x < 4 || candidate.x + w > width - 4 || candidate.y < 4 || candidate.y + h > height - 4
+            || occupied.some(rect => overlaps(candidate, rect)) || coversPulse(candidate)) continue;
           placement = candidate; break;
         }
         if (placement) break;
       }
-      if (!placement) {
-        crowded = true;
-        placement = { x: clamp(x + gap, 4, Math.max(4, width - w - 4)), y: clamp(y - h / 2, 4, Math.max(4, height - h - 4)), w, h };
-      }
+      // Dense views can run out of room. Keep the accessible pulse and list,
+      // rather than drawing a label over a pulse or another label.
+      marker.label.hidden = !placement;
+      marker.leader.hidden = !placement;
+      if (!placement) continue;
       occupied.push(placement);
       marker.label.style.left = `${(placement.x - x + 22).toFixed(2)}px`;
       marker.label.style.top = `${(placement.y - y + 22).toFixed(2)}px`;
-    }
-    // Greedy nearest-anchor placement can fragment the remaining space. When
-    // that happens, pack the visible labels into an in-bounds grid instead of
-    // silently overlapping them. Geographic pulses keep their exact anchors.
-    if (crowded && front.length) {
-      const w = Math.max(...front.map(({ marker }) => marker.labelWidth));
-      const h = Math.max(...front.map(({ marker }) => marker.labelHeight));
-      const columns = Math.max(1, Math.min(front.length, Math.floor((width - 3) / (w + 5))));
-      const rows = Math.ceil(front.length / columns);
-      if (rows * (h + 5) - 5 <= height - 8) {
-        const top = (height - rows * (h + 5) + 5) / 2;
-        front.forEach(({ marker, x, y }, i) => {
-          const left = columns === 1 ? (width - w) / 2 : 4 + i % columns * (width - w - 8) / (columns - 1);
-          marker.label.style.left = `${(left - x + 22).toFixed(2)}px`;
-          marker.label.style.top = `${(top + Math.floor(i / columns) * (h + 5) - y + 22).toFixed(2)}px`;
-        });
-      }
+      const dx = clamp(x, placement.x, placement.x + w) - x;
+      const dy = clamp(y, placement.y, placement.y + h) - y;
+      const length = Math.hypot(dx, dy);
+      marker.leader.style.left = `${(22 + dx / length * pulseRadius).toFixed(2)}px`;
+      marker.leader.style.top = `${(22 + dy / length * pulseRadius).toFixed(2)}px`;
+      marker.leader.style.width = `${Math.max(0, length - pulseRadius).toFixed(2)}px`;
+      marker.leader.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
     }
     states.push({ key: 'unknown', continent: 'unknown', visibility: unknownCount ? 'unknown' : 'empty' });
     const key = states.map(region => `${region.key}:${region.visibility}`).join(',');
@@ -539,7 +548,9 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
       const name = labels.regions?.[marker.key] || labels.continents[marker.continent] || marker.continent;
       const text = `${name} ${marker.count.toLocaleString()}`;
       marker.label.textContent = text;
-      marker.button.setAttribute('aria-label', `${text} · ${labels.quality} ${(marker.score * 100).toFixed(1)} / 100`);
+      const quality = labels.qualityAvailable === false ? labels.qualityUnavailable
+        : `${labels.quality} ${(marker.score * 100).toFixed(1)} / 100`;
+      marker.button.setAttribute('aria-label', `${text} · ${quality}`);
     }
     measureLabels();
   }
@@ -547,25 +558,29 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
   function measureLabels() {
     for (const marker of markers) {
       const hidden = marker.button.hidden;
+      const labelHidden = marker.label.hidden;
       marker.button.hidden = false;
+      marker.label.hidden = false;
       const compact = width <= 680;
       const maxWidth = compact ? 150 : 190;
       const measured = [...marker.label.textContent].reduce((sum, character) => sum + (character.charCodeAt(0) > 127 ? 13 : 7), 14);
       marker.labelWidth = marker.label.offsetWidth || Math.min(maxWidth, measured);
       marker.labelHeight = marker.label.offsetHeight || Math.ceil(measured / maxWidth) * (compact ? 17 : 19) + 8;
       marker.button.hidden = hidden;
+      marker.label.hidden = labelHidden;
     }
   }
 
-  function draw() { if (staticMode) drawMap(); else drawWebGL(); }
+  function draw(force = false) { return staticMode ? drawMap(force) : drawWebGL(force); }
 
-  function resize() {
-    if (destroyed) return;
+  function resize({ force = false } = {}) {
+    if (destroyed) return false;
     const bounds = (staticMode ? map : canvas).getBoundingClientRect();
     width = Math.max(1, bounds.width || stage.clientWidth || 1);
     height = Math.max(1, bounds.height || stage.clientHeight || width);
     dpr = Math.min(2, window.devicePixelRatio || 1);
-    radius = Math.min(width, height) * 0.425;
+    // The sphere, its 12% halo and elevated arcs all fit with breathing room.
+    radius = Math.min(width, height) * 0.40;
     scale[0] = radius * 2 / width; scale[1] = radius * 2 / height;
     const pixelWidth = Math.round(width * dpr), pixelHeight = Math.round(height * dpr);
     for (const surface of [canvas, map]) {
@@ -575,12 +590,13 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     colors = { sphere: readColor(canvas, 'sphere'), land: readColor(canvas, 'land'), coast: readColor(canvas, 'coast') };
     const start = readColor(canvas, 'quality-start').css;
     const end = readColor(canvas, 'quality-end').css;
+    const unknown = readColor(canvas, 'quality-unknown').css;
     for (const marker of markers) {
-      marker.button.style.setProperty('--marker-color', qualityColor(marker.score, start, end));
-      marker.button.style.setProperty('--marker-intensity', String(.65 + .35 * marker.score));
+      marker.button.style.setProperty('--marker-color', labels.qualityAvailable === false ? unknown : qualityColor(marker.score, start, end));
+      marker.button.style.setProperty('--marker-intensity', String(labels.qualityAvailable === false ? .8 : .65 + .35 * marker.score));
     }
     measureLabels();
-    draw();
+    return draw(force);
   }
 
   function writeArcPoint(offset, from, to, angle, denominator, progress, phase) {
@@ -593,9 +609,18 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
     arcData[offset + 3] = progress; arcData[offset + 4] = phase;
   }
 
-  function update(model) {
+  function update(model, { reset = false } = {}) {
     if (destroyed) return;
     const clean = normalizePresence(model);
+    if (reset) {
+      yaw = homeYaw = INITIAL_YAW;
+      pitch = homePitch = INITIAL_PITCH;
+      centered = false;
+      time = lastFrame = idleUntil = 0;
+      visibilityKey = '';
+      if (pointer && canvas.hasPointerCapture(pointer.id)) canvas.releasePointerCapture(pointer.id);
+      pointer = null;
+    }
     const activeKeys = new Set(clean.regions.map(regionKey));
     for (let i = markers.length - 1; i >= 0; i--) {
       const marker = markers[i];
@@ -611,11 +636,15 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
         marker = makeMarker(region, COUNTRY_CENTROIDS[region.country]);
         markers.push(marker); byRegion.set(key, marker);
       }
-      if (marker) { marker.count = region.count; marker.score = qualityMean(region.quality, region.count); }
+      if (marker && region.country) { marker.count = region.count; marker.score = qualityMean(region.quality, region.count); }
       else if (region.continent === 'unknown') unknownCount = region.count;
     }
     const totals = new Map();
-    for (const region of clean.regions) totals.set(region.continent, (totals.get(region.continent) || 0) + region.count);
+    for (const total of continentTotals(clean)) {
+      totals.set(total.continent, total.count);
+      const marker = byContinent.get(total.continent);
+      if (marker) { marker.count = total.count; marker.score = qualityMean(total.quality, total.count); }
+    }
     const home = [...totals.keys()].reduce((best, code) =>
       markers.some(marker => marker.continent === code && marker.count) && totals.get(code) > (totals.get(best) || 0) ? code : best, null);
     const largest = markers.reduce((best, marker) => marker.continent === home && marker.count > (best?.count || 0) ? marker : best, null);
@@ -625,6 +654,7 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
       centered = true;
     }
     for (const marker of markers) {
+      if (!marker.count) marker.button.hidden = true;
       marker.button.style.setProperty('--marker-size', `${Math.min(60, 16 + Math.sqrt(marker.count) * 8)}px`);
       marker.button.dataset.count = String(marker.count);
       marker.button.dataset.quality = String(marker.score);
@@ -719,13 +749,17 @@ export function createGlobe(canvas, { seed, onSelect = () => {}, onVisibility = 
 
   return {
     update,
-    setLabels(next) { labels = next; labelMarkers(); draw(); },
+    setLabels(next) { labels = next; labelMarkers(); resize(); },
     setHighlight(code, { interaction = true } = {}) {
       if (interaction) interact();
       for (const marker of markers) marker.button.dataset.active = String(marker.key === code || marker.continent === code);
     },
     setPaused(value) { paused = Boolean(value); reconcile(); },
+    setReducedMotion(value) { hostReducedMotion = Boolean(value); reconcile(); },
     resize,
+    // Screenshot fixtures can draw one still frame without changing lifecycle
+    // state. This does not start animation or make an offscreen view visible.
+    captureFrame() { return resize({ force: true }); },
     destroy() {
       if (destroyed) return;
       destroyed = true;

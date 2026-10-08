@@ -126,6 +126,15 @@ can update the local input with `aether_setPresenceCountry` and `["KR"]` or
 `[null]`. Browser-origin, iroh, public gateway and non-loopback HTTP requests
 cannot change it. A setting change leaves the current public release frozen.
 
+The Mac wallet reads presence only from its own local node, independently of
+balance reads. Its bundled globe receives the validated schema-2 JSON without
+individual records or invented version, country, quality or reserve-key data.
+An under-k response clears an earlier displayed aggregate and shows counts
+withheld; a failed read can retain the earlier aggregate with an explicit stale
+state. Cohort responses have no operation-quality evidence. The embedded page
+cannot connect to an RPC or external asset; native code owns the read lifecycle.
+Schema-3 aggregates remain supported for explicit screenshot fixtures.
+
 ## Verification
 
 Node unit tests inspect the actual QUIC request/reply bytes and the actual

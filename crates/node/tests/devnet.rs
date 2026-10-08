@@ -1179,7 +1179,7 @@ fn founder_reserve_net(tag: &str, epoch_blocks: u64, mainnet: bool) -> Net {
         "--min-streak".into(), "0".into(), "--draw-epochs".into(), "1".into(),
         "--node-rewards".into(), "--reserve-operator".into(), founder.into()];
     if mainnet {
-        args.extend(["--dev-registrar", "--history", "2", "--protocol", "3"].map(str::to_string));
+        args.extend(["--dev-registrar", "--history", "2", "--protocol", "4"].map(str::to_string));
     } else {
         let reg = run_ok(&["registrar-key", "--data", &d("reg")]);
         args.extend(["--registrar".to_string(), reg.split_whitespace().nth(2).unwrap().to_string()]);

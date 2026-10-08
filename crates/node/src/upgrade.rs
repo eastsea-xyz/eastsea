@@ -24,7 +24,10 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The protocol this binary implements.
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
+/// Reserve standby, four-seat repair and the five-operator expiry threshold.
+/// Historical blocks use their scheduled protocol, never this binary's version.
+pub const RESERVE_FLOOR_PROTOCOL: u32 = 4;
 const NAMESPACE: &[u8] = aether_light::UPGRADE_NAMESPACE;
 const EMERGENCY_NAMESPACE: &[u8] = b"aether-upgrade-emergency-v1";
 pub const MAINNET_NOTICE_BLOCKS: u64 = 604_800;
@@ -332,10 +335,10 @@ mod tests {
         // `implements`/`dev_notice` cache their first read, so exercise the
         // parsers directly instead of setting environment variables.
         assert_eq!(parse_dev_protocol(None), None);
-        assert_eq!(parse_dev_protocol(Some("3")), None, "not lower or equal");
+        assert_eq!(parse_dev_protocol(Some("4")), None, "not lower or equal");
         assert_eq!(parse_dev_protocol(Some("2")), None);
         assert_eq!(parse_dev_protocol(Some("x")), None);
-        assert_eq!(parse_dev_protocol(Some(" 4 ")), Some(4));
+        assert_eq!(parse_dev_protocol(Some(" 5 ")), Some(5));
         assert_eq!(parse_dev_protocol(Some("9")), Some(9));
         assert_eq!(parse_dev_notice(None), None);
         assert_eq!(parse_dev_notice(Some("0")), None);

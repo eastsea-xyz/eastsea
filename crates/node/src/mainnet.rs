@@ -1198,7 +1198,7 @@ mod tests {
             min_streak: None,
             draw_epochs: None,
             history: Some(2),
-            protocol: Some(3),
+            protocol: Some(upgrade::PROTOCOL),
             node_rewards: Some(true),
             reserve: Some(crate::roster::ReserveFile {
                 operator: Address::repeat_byte(0x99),

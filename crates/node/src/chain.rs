@@ -102,8 +102,8 @@ pub struct ChainConfig {
     /// to the committed roster (finding 2). Node rewards only; empty on 7780.
     pub committee: Vec<(String, String)>,
     /// Founder reserve keys (docs/design/12-launch-plan.md, "창업자 Mac 안전망";
-    /// needs node rewards): up to three voting keys seated only while fewer
-    /// than four independent operators qualify for the voting set.
+    /// needs node rewards): up to three voting keys. From protocol 4 they stay
+    /// eligible standby through four independent operators and repair vacancies.
     pub reserve: Option<Reserve>,
     /// The consensus group this chain is (13-roadmap.md, 그룹 분열 준비):
     /// 0 is the only group today. Blocks of a group run only that group's
@@ -1394,6 +1394,7 @@ impl Chain {
             return Err(ChainError::Protocol("free registrations without node rewards".into()));
         }
         if version == before
+            && (version < crate::upgrade::RESERVE_FLOOR_PROTOCOL || seed.is_none())
             && !records
             && !rotates
             && !stale
@@ -1515,11 +1516,28 @@ impl Chain {
             let draw = current_draw(&parent.state, parent.height + 1);
             if s.draw == draw
                 && draw > 0
+                && (version < crate::upgrade::RESERVE_FLOOR_PROTOCOL
+                    || parent.handoff.as_ref().is_none_or(|p| p.switch <= parent.height + 1))
                 && parent.seed.as_ref().is_none_or(|p| p.1.draw < draw)
                 && (!aether_rewards::registry_v3::is_v3(&state)
                     || aether_rewards::next_roster(&state).is_none_or(|(d, _)| d != draw))
             {
                 if let Some((_, pool)) = aether_rewards::draw_pool(&state).filter(|(d, _)| *d == draw) {
+                    // Protocol 4 keeps the frozen draw's membership ceiling,
+                    // but a delayed seed must not reinstall a proven departing
+                    // or silent key. Boundary-only `eligible` cannot be used
+                    // here: honest mid-epoch answers advance `last_epoch`.
+                    let mut pool = pool;
+                    if version >= crate::upgrade::RESERVE_FLOOR_PROTOCOL {
+                        let epoch = (parent.height + 1) / params.epoch_blocks;
+                        let recents = crate::rotation::recents(&state);
+                        let departures = crate::rotation::departures(&state);
+                        pool.retain(|(k, _)| !departures.contains(k)
+                            && !matches!(recents.get(k).copied(), Some((e, last, prev))
+                                if e.checked_add(1) == Some(epoch) && last != aether_rewards::beacons::NO_COUNT
+                                    && prev != aether_rewards::beacons::NO_COUNT
+                                    && last < crate::rotation::SILENT_BELOW && prev < crate::rotation::SILENT_BELOW));
+                    }
                     let seed_bytes = hex::decode(&s.signature).unwrap_or_default();
                     // The per-operator seat cap is a protocol-2 rule: before it, every key is its own operator.
                     let ops = crate::rotation::operators(&parent.state);
@@ -1537,14 +1555,29 @@ impl Chain {
                     let hours = |k: &str| availability.as_ref().and_then(|a| a.get(k).copied());
                     // Protocol 3: qualifying Macs join (up to 16 seats) instead of
                     // replacing members, each where the odds need it most.
+                    let repair = reserve.as_ref().filter(|_| version >= crate::upgrade::RESERVE_FLOOR_PROTOCOL
+                        && parent.handoff.as_ref().is_none_or(|p| p.switch <= parent.height + 1)).and_then(|r| {
+                        let recents = crate::rotation::recents(&state);
+                        let departures = crate::rotation::departures(&state);
+                        crate::rotation::reserve_replacement(
+                            &running, &pool, &seed_bytes, |k| ops.get(k).cloned(), hours,
+                            |k| recents.get(k).copied(), |k| departures.contains(k),
+                            (parent.height + 1) / params.epoch_blocks, r,
+                        )
+                    });
+                    // A repair is the final roster: the frozen pool can still
+                    // contain the unavailable key, so seating it again would
+                    // undo the one-for-one replacement.
+                    let drawn = repair.or_else(|| {
                     let drawn = if version >= 3 {
                         crate::rotation::draw_spread_capped(&pool, &seed_bytes, operator, &running, hours, self.cfg().max_committee)
                     } else {
                         crate::rotation::draw_capped(&pool, &seed_bytes, operator, &running, self.cfg().max_committee)
                     };
                     // Founder reserve keys join or leave with the draw too.
-                    let drawn = match reserve {
-                        Some(r) => crate::rotation::with_reserve(
+                    match reserve {
+                        Some(r) => crate::rotation::with_reserve_for(
+                            version,
                             drawn,
                             &pool,
                             &seed_bytes,
@@ -1554,7 +1587,8 @@ impl Chain {
                             hours,
                         ),
                         None => drawn,
-                    };
+                    }
+                    });
                     if let Some(members) = drawn {
                         aether_rewards::commit_roster(&mut state, draw, &members)
                             .map_err(|e| ChainError::Exec(format!("roster: {e}")))?;
@@ -1574,8 +1608,30 @@ impl Chain {
         let departures = crate::rotation::departures(&state);
         let urgent_leave = aether_rewards::registry_v3::is_v3(&state)
             && aether_rewards::committee(&state).iter().any(|(k, _)| departures.contains(k));
+        // A proven single vacancy in four seats cannot wait for the next
+        // day's draw. The reserve repair still respects pending handoffs and
+        // an already committed roster below.
+        let reserve_replaced = if boundary && version >= crate::upgrade::RESERVE_FLOOR_PROTOCOL {
+            Reserve::of(&parent.state).and_then(|reserve| {
+                let running = crate::rotation::Committee { members: aether_rewards::committee(&state) };
+                if running.members.len() != aether_consensus::committee::MIN_OPEN_COMMITTEE {
+                    return None;
+                }
+                let epoch = (parent.height + 1) / params.epoch_blocks;
+                let eligibility_state = if aether_rewards::registry_v3::is_v3(&state) { &state } else { &parent.state };
+                let pool = crate::rotation::eligible(eligibility_state, epoch, params.min_streak);
+                let ops = crate::rotation::operators(&parent.state);
+                let availability = crate::rotation::availability(&state);
+                let recents = crate::rotation::recents(&state);
+                crate::rotation::reserve_replacement(
+                    &running, &pool, &digest_bytes(&parent.digest),
+                    |k| ops.get(k).cloned(), |k| availability.get(k).copied(),
+                    |k| recents.get(k).copied(), |k| departures.contains(k), epoch, &reserve,
+                )
+            })
+        } else { None };
         if boundary
-            && (!freezes || (urgent_leave && seed.is_none()))
+            && (!freezes || ((urgent_leave || reserve_replaced.is_some()) && seed.is_none()))
             && parent.handoff.as_ref().is_none_or(|p| p.switch <= parent.height + 1)
             && aether_rewards::next_roster(&state).is_none_or(|(d, _)| d != current_draw(&parent.state, parent.height + 1))
         {
@@ -1591,7 +1647,7 @@ impl Chain {
                 // Early replacement (13-roadmap.md, F): a member silent through
                 // the last two epochs hands its seat to the candidate the
                 // spread rule picks, while the old quorum still stands.
-                let replaced = crate::rotation::replace_unavailable(
+                let replaced = reserve_replaced.or_else(|| crate::rotation::replace_unavailable(
                     &running,
                     &pool,
                     &digest_bytes(&parent.digest),
@@ -1600,7 +1656,7 @@ impl Chain {
                     |k: &str| recents.get(k).copied(),
                     |k: &str| departures.contains(k),
                     epoch,
-                );
+                ));
                 let members = match (replaced, Reserve::of(&parent.state)) {
                     (Some(members), _) => {
                         tracing::info!(
@@ -1609,9 +1665,10 @@ impl Chain {
                         );
                         Some(members)
                     }
-                    // From four independent operators on, the keys' staying is a
-                    // question of the committee's predicted worst hour.
-                    (None, Some(reserve)) => crate::rotation::with_reserve(
+                    // Missing seats use standby through four operators;
+                    // larger committees retain the night-time survival rule.
+                    (None, Some(reserve)) => crate::rotation::with_reserve_for(
+                        version,
                         None,
                         &pool,
                         &digest_bytes(&parent.digest),
@@ -1640,7 +1697,7 @@ impl Chain {
             }
         }
         // Finding 6: count the epochs the reserve keys hold seats nobody needs
-        // — four or more independent operators qualify — and stop their
+        // — four independent operators before protocol 4, five from it — and stop their
         // service credit past the grace (`rewards::reserve_served`). The count
         // this block writes is the epoch's that opens here; `distribute` above
         // read the word the boundary before it wrote.
@@ -1650,17 +1707,27 @@ impl Chain {
                 let eligibility_state = if aether_rewards::registry_v3::is_v3(&state) { &state } else { &parent.state };
                 let pool = crate::rotation::eligible(eligibility_state, epoch, params.min_streak);
                 let ops = crate::rotation::operators(&state);
+                let expiry = if version >= crate::upgrade::RESERVE_FLOOR_PROTOCOL {
+                    aether_rewards::RESERVE_STANDBY_MAX_OPERATORS + 1
+                } else {
+                    aether_consensus::committee::MIN_OPEN_COMMITTEE
+                };
                 let on = crate::rotation::independent(&pool, |k| ops.get(k).cloned(), &reserve)
-                    >= aether_consensus::committee::MIN_OPEN_COMMITTEE
+                    >= expiry
                     && aether_rewards::seated(&state).0 > 0;
                 let (_, so_far) = aether_rewards::overdue(&state);
                 let count = if on { so_far + 1 } else { 0 };
                 aether_rewards::set_overdue(&mut state, epoch, count);
                 if count > aether_rewards::RESERVE_GRACE_EPOCHS {
+                    let message = if version >= crate::upgrade::RESERVE_FLOOR_PROTOCOL {
+                        "founder reserve keys still hold seats with five or more independent operators: their service credit has stopped"
+                    } else {
+                        "founder reserve keys still hold seats with four or more independent operators: their service credit has stopped"
+                    };
                     tracing::warn!(
                         epoch,
                         count,
-                        "founder reserve keys still hold seats with four or more independent operators: their service credit has stopped"
+                        "{message}"
                     );
                 }
             }
@@ -2924,7 +2991,8 @@ impl Chain {
                     };
                     // Founder reserve keys join or leave with the draw too.
                     let drawn = match reserve {
-                        Some(r) => crate::rotation::with_reserve(
+                        Some(r) => crate::rotation::with_reserve_for(
+                            crate::upgrade::protocol_at(&exec.schedule, exec.height),
                             drawn,
                             &pool,
                             &seed,
@@ -3485,7 +3553,8 @@ fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
     );
     let ops = crate::rotation::operators(&exec.state);
     let availability = crate::rotation::availability(&exec.state);
-    let next = crate::rotation::with_reserve(
+    let next = crate::rotation::with_reserve_for(
+        crate::upgrade::protocol_at(&exec.schedule, exec.height),
         None,
         &pool,
         exec.digest.as_ref(),

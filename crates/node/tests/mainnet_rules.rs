@@ -40,7 +40,7 @@ fn net(macs: u8, reserve: Option<Reserve>, committee: Option<Vec<(String, String
         macs,
         min_streak: Some(0),
         history_v2: true,
-        protocol: 3,
+        protocol: aether_node::upgrade::PROTOCOL,
         reserve,
         fees: false,
         committee,
@@ -304,7 +304,7 @@ fn final_file(chain: u64, round: u64, output: Option<String>, identity: Option<S
         min_streak: None,
         draw_epochs: None,
         history: Some(2),
-        protocol: Some(3),
+        protocol: Some(aether_node::upgrade::PROTOCOL),
         node_rewards: Some(true),
         reserve: Some(ReserveFile {
             operator: Address::repeat_byte(0x99),

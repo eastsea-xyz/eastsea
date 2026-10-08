@@ -108,7 +108,7 @@ const TAG_ROSTER: u64 = 17;
 /// reads).
 const TAG_POOL: u64 = 14;
 /// Consecutive registry epochs the founder's reserve keys have held seats
-/// while four or more independent operators qualified (`TAG_OVERDUE, 0` =
+/// while five or more independent operators qualified (`TAG_OVERDUE, 0` =
 /// `epoch | count << 64`): past `RESERVE_GRACE_EPOCHS` of them the service
 /// credit stops.
 const TAG_OVERDUE: u64 = 15;
@@ -472,6 +472,11 @@ pub fn pay_proof(state: &mut WorldState, height: u64, now: u64, prover: Address)
 /// Founder reserve keys (docs/design/12-launch-plan.md, "창업자 Mac 안전망"): at most this many.
 pub const MAX_RESERVE_KEYS: usize = 3;
 
+/// Through this many independent operators, genesis reserve keys stay
+/// eligible standby and seated service never expires. At five, the ordinary
+/// exit and service-credit grace apply; neither retires the reserve set.
+pub const RESERVE_STANDBY_MAX_OPERATORS: usize = 4;
+
 /// A reserve key: (ed25519 voting key, iroh node id).
 pub type ReserveKey = ([u8; 32], [u8; 32]);
 
@@ -686,9 +691,10 @@ pub fn draw_pool(state: &WorldState) -> Option<(u64, Vec<(String, String)>)> {
 
 /// Finding 6 (red team, 2026-09-29): how many consecutive registry epochs the
 /// reserve keys may keep seats nobody needs before their credit stops. Seats
-/// held while four or more independent operators qualify mean the handoff
+/// held while five or more independent operators qualify mean the handoff
 /// home never completed; past this many epochs of that, the service credit is
-/// gone (the keys can win it back only by standing down).
+/// gone until the keys stand down or the count returns to four or fewer.
+/// Expiry stops service credit, never reserve registration or eligibility.
 pub const RESERVE_GRACE_EPOCHS: u64 = 2;
 
 /// Record the overdue count as of the epoch opening at `epoch` (a chain

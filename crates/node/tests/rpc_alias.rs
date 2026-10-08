@@ -44,6 +44,7 @@ fn state() -> RpcState {
         prover: None,
         shards: None,
         public_read_only: false,
+        app_bundles: None,
     }
 }
 

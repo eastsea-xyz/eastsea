@@ -132,7 +132,48 @@ impl ResourceArgs {
 }
 
 #[derive(Subcommand)]
+enum AppBundleCmd {
+    /// Build a deterministic static-app archive; prints its index SHA-256.
+    Build {
+        #[arg(long)]
+        folder: std::path::PathBuf,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Verify and pin an archive in an owned node's app cache.
+    Pin {
+        #[arg(long)]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        archive: std::path::PathBuf,
+        #[arg(long)]
+        hash: Option<String>,
+    },
+    /// Remove an app's eviction pin without deleting its verified content.
+    Unpin {
+        #[arg(long)]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        hash: String,
+    },
+    /// Set cache/download opt-out and peer seeding (default off). Restart the node to apply.
+    Configure {
+        #[arg(long)]
+        data: std::path::PathBuf,
+        #[arg(long, action = clap::ArgAction::Set)]
+        enabled: Option<bool>,
+        #[arg(long, action = clap::ArgAction::Set)]
+        seed: Option<bool>,
+    },
+}
+
+#[derive(Subcommand)]
 enum Cmd {
+    /// Build, verify, pin, or configure hash-addressed app content.
+    AppBundle {
+        #[command(subcommand)]
+        command: AppBundleCmd,
+    },
     /// Run a validator.
     Node {
         /// Devnet: this validator's index (1-based). With --network, derived from the local key.
@@ -807,6 +848,43 @@ fn fixture_key_directory_is_internal(data: &std::path::Path, requested: Option<&
         if name.to_str().is_some_and(|name| name.starts_with("aether-")))
 }
 
+fn app_bundle_command(command: AppBundleCmd) -> Result<(), String> {
+    use aether_node::app_bundle::{self, Bundle, Cache};
+    match command {
+        AppBundleCmd::Build { folder, out } => {
+            let bundle = Bundle::from_folder(&folder)?;
+            aether_node::atomic::replace(&out, bundle.archive(), 0o644)?;
+            println!("{}", json!({ "bundleHash": bundle.hash(), "archive": out, "size": bundle.archive().len() }));
+        }
+        AppBundleCmd::Pin { data, archive, hash } => {
+            let cache = Cache::open(&data)?;
+            let bundle_hash = cache.import(&archive, hash.as_deref(), true)?;
+            println!("{}", json!({ "bundleHash": bundle_hash, "pinned": true }));
+        }
+        AppBundleCmd::Unpin { data, hash } => {
+            Cache::open(&data)?.pin(&hash, false)?;
+            println!("{}", json!({ "bundleHash": app_bundle::normalize_hash(&hash)?, "pinned": false }));
+        }
+        AppBundleCmd::Configure { data, enabled, seed } => {
+            let mut config = app_bundle::configuration(&data)?;
+            if let Some(enabled) = enabled { config.enabled = enabled; }
+            if let Some(seed) = seed { config.seed = seed; }
+            app_bundle::configure(&data, config.clone())?;
+            println!("{}", serde_json::to_string(&config).map_err(|e| e.to_string())?);
+        }
+    }
+    Ok(())
+}
+
+fn app_bundle_service(data: &str, endpoint: Option<aether_net::Endpoint>, nodes: Vec<aether_net::EndpointId>) -> Option<std::sync::Arc<aether_node::app_bundle::Service>> {
+    match aether_node::app_bundle::Cache::open(std::path::Path::new(data)) {
+        Ok(cache) => Some(std::sync::Arc::new(aether_node::app_bundle::Service::new(
+            std::sync::Arc::new(cache), endpoint, nodes.into_iter().map(aether_net::EndpointAddr::from).collect(),
+        ))),
+        Err(error) => { tracing::warn!(%error, "app content cache unavailable"); None }
+    }
+}
+
 fn main() {
     // Adopt before CLI dispatch or any unrelated helper can spawn. The guard
     // lives until main exits, including parent death during writer startup.
@@ -817,6 +895,7 @@ fn main() {
     std::env::remove_var(aether_node::supervisor::WRITER_LEASE_ENV);
     let cli = Cli::parse();
     let res = match cli.cmd {
+        Cmd::AppBundle { command } => app_bundle_command(command),
         Cmd::Node {
             index,
             validators,
@@ -2238,6 +2317,7 @@ fn run_node(a: NodeArgs) {
         if links && endpoint.is_none() {
             panic!("iroh transport needs the public endpoint");
         }
+        let app_bundles = app_bundle_service(&data, endpoint.clone(), p2p.roster.nodes.clone());
 
         let (mut network, mut oracle) = lookup::Network::new(context.child("network"), p2p_cfg);
         oracle.track(0, peers);
@@ -2302,6 +2382,7 @@ fn run_node(a: NodeArgs) {
         let served_snapshot: rpc::SnapshotCache = Default::default();
         let served_state = std::sync::Arc::new(std::sync::RwLock::new(rpc::RpcState {
             chain: chain.clone(),
+            app_bundles: app_bundles.clone(),
             finality: rpc::Finality::Archive(std::sync::Arc::new(aether_node::follow::FinalityArchive::new(chain.store()))),
             gossip: gossip_tx.clone(),
             faucet: faucet_service.clone(),
@@ -2324,14 +2405,15 @@ fn run_node(a: NodeArgs) {
             let st = served_state.clone();
             let registry = aether_node::announce::checker(st.read().expect("served state").chain.clone());
             let p2p_target = links.then(|| loopback(port));
-            aether_net::serve(
+            aether_net::serve_with_apps(
                 ep,
                 move |req| {
                     let st = st.read().expect("served state").clone();
-                    async move { rpc::handle_value(&st, req).await }
+                    async move { rpc::handle_peer_value(&st, req).await }
                 },
                 p2p_target,
                 Some(registry),
+                app_bundles.as_ref().map(|service| service.handler()),
             )
         });
         // Catch up before voting: a committee member that slept must not
@@ -2601,6 +2683,7 @@ fn run_node(a: NodeArgs) {
         let prover = start_prover(&chain, &data, None);
         let rpc_state = RpcState {
             chain,
+            app_bundles,
             finality: aether_node::rpc::Finality::Marshal(marshal_mailbox),
             gossip: gossip_tx,
             faucet: faucet_service,
@@ -2995,7 +3078,7 @@ fn run_follow(
         // asking the validators. `--from-rpc` followers have no iroh endpoint.
         let mut wallet_ep = None;
         let upstream = Arc::new(if from_rpc.is_empty() {
-            let ep = aether_net::bind(Some(wallet_node_key(&node_key)?), vec![aether_net::ALPN_RPC.to_vec()])
+            let ep = aether_net::bind(Some(wallet_node_key(&node_key)?), vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_APPS.to_vec()])
                 .await
                 .map_err(|e| e.to_string())?;
             let client = aether_net::RpcClient::with_endpoint(ep.clone(), nodes.clone());
@@ -3004,6 +3087,7 @@ fn run_follow(
         } else {
             Upstream::Http(from_rpc)
         });
+        let app_bundles = app_bundle_service(&data, wallet_ep.clone(), nodes);
         // A new Mac starts from a certified snapshot instead of replaying history.
         if checkpoint && store.head().map_err(|e| e.to_string())?.is_none() {
             // Without a usable snapshot, replay from genesis instead of failing to start.
@@ -3073,6 +3157,7 @@ fn run_follow(
         let prover = if export.is_none() { start_prover(&chain, &data, Some(upstream.clone())) } else { None };
         let st = RpcState {
             chain,
+            app_bundles,
             finality: aether_node::rpc::Finality::Archive(archive),
             gossip,
             faucet: None,
@@ -3101,10 +3186,11 @@ fn run_follow(
             tracing::info!(node_id = %ep.id(), "serving wallets over iroh; announced to the validators every minute");
             let endpoint_id = ep.id();
             let st = st.clone();
-            let router = aether_net::serve_rpc(ep, move |req| {
+            let apps = st.app_bundles.as_ref().map(|service| service.handler());
+            let router = aether_net::serve_with_apps(ep, move |req| {
                 let st = st.clone();
-                async move { rpc::handle_value(&st, req).await }
-            });
+                async move { rpc::handle_peer_value(&st, req).await }
+            }, None, None, apps);
             let (announcer, keys) = (upstream.clone(), announce_keys.clone());
             tokio::spawn(async move {
                 if keys.is_none() {

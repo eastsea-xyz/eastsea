@@ -42,6 +42,10 @@ text: a new contract
 text: local devnet keys
 text: missing identity
 text: chain id
+# JavaScript bridge lookup expressions replaced when building the isolated
+# app-provider facade; these are source code, never rendered UI text.
+text: window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.aether
+text: window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.eastsea
 text: Sent \(Wei.format(wei)) \(Brand.networkCoinTicker) (nonce \(prepared.nonce))
 text: Paid \(recipients.count) recipients \(Wei.format(wei)) \(Brand.networkCoinTicker) each with one signature (nonce \(prepared.nonce))
 #

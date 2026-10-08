@@ -1,5 +1,8 @@
 import Foundation
 import WebKit
+#if os(macOS)
+import AppKit
+#endif
 
 /// One Explore tab: the WKWebView, the warnings that gate navigation, and
 /// the message bridge that answers `window.aether` (Resources/provider.js —
@@ -24,6 +27,12 @@ final class BrowserController: NSObject, ObservableObject {
     @Published private(set) var canGoBack = false
     /// nil until something was loaded: while nil the curated home shows.
     @Published private(set) var currentURL: URL?
+    @Published private(set) var appIdentity: AppBrowserIdentity?
+    @Published private(set) var contentLoading = false
+    private var appBundle: AppBundle?
+    private var appViewKey: String?
+    private var contentTask: Task<Void, Never>?
+    private var navigationID = UUID()
 
     struct SiteWarning: Identifiable {
         let id = UUID()
@@ -46,6 +55,9 @@ final class BrowserController: NSObject, ObservableObject {
         }
         let id: String
         let kind: Kind
+        let navigationID: UUID
+        let account: String
+        let chainID: UInt64
         let reply: (Result<Any?, ProviderError>) -> Void
     }
 
@@ -77,36 +89,53 @@ final class BrowserController: NSObject, ObservableObject {
     /// time the host changes, so no site's cookies or storage meet another's.
     func webViewFor(url: URL?) -> WKWebView {
         let classification = url.map(BrowserOriginPolicy.classify)
+        let wantApp = url?.scheme == AppBrowserIdentity.scheme ? appIdentity : nil
+        let wantAppKey = wantApp.map { "\($0.permissionKey)/\(appBundle?.bundleHash ?? "")" }
         let wantExternal: String?
         if case .external(let host, _, _)? = classification { wantExternal = host } else { wantExternal = nil }
 
         if let view = webView {
-            if wantExternal == nil && externalHost == nil { return view }
-            if let host = wantExternal, let current = externalHost, host == current { return view }
+            if let key = wantAppKey, key == appViewKey { return view }
+            if wantAppKey == nil && appViewKey == nil {
+                if wantExternal == nil && externalHost == nil { return view }
+                if let host = wantExternal, let current = externalHost, host == current { return view }
+            }
         }
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(BundledPageScheme(root: BundledPageScheme.defaultRoot()
             ?? URL(fileURLWithPath: "/nonexistent")), forURLScheme: BrowserOriginPolicy.bundledScheme)
+        if let identity = wantApp, let bundle = appBundle,
+           let scheme = try? AppBundleScheme(bundle: bundle, appKey: identity.appKey,
+                                            allowUnverifiedDeveloperContent: identity.isDeveloper) {
+            config.setURLSchemeHandler(scheme, forURLScheme: AppBrowserIdentity.scheme)
+            config.websiteDataStore = WKWebsiteDataStore(forIdentifier: identity.storeID)
+        }
         let ucc = config.userContentController
+        let world = wantApp == nil ? WKContentWorld.page : WKContentWorld.world(name: AppProviderBridge.worldName)
         if let providerURL = Bundle.main.url(forResource: "provider", withExtension: "js"),
            let provider = try? String(contentsOf: providerURL, encoding: .utf8) {
-            ucc.addUserScript(WKUserScript(source: provider, injectionTime: .atDocumentStart,
+            if wantApp != nil {
+                ucc.addUserScript(WKUserScript(source: AppProviderBridge.relay, injectionTime: .atDocumentStart,
+                                               forMainFrameOnly: true, in: world))
+            }
+            ucc.addUserScript(WKUserScript(source: wantApp == nil ? provider : AppProviderBridge.facade(provider: provider), injectionTime: .atDocumentStart,
                                            forMainFrameOnly: true))
         }
         // The bundled explorer reads the app's own node: point its saved
         // endpoint at whatever port this Mac's node is on before it boots.
-        if let port = model?.nodeRpcPort {
+        if wantApp == nil, url?.scheme == BrowserOriginPolicy.bundledScheme, let port = model?.nodeRpcPort {
             ucc.addUserScript(WKUserScript(source: Self.explorerBootstrap(port: port),
                                            injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
-        ucc.addScriptMessageHandler(WeakReplyBridge(controller: self, route: Self.providerRoute), contentWorld: .page, name: "aether")
-        ucc.addScriptMessageHandler(WeakReplyBridge(controller: self, route: Self.verifyRoute), contentWorld: .page, name: "eastsea")
+        ucc.addScriptMessageHandler(WeakReplyBridge(controller: self, route: Self.providerRoute), contentWorld: world, name: "aether")
+        ucc.addScriptMessageHandler(WeakReplyBridge(controller: self, route: Self.verifyRoute), contentWorld: world, name: "eastsea")
         if let host = wantExternal {
             config.websiteDataStore = .nonPersistent()
             externalHost = host
         } else {
             externalHost = nil
         }
+        appViewKey = wantAppKey
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -126,23 +155,84 @@ final class BrowserController: NSObject, ObservableObject {
 
     // MARK: - Navigation
 
-    /// The address bar's Go: scheme-less text is treated as a host.
+    /// sea:// names and https pages share the native address bar.
     func open(_ text: String) {
-        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return }
-        let withScheme = raw.contains("://") ? raw : "https://\(raw)"
-        guard let url = URL(string: withScheme) else {
-            notice = String(localized: "That is not a web address.")
-            return
+        do {
+            switch try SeaURL.browserInput(text, chainID: model?.networkChainId ?? Brand.networkChainId) {
+            case .name(let link): openName(link)
+            case .web(let url): load(url)
+            case .action(_, let raw):
+                model?.open(link: raw)
+            }
+        } catch {
+            notice = SeaNameText.message(error)
         }
-        load(url)
+    }
+
+    private func openName(_ link: SeaURL.NameLink) {
+        contentTask?.cancel()
+        cancelPendingRequests()
+        let requestID = navigationID
+        let chain = model?.networkChainId ?? Brand.networkChainId
+        let port = model?.nodeRpcPort ?? 18545
+        let pins = SeaRegistrySources.bundled(chainID: chain)
+        webView?.stopLoading()
+        webView = nil
+        appViewKey = nil
+        appIdentity = nil
+        appBundle = nil
+        notice = nil
+        currentURL = URL(string: link.canonicalURL)
+        addressField = link.canonicalURL
+        contentLoading = true
+        contentTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let record = try await SeaRegistryReader.resolve(link, chainID: chain, port: port, sources: pins)
+                let source = try await NodeAppContentSource(app: record.app, endpoint: URL(string: "http://127.0.0.1:\(port)/")!)
+                guard try await source.page(for: record.app, at: link) != nil else { throw AppContentError.unverifiedContent }
+                // A release/name change during transfer cannot quietly open a
+                // bundle that is no longer the name's active release.
+                let latest = try await SeaRegistryReader.resolve(link, chainID: chain, port: port, sources: pins)
+                guard latest == record else { throw SeaNameResolver.Failure.unstable }
+                try Task.checkCancellation()
+                guard self.navigationID == requestID, self.model?.networkChainId == chain,
+                      let registry = pins?.apps.address else { return }
+                let identity = try AppBrowserIdentity(appID: record.app.appID, name: link.name, chainID: chain, registry: registry)
+                self.contentLoading = false
+                try self.openAppBundle(source.bundle, identity: identity, path: link.path, query: link.query)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.navigationID == requestID else { return }
+                self.contentLoading = false
+                self.notice = error is AppContentError ? error.localizedDescription : SeaNameText.message(error)
+            }
+        }
     }
 
     /// Load a URL through the same rules a link goes through.
     func load(_ url: URL) {
+        if ["sea", "eastsea"].contains(url.scheme?.lowercased() ?? "") {
+            open(url.absoluteString)
+            return
+        }
+        cancelPendingRequests()
+        contentTask?.cancel()
+        contentLoading = false
         notice = nil
+        if url.scheme == AppBrowserIdentity.scheme {
+            guard let identity = appIdentity, url.host == identity.appKey else {
+                notice = String(localized: "This app has not been verified. Open its sea:// name first.")
+                return
+            }
+            webViewFor(url: url).load(URLRequest(url: url))
+            return
+        }
         switch BrowserOriginPolicy.classify(url) {
         case .bundled, .external:
+            appIdentity = nil
+            appBundle = nil
             webViewFor(url: url).load(URLRequest(url: url))
         case .blocked(let why):
             notice = why
@@ -155,7 +245,78 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     func goBack() {
+        cancelPendingRequests()
         webView?.goBack()
+    }
+
+    /// Install only an immutable fully checked bundle (or an explicitly
+    /// selected developer folder). The app never receives a filesystem URL.
+    func openAppBundle(_ bundle: AppBundle, identity: AppBrowserIdentity, path: String = "/", query: String? = nil) throws {
+        guard bundle.isVerified || (identity.isDeveloper && developerModeEnabled) else {
+            throw AppBrowserIdentity.Failure.invalidIdentity
+        }
+        _ = try AppBundleScheme(bundle: bundle, appKey: identity.appKey,
+                                allowUnverifiedDeveloperContent: identity.isDeveloper)
+        let url = try bundle.pageURL(appKey: identity.appKey, path: path, query: query)
+        cancelPendingRequests()
+        appIdentity = identity
+        appBundle = bundle
+        notice = nil
+        webViewFor(url: url).load(URLRequest(url: url))
+    }
+
+    private var developerModeEnabled: Bool { UserDefaults.standard.bool(forKey: "developerMode") }
+
+    #if os(macOS)
+    func openLocalAppFolder() {
+        guard developerModeEnabled else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = String(localized: "Open a local app folder")
+        panel.begin { [weak self] response in
+            guard response == .OK, let folder = panel.url else { return }
+            Task { @MainActor in
+                guard let self, self.developerModeEnabled else { return }
+                do {
+                    let bundle = try LocalAppFolder.load(from: folder, developerModeEnabled: true)
+                    let identity = AppBrowserIdentity(developerSession: UUID(), chainID: self.model?.networkChainId ?? 0)
+                    try self.openAppBundle(bundle, identity: identity)
+                } catch {
+                    self.notice = error.localizedDescription
+                }
+            }
+        }
+    }
+    #endif
+
+    /// Account, network, lock and developer-mode changes invalidate an app's
+    /// provider and outstanding sheets before another request can be accepted.
+    func environmentDidChange() {
+        contentTask?.cancel()
+        contentLoading = false
+        cancelPendingRequests()
+        if appIdentity != nil {
+            webView?.stopLoading()
+            webView = nil
+            appIdentity = nil
+            appBundle = nil
+            appViewKey = nil
+            currentURL = nil
+            notice = String(localized: "The wallet context changed. Open the app again.")
+        }
+    }
+
+    private func cancelPendingRequests() {
+        navigationID = UUID()
+        let pending = (ask.map { [$0] } ?? []) + askQueue
+        ask = nil
+        askQueue.removeAll()
+        for item in pending {
+            item.reply(.failure(ProviderError(code: ProviderErrorCode.denied,
+                                             message: "The page or wallet context changed.")))
+        }
     }
 
     /// The user acknowledged the warning: remember the host (once per site,
@@ -183,21 +344,39 @@ final class BrowserController: NSObject, ObservableObject {
     func approveAsk() {
         guard let pending = ask else { return }
         ask = nil
+        guard let currentModel = model, !currentModel.exploreLocked, pending.navigationID == navigationID,
+              pending.account == currentModel.address, pending.chainID == currentModel.networkChainId else {
+            pending.reply(.failure(ProviderError(code: ProviderErrorCode.denied, message: "The page or wallet context changed.")))
+            drainAskQueue()
+            return
+        }
         switch pending.kind {
-        case .connect(let origin, _):
+        case .connect(let origin, let displayOrigin):
             if let model = model, !model.address.isEmpty {
-                model.grantSitePermission(origin: origin, address: model.address)
+                model.grantSitePermission(origin: origin, address: model.address, displayOrigin: displayOrigin)
                 pending.reply(.success([model.address]))
             } else {
                 pending.reply(.failure(ProviderError(code: ProviderErrorCode.internalError,
                                                       message: "The wallet is not ready.")))
             }
-        case .send(let origin, _, let tx, let feeWei):
+        case .send(let origin, let host, let tx, let feeWei):
+            guard appIdentity?.permitsSigning(developerMode: developerModeEnabled) != false else {
+                pending.reply(.failure(ProviderError(code: ProviderErrorCode.denied,
+                                                     message: "Local app files can sign only on the development network.")))
+                drainAskQueue()
+                return
+            }
             if let model {
                 let shown = tx.isPlainTransfer ? feeWei ?? model.status?.transferFeeWei : nil
                 Task {
+                    guard pending.navigationID == self.navigationID, pending.account == model.address,
+                          pending.chainID == model.networkChainId, !model.exploreLocked else {
+                        pending.reply(.failure(ProviderError(code: ProviderErrorCode.denied,
+                                                             message: "The page or wallet context changed.")))
+                        return
+                    }
                     let (hash, refusal) = await model.sendPageTransaction(tx, origin: origin,
-                                                                          title: origin, shownFeeWei: shown)
+                                                                          title: host, shownFeeWei: shown)
                     if let hash {
                         pending.reply(.success(hash))
                     } else {
@@ -249,7 +428,7 @@ final class BrowserController: NSObject, ObservableObject {
         }
         // The provider lives in the main frame only; a subframe asking is a
         // page trying to look like its parent.
-        guard message.frameInfo.isMainFrame else {
+        guard message.frameInfo.isMainFrame, message.webView === webView else {
             reply(.failure(ProviderError(code: ProviderErrorCode.locked,
                                          message: "This frame cannot talk to the EastSea wallet provider.")))
             return
@@ -258,9 +437,12 @@ final class BrowserController: NSObject, ObservableObject {
             reply(.failure(ProviderError(code: ProviderErrorCode.notAString, message: "method must be a string")))
             return
         }
-        let origin = message.frameInfo.securityOrigin
         let params = (body["params"] as? [Any]) ?? []
-        let key = BrowserOriginPolicy.permissionKey(scheme: origin.protocol, host: origin.host, port: Int(origin.port))
+        guard let context = bridgeContext(message) else {
+            reply(.failure(ProviderError(code: ProviderErrorCode.locked, message: "This page no longer has a wallet provider.")))
+            return
+        }
+        let key = context.key
 
         // Locked: nothing is answered, reads included.
         if let locked = ProviderGate.check(locked: model.exploreLocked) {
@@ -302,12 +484,17 @@ final class BrowserController: NSObject, ObservableObject {
             if let addr = model.connectedSiteAddress(origin: key) {
                 reply(.success([addr]))
             } else {
-                enqueue(.connect(origin: key, host: origin.host), id: body["id"], reply: reply)
+                enqueue(.connect(origin: key, host: context.displayOrigin), id: body["id"], reply: reply)
             }
         case .disconnect:
             model.revokeSitePermission(origin: key)
             reply(.success(NSNull()))
         case .send:
+            guard appIdentity?.permitsSigning(developerMode: developerModeEnabled) != false else {
+                reply(.failure(ProviderError(code: ProviderErrorCode.denied,
+                                             message: "Local app files can sign only on the development network.")))
+                return
+            }
             guard let connected = model.connectedSiteAddress(origin: key) else {
                 reply(.failure(ProviderError(code: ProviderErrorCode.locked,
                                              message: "This site is not connected to an account.")))
@@ -322,7 +509,7 @@ final class BrowserController: NSObject, ObservableObject {
                 } else {
                     feeWei = nil
                 }
-                enqueue(.send(origin: key, host: origin.host, tx: tx, feeWei: feeWei), id: body["id"], reply: reply)
+                enqueue(.send(origin: key, host: context.displayOrigin, tx: tx, feeWei: feeWei), id: body["id"], reply: reply)
             case .failure(let e):
                 reply(.failure(e))
             }
@@ -380,7 +567,7 @@ final class BrowserController: NSObject, ObservableObject {
         }
         // The provider lives in the main frame only; a subframe asking is a
         // page trying to look like its parent.
-        guard message.frameInfo.isMainFrame else {
+        guard message.frameInfo.isMainFrame, message.webView === webView else {
             reply(.failure(ProviderError(code: ProviderErrorCode.locked,
                                          message: "This frame cannot talk to the EastSea wallet provider.")))
             return
@@ -397,8 +584,12 @@ final class BrowserController: NSObject, ObservableObject {
         // Bundled pages always; an external page only over https, and only
         // while its origin is connected to an account (VerifyBridge.allows).
         let origin = message.frameInfo.securityOrigin
-        let key = BrowserOriginPolicy.permissionKey(scheme: origin.protocol, host: origin.host, port: Int(origin.port))
-        guard VerifyBridge.allows(scheme: origin.protocol, connected: model.connectedSiteAddress(origin: key) != nil) else {
+        guard let context = bridgeContext(message) else {
+            reply(.failure(ProviderError(code: ProviderErrorCode.locked, message: "This page no longer has a wallet provider.")))
+            return
+        }
+        let key = context.key
+        guard appIdentity != nil || VerifyBridge.allows(scheme: origin.protocol, connected: model.connectedSiteAddress(origin: key) != nil) else {
             reply(.failure(ProviderError(code: ProviderErrorCode.unsupported,
                                          message: "This page cannot use EastSea verification.")))
             return
@@ -434,8 +625,22 @@ final class BrowserController: NSObject, ObservableObject {
 
     private func enqueue(_ kind: PendingAsk.Kind, id: Any?, reply: @escaping (Result<Any?, ProviderError>) -> Void) {
         let pending = PendingAsk(id: (id as? String).map { "ask-\($0)" } ?? UUID().uuidString,
-                                 kind: kind, reply: reply)
+                                 kind: kind, navigationID: navigationID,
+                                 account: model?.address ?? "", chainID: model?.networkChainId ?? 0, reply: reply)
         if ask == nil { ask = pending } else { askQueue.append(pending) }
+    }
+
+    private func bridgeContext(_ message: WKScriptMessage) -> (key: String, displayOrigin: String)? {
+        guard message.webView === webView, message.frameInfo.isMainFrame else { return nil }
+        let origin = message.frameInfo.securityOrigin
+        if let identity = appIdentity {
+            guard identity.accepts(scheme: origin.protocol, host: origin.host, port: Int(origin.port),
+                                   mainFrame: true, currentChainID: model?.networkChainId ?? 0,
+                                   developerMode: developerModeEnabled) else { return nil }
+            return (identity.permissionKey, identity.displayOrigin)
+        }
+        guard origin.protocol == "https" || origin.protocol == BrowserOriginPolicy.bundledScheme else { return nil }
+        return (BrowserOriginPolicy.permissionKey(scheme: origin.protocol, host: origin.host, port: Int(origin.port)), origin.host)
     }
 
     // MARK: - Reads
@@ -551,6 +756,22 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> WKNavigationActionPolicy {
         guard let url = navigationAction.request.url else { return .cancel }
+        if url.scheme == AppBrowserIdentity.scheme {
+            guard let identity = appIdentity, url.host == identity.appKey,
+                  !identity.isDeveloper || developerModeEnabled,
+                  let bundle = appBundle,
+                  bundle.documentPath(for: url, appKey: identity.appKey) != nil else {
+                notice = String(localized: "This app has not been verified. Open its sea:// name first.")
+                return .cancel
+            }
+            if navigationAction.targetFrame?.isMainFrame == true { cancelPendingRequests() }
+            return .allow
+        }
+        if appIdentity != nil, navigationAction.targetFrame?.isMainFrame != false {
+            load(url)
+            return .cancel
+        }
+        if navigationAction.targetFrame?.isMainFrame == true { cancelPendingRequests() }
         switch BrowserOriginPolicy.classify(url) {
         case .bundled:
             return .allow
@@ -584,10 +805,26 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate {
     /// What the bar shows for a loaded page: the page's own URL, without a
     /// trailing slash theater.
     private func urlBarText(_ url: URL) -> String {
+        if let identity = appIdentity, url.scheme == AppBrowserIdentity.scheme {
+            var text = identity.displayOrigin
+            if url.path != "/index.html" { text += url.path }
+            if let query = url.query { text += "?\(query)" }
+            return text
+        }
         if url.scheme?.lowercased() == BrowserOriginPolicy.bundledScheme {
             return url.host == "explorer" ? String(localized: "Block explorer") : (url.host ?? "")
         }
         return url.absoluteString
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        guard webView === self.webView else { return }
+        notice = error.localizedDescription
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        guard webView === self.webView else { return }
+        notice = error.localizedDescription
     }
 
     // MARK: - WKUIDelegate

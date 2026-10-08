@@ -1,0 +1,1184 @@
+{
+  "version": 1,
+  "reservedHosts": [
+    "pay",
+    "call",
+    "connect",
+    "tx",
+    "app",
+    "follow",
+    "name",
+    "wallet",
+    "settings",
+    "send",
+    "receive",
+    "sign",
+    "deploy",
+    "open"
+  ],
+  "cases": [
+    {
+      "id": "short sea scheme",
+      "input": "sea://harbor",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "long EastSea scheme",
+      "input": "eastsea://harbor",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "explicit sea suffix",
+      "input": "sea://harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "digit starts LDH label",
+      "input": "sea://3harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "3harbor.sea",
+        "canonicalURL": "sea://3harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "3harbor.sea"
+      }
+    },
+    {
+      "id": "middle hyphen",
+      "input": "sea://harbor-swap.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor-swap.sea",
+        "canonicalURL": "sea://harbor-swap.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor-swap.sea"
+      }
+    },
+    {
+      "id": "double middle hyphen remains LDH",
+      "input": "sea://harbor--swap.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor--swap.sea",
+        "canonicalURL": "sea://harbor--swap.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor--swap.sea"
+      }
+    },
+    {
+      "id": "single character resolving label",
+      "input": "sea://x.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "x.sea",
+        "canonicalURL": "sea://x.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "x.sea"
+      }
+    },
+    {
+      "id": "subdomain",
+      "input": "sea://any.harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "any.harbor.sea",
+        "canonicalURL": "sea://any.harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "any.harbor.sea"
+      }
+    },
+    {
+      "id": "nested subdomain",
+      "input": "eastsea://deep.any.harbor.sea/docs",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "deep.any.harbor.sea",
+        "canonicalURL": "sea://deep.any.harbor.sea/docs",
+        "path": "/docs",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "deep.any.harbor.sea"
+      }
+    },
+    {
+      "id": "reserved word is allowed below SLD",
+      "input": "sea://pay.harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "pay.harbor.sea",
+        "canonicalURL": "sea://pay.harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "pay.harbor.sea"
+      }
+    },
+    {
+      "id": "path and query bytes preserved",
+      "input": "eastsea://harbor.sea/a%2Fb/%7E?q=%2f&x=one+two&x=three",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/a%2Fb/%7E?q=%2f&x=one+two&x=three",
+        "path": "/a%2Fb/%7E",
+        "query": "q=%2f&x=one+two&x=three",
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "empty query preserved",
+      "input": "sea://harbor?",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/?",
+        "path": "/",
+        "query": "",
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "63 character label",
+      "input": "sea://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sea",
+        "canonicalURL": "sea://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sea"
+      }
+    },
+    {
+      "id": "253 character hostname",
+      "input": "sea://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.sea",
+        "canonicalURL": "sea://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.sea"
+      }
+    },
+    {
+      "id": "64 character label",
+      "input": "sea://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "254 character hostname",
+      "input": "sea://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.dddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "uppercase short",
+      "input": "sea://Harbor",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "uppercase SLD",
+      "input": "sea://Harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "uppercase TLD",
+      "input": "sea://harbor.SEA",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "leading hyphen",
+      "input": "sea://-harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "trailing hyphen",
+      "input": "sea://harbor-.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "empty label",
+      "input": "sea://any..harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "trailing dot",
+      "input": "sea://harbor.sea.",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "underscore",
+      "input": "sea://harbor_swap.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "unicode IDN",
+      "input": "sea://항구.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "ASCII LDH punycode shape is not decoded",
+      "input": "sea://xn--12c.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "xn--12c.sea",
+        "canonicalURL": "sea://xn--12c.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "xn--12c.sea"
+      }
+    },
+    {
+      "id": "escaped hostname",
+      "input": "sea://har%62or.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "reserved action pay",
+      "input": "sea://pay?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "sea://pay?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD pay",
+      "input": "sea://pay.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action call",
+      "input": "sea://call?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "call",
+        "raw": "sea://call?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD call",
+      "input": "sea://call.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action connect",
+      "input": "sea://connect?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "connect",
+        "raw": "sea://connect?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD connect",
+      "input": "sea://connect.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action tx",
+      "input": "sea://tx?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "tx",
+        "raw": "sea://tx?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD tx",
+      "input": "sea://tx.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action app",
+      "input": "sea://app?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "app",
+        "raw": "sea://app?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD app",
+      "input": "sea://app.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action follow",
+      "input": "sea://follow?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "follow",
+        "raw": "sea://follow?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD follow",
+      "input": "sea://follow.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action name",
+      "input": "sea://name?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "name",
+        "raw": "sea://name?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD name",
+      "input": "sea://name.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action wallet",
+      "input": "sea://wallet?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "wallet",
+        "raw": "sea://wallet?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD wallet",
+      "input": "sea://wallet.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action settings",
+      "input": "sea://settings?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "settings",
+        "raw": "sea://settings?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD settings",
+      "input": "sea://settings.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action send",
+      "input": "sea://send?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "send",
+        "raw": "sea://send?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD send",
+      "input": "sea://send.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action receive",
+      "input": "sea://receive?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "receive",
+        "raw": "sea://receive?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD receive",
+      "input": "sea://receive.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action sign",
+      "input": "sea://sign?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "sign",
+        "raw": "sea://sign?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD sign",
+      "input": "sea://sign.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action deploy",
+      "input": "sea://deploy?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "deploy",
+        "raw": "sea://deploy?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD deploy",
+      "input": "sea://deploy.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved action open",
+      "input": "sea://open?value=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "open",
+        "raw": "sea://open?value=%2f"
+      }
+    },
+    {
+      "id": "reserved SLD open",
+      "input": "sea://open.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "reserved registrable parent",
+      "input": "sea://any.pay.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "external TLD com",
+      "input": "sea://harbor.com/a%2Fb?x=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "externalTLD"
+      },
+      "suggestedHTTPS": "https://harbor.com/a%2Fb?x=%2f"
+    },
+    {
+      "id": "external TLD xyz",
+      "input": "sea://harbor.xyz/a%2Fb?x=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "externalTLD"
+      },
+      "suggestedHTTPS": "https://harbor.xyz/a%2Fb?x=%2f"
+    },
+    {
+      "id": "external TLD net",
+      "input": "sea://harbor.net/a%2Fb?x=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "externalTLD"
+      },
+      "suggestedHTTPS": "https://harbor.net/a%2Fb?x=%2f"
+    },
+    {
+      "id": "external TLD org",
+      "input": "sea://harbor.org/a%2Fb?x=%2f",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "externalTLD"
+      },
+      "suggestedHTTPS": "https://harbor.org/a%2Fb?x=%2f"
+    },
+    {
+      "id": "external subdomain",
+      "input": "eastsea://login.example.com",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "externalTLD"
+      },
+      "suggestedHTTPS": "https://login.example.com/"
+    },
+    {
+      "id": "legacy 7780 alias",
+      "input": "sea://harbor.aeth",
+      "operation": "parse",
+      "chainID": 7780,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": true,
+        "registryName": "harbor.aeth"
+      }
+    },
+    {
+      "id": "legacy nested alias",
+      "input": "eastsea://any.harbor.aeth/p?q=1",
+      "operation": "parse",
+      "chainID": 7780,
+      "expected": {
+        "kind": "name",
+        "name": "any.harbor.sea",
+        "canonicalURL": "sea://any.harbor.sea/p?q=1",
+        "path": "/p",
+        "query": "q=1",
+        "isLegacy": true,
+        "registryName": "any.harbor.aeth"
+      }
+    },
+    {
+      "id": "legacy alias forbidden on new chain",
+      "input": "sea://harbor.aeth",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "legacyNameUnsupported"
+      }
+    },
+    {
+      "id": "legacy eastsea pay",
+      "input": "eastsea://pay?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "eastsea://pay?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second"
+      }
+    },
+    {
+      "id": "legacy eastsea call",
+      "input": "eastsea://call?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "call",
+        "raw": "eastsea://call?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second"
+      }
+    },
+    {
+      "id": "legacy eastsea connect",
+      "input": "eastsea://connect?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "connect",
+        "raw": "eastsea://connect?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second"
+      }
+    },
+    {
+      "id": "legacy eastsea tx",
+      "input": "eastsea://tx?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "tx",
+        "raw": "eastsea://tx?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second"
+      }
+    },
+    {
+      "id": "legacy aether pay",
+      "input": "aether://pay?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "aether://pay?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second"
+      }
+    },
+    {
+      "id": "legacy aether call",
+      "input": "aether://call?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "call",
+        "raw": "aether://call?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second"
+      }
+    },
+    {
+      "id": "legacy aether connect",
+      "input": "aether://connect?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "connect",
+        "raw": "aether://connect?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second"
+      }
+    },
+    {
+      "id": "legacy aether tx",
+      "input": "aether://tx?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "tx",
+        "raw": "aether://tx?to=0xabc&amount=1.5&callback=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1&memo=a+b&memo=second"
+      }
+    },
+    {
+      "id": "legacy scheme cannot resolve new names",
+      "input": "aether://harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "unsupportedScheme"
+      }
+    },
+    {
+      "id": "missing authority",
+      "input": "sea://",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "userinfo authority",
+      "input": "sea://user@harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "authority port",
+      "input": "sea://harbor.sea:443",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "backslash authority",
+      "input": "sea://harbor.sea\\evil",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "fragment rejected",
+      "input": "sea://harbor.sea/path#pay",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "whitespace URL",
+      "input": "sea://harbor.sea/a b",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "control character",
+      "input": "sea://harbor.sea/\n",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "malformed percent path",
+      "input": "sea://harbor.sea/%zz",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "missing slashes",
+      "input": "sea:harbor",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "raw absolute path",
+      "input": "/harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "unknown explicit scheme",
+      "input": "xyz://harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "unsupportedScheme"
+      }
+    },
+    {
+      "id": "https is not a custom link",
+      "input": "https://harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "unsupportedScheme"
+      }
+    },
+    {
+      "id": "browser bare short",
+      "input": "harbor",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "browser trimmed input",
+      "input": "  harbor  ",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "browser bare suffix",
+      "input": "harbor.sea",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "browser short scheme",
+      "input": "sea://harbor/path?x=%2f",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/path?x=%2f",
+        "path": "/path",
+        "query": "x=%2f",
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "browser long scheme",
+      "input": "eastsea://harbor.sea",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "browser legacy alias",
+      "input": "harbor.aeth",
+      "operation": "browser",
+      "chainID": 7780,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": true,
+        "registryName": "harbor.aeth"
+      }
+    },
+    {
+      "id": "browser legacy chain gate",
+      "input": "harbor.aeth",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "error": "legacyNameUnsupported"
+      }
+    },
+    {
+      "id": "browser uppercase rejected",
+      "input": "Harbor.sea",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "browser reserved bare name",
+      "input": "pay",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "error": "reservedName"
+      }
+    },
+    {
+      "id": "browser external domain",
+      "input": "example.com/a%2Fb?x=%2f",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "error": "externalTLD"
+      },
+      "suggestedHTTPS": "https://example.com/a%2Fb?x=%2f"
+    },
+    {
+      "id": "browser external custom scheme",
+      "input": "eastsea://example.xyz",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "error": "externalTLD"
+      },
+      "suggestedHTTPS": "https://example.xyz/"
+    },
+    {
+      "id": "browser empty",
+      "input": "   ",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "browser action link",
+      "input": "sea://pay?to=0xabc&amount=1",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "sea://pay?to=0xabc&amount=1"
+      }
+    },
+    {
+      "id": "browser explicit http",
+      "input": "http://example.com/a%2Fb?x=%2f",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "kind": "web",
+        "url": "http://example.com/a%2Fb?x=%2f"
+      }
+    },
+    {
+      "id": "browser explicit https",
+      "input": "https://example.com/a%2Fb?x=%2f",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "kind": "web",
+        "url": "https://example.com/a%2Fb?x=%2f"
+      }
+    },
+    {
+      "id": "legacy compact aether action",
+      "input": "aether:pay?amount=1&memo=a%2Bb",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "aether:pay?amount=1&memo=a%2Bb"
+      }
+    },
+    {
+      "id": "legacy compact eastsea action",
+      "input": "eastsea:pay?amount=1&memo=a%2Bb",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "eastsea:pay?amount=1&memo=a%2Bb"
+      }
+    },
+    {
+      "id": "legacy action fragment unchanged",
+      "input": "aether://pay?to=0xabc&amount=1#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "aether://pay?to=0xabc&amount=1#receipt"
+      }
+    },
+    {
+      "id": "upper scheme is URI case insensitive",
+      "input": "SEA://harbor.sea",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "legacy action malformed percent bytes retained",
+      "input": "aether://pay?to=0xabc&amount=1&memo=%ZZ&memo=%2",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "aether://pay?to=0xabc&amount=1&memo=%ZZ&memo=%2"
+      }
+    },
+    {
+      "id": "legacy compact action malformed escapes retained",
+      "input": "eastsea:call?data=0x1234&callback=https%3A%2F%2Fexample.com%2F%zz#ignored",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "call",
+        "raw": "eastsea:call?data=0x1234&callback=https%3A%2F%2Fexample.com%2F%zz#ignored"
+      }
+    }
+  ]
+}

@@ -13,6 +13,7 @@ struct SimpleDashboard: View {
     @State private var page: Page? = .home
     @State private var sheet: Sheet?
     @AppStorage("acceptedTerms") private var acceptedTerms = 0
+    @AppStorage("developerMode") private var developerMode = false
     #if os(macOS)
     @EnvironmentObject var node: NodeController
     /// Asked once whether this Mac should become a voting node.
@@ -62,7 +63,14 @@ struct SimpleDashboard: View {
         shell
             .tint(.aether)
             .environmentObject(browser)
-            .onAppear { browser.attach(model: model) }
+            .onAppear {
+                browser.attach(model: model)
+                if let request = model.browserLinkRequest {
+                    page = .explore
+                    browser.open(request.raw)
+                    model.browserLinkRequest = nil
+                }
+            }
             .sheet(item: $sheet) { s in sheetContent(s) }
             #if DEBUG
             .onAppear { applyPreview() }
@@ -81,6 +89,18 @@ struct SimpleDashboard: View {
             // "Send again at the current fee": the normal send sheet, filled in (bug #5).
             .onChange(of: model.resendRequest) { _, r in if r != nil { sheet = .send } }
             .onChange(of: model.agentTransactionHash) { _, hash in if hash != nil { page = .security } }
+            .onChange(of: model.browserLinkRequest) { _, request in
+                if let request {
+                    page = .explore
+                    browser.open(request.raw)
+                    model.browserLinkRequest = nil
+                }
+            }
+            .onChange(of: model.nodeRpcPort) { _, _ in browser.environmentDidChange() }
+            .onChange(of: model.networkChainId) { _, _ in browser.environmentDidChange() }
+            .onChange(of: model.address) { _, _ in browser.environmentDidChange() }
+            .onChange(of: model.exploreLocked) { _, _ in browser.environmentDidChange() }
+            .onChange(of: developerMode) { _, _ in browser.environmentDidChange() }
             #if os(macOS)
             // Once the node has caught up and this Mac is not registered, ask once.
             .onChange(of: node.voting) { _, _ in inviteIfReady() }

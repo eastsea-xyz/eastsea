@@ -28,6 +28,9 @@ pub type Marshal = commonware_consensus::marshal::core::Mailbox<aether_light::Sc
 #[derive(Clone)]
 pub struct RpcState {
     pub chain: Chain,
+    /// Verified app content for the local wallet. Public peers use the separate
+    /// opt-in aether/apps/1 seeder; they cannot trigger cache downloads.
+    pub app_bundles: Option<Arc<crate::app_bundle::Service>>,
     /// Source of finalized blocks and certificates for light clients.
     pub finality: Finality,
     /// Accepted txs are forwarded here for p2p gossip.
@@ -301,8 +304,10 @@ pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
     axum::serve(listener, app).await
 }
 
-async fn handle(State(st): State<RpcState>, Json(req): Json<Value>) -> Json<Value> {
-    Json(handle_value(&st, req).await)
+async fn handle(State(st): State<RpcState>, headers: axum::http::HeaderMap, Json(req): Json<Value>) -> Json<Value> {
+    // Native URLSession requests have no Origin. Browser origins may use the
+    // existing public reads, but cannot trigger owner-local app downloads.
+    Json(handle_value_with_context(&st, req, !headers.contains_key(axum::http::header::ORIGIN)).await)
 }
 
 /// The public gateway refuses an oversized request at the header stage, so the
@@ -450,6 +455,10 @@ fn normalize_method(method: &str) -> std::borrow::Cow<'_, str> {
 /// Transport-independent JSON-RPC handling (HTTP on loopback, iroh QUIC publicly).
 /// A request array is a batch, answered entry by entry; entries may not nest.
 pub async fn handle_value(st: &RpcState, req: Value) -> Value {
+    handle_value_with_context(st, req, true).await
+}
+
+async fn handle_value_with_context(st: &RpcState, req: Value, local_wallet: bool) -> Value {
     if let Value::Array(entries) = &req {
         if entries.is_empty() {
             return json!({ "jsonrpc": "2.0", "id": Value::Null, "error": { "code": -32600, "message": "empty batch" } });
@@ -461,16 +470,16 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
         let mut answers = Vec::with_capacity(entries.len());
         for e in entries {
             answers.push(match e {
-                Value::Object(_) => single(st, e.clone()).await,
+                Value::Object(_) => single(st, e.clone(), local_wallet).await,
                 _ => json!({ "jsonrpc": "2.0", "id": Value::Null, "error": { "code": -32600, "message": "batch entries must be objects" } }),
             });
         }
         return json!(answers);
     }
-    single(st, req).await
+    single(st, req, local_wallet).await
 }
 
-async fn single(st: &RpcState, req: Value) -> Value {
+async fn single(st: &RpcState, req: Value, local_wallet: bool) -> Value {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let method = normalize_method(req.get("method").and_then(Value::as_str).unwrap_or_default());
     let params = req.get("params").cloned().unwrap_or(Value::Array(vec![]));
@@ -482,6 +491,8 @@ async fn single(st: &RpcState, req: Value) -> Value {
         }
     }
     let result = match &*method {
+        "aether_appBundle" if !local_wallet => Err((-32601, "app bundle fetching is a node-local wallet method".into())),
+        "aether_appBundle" => app_bundle(st, &params).await,
         "aether_getFinalized" => finalized(st, &params).await,
         "eth_call" => eth_call(st, &params, if st.public_read_only { PUBLIC_CALL_GAS } else { PRIVATE_CALL_GAS }).await,
         "aether_getReceiptProof" => receipt_proof(st, &params).await,
@@ -528,6 +539,22 @@ async fn single(st: &RpcState, req: Value) -> Value {
 }
 
 type RpcResult = Result<Value, (i64, String)>;
+
+async fn app_bundle(st: &RpcState, p: &Value) -> RpcResult {
+    let hash = p.get(0).and_then(Value::as_str).ok_or((-32602, "params: [bundleHash, path]".to_string()))?;
+    let path = p.get(1).and_then(Value::as_str).ok_or((-32602, "params: [bundleHash, path]".to_string()))?;
+    crate::app_bundle::normalize_hash(hash).map_err(|e| (-32602, e))?;
+    crate::app_bundle::validate_path(path).map_err(|e| (-32602, e))?;
+    let service = st.app_bundles.as_ref().ok_or((-32000, "app bundle service is unavailable on this node".to_string()))?;
+    service.rpc(hash, path).await.map_err(|e| (-32000, e))
+}
+
+/// The app fetch RPC belongs to loopback HTTP. An unauthenticated public
+/// wallet RPC peer may read seeded bytes on ALPN_APPS, but cannot allocate
+/// this node's cache or disclose which apps its owner has pinned.
+pub async fn handle_peer_value(st: &RpcState, req: Value) -> Value {
+    handle_value_with_context(st, req, false).await
+}
 
 /// A finalized receipt with its inclusion proof and the block certificate.
 async fn receipt_proof(st: &RpcState, p: &Value) -> RpcResult {
@@ -1307,6 +1334,7 @@ fn bare_state() -> RpcState {
         prover: None,
         shards: None,
         public_read_only: false,
+        app_bundles: None,
     }
 }
 
@@ -1318,6 +1346,87 @@ async fn call(st: &RpcState, method: &str, params: Value) -> Value {
 #[cfg(test)]
 pub(crate) fn writer_lease_status_for_test() -> Value {
     dispatch(&bare_state(), "aether_status", &json!([])).expect("fixture status routes")
+}
+
+#[cfg(test)]
+mod app_wallet_context_tests {
+    use super::*;
+
+    fn app(id: Value, method: &str) -> Value {
+        json!({ "jsonrpc": "2.0", "id": id, "method": method,
+            "params": ["00".repeat(32), "index.html"] })
+    }
+
+    async fn http(state: RpcState, origin: Option<&str>, request: Value) -> Value {
+        use tower::ServiceExt as _;
+        let router = Router::new().route("/", post(handle)).with_state(state);
+        let mut builder = axum::http::Request::builder().method("POST").uri("/")
+            .header(axum::http::header::CONTENT_TYPE, "application/json");
+        if let Some(origin) = origin { builder = builder.header(axum::http::header::ORIGIN, origin); }
+        let response = router.oneshot(builder.body(axum::body::Body::from(serde_json::to_vec(&request).unwrap())).unwrap()).await.unwrap();
+        assert!(response.status().is_success());
+        let bytes = axum::body::to_bytes(response.into_body(), PUBLIC_MAX_BODY).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn native_http_without_origin_reaches_app_service_and_other_reads() {
+        let request = app(json!("native"), "aether_appBundle");
+        let response = http(bare_state(), None, request.clone()).await;
+        assert_eq!(response["id"], "native");
+        assert_eq!(response["error"]["code"], -32000);
+        assert_eq!(response["error"]["message"], "app bundle service is unavailable on this node");
+        assert_eq!(response, handle_value(&bare_state(), request).await);
+        let read = http(bare_state(), None, json!({ "id": 27, "method": "eth_chainId" })).await;
+        assert_eq!(read["id"], 27);
+        assert_eq!(read["result"], "0x1e65");
+    }
+
+    #[tokio::test]
+    async fn origin_headers_and_iroh_deny_app_entries_and_keep_mixed_batch_ids() {
+        let batch = json!([
+            { "jsonrpc": "2.0", "id": "read", "method": "eth_chainId", "params": [] },
+            app(json!(17), "aether_appBundle"),
+            app(json!("alias"), "eastsea_appBundle"),
+            { "jsonrpc": "2.0", "id": 99, "method": "eth_blockNumber", "params": [] },
+            [app(json!("nested"), "aether_appBundle")],
+            false
+        ]);
+        let peer = handle_peer_value(&bare_state(), batch.clone()).await;
+        let rows = peer.as_array().expect("a mixed batch still returns an array");
+        assert_eq!(rows.len(), 6);
+        assert_eq!(rows[0]["id"], "read");
+        assert_eq!(rows[0]["result"], "0x1e65");
+        for (i, id) in [(1, json!(17)), (2, json!("alias"))] {
+            assert_eq!(rows[i]["id"], id);
+            assert_eq!(rows[i]["error"]["code"], -32601);
+            assert_eq!(rows[i]["error"]["message"], "app bundle fetching is a node-local wallet method");
+        }
+        assert_eq!(rows[3]["id"], 99);
+        assert_eq!(rows[3]["result"], "0x0");
+        for row in &rows[4..] {
+            assert!(row["id"].is_null());
+            assert_eq!(row["error"]["code"], -32600);
+            assert_eq!(row["error"]["message"], "batch entries must be objects");
+        }
+        for origin in ["https://example.invalid", "null", ""] {
+            assert_eq!(http(bare_state(), Some(origin), batch.clone()).await, peer);
+            let single = http(bare_state(), Some(origin), app(json!("one"), "eastsea_appBundle")).await;
+            assert_eq!(single["id"], "one");
+            assert_eq!(single["error"]["code"], -32601);
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_and_origin_contexts_keep_public_batch_caps_and_empty_errors() {
+        let mut state = bare_state();
+        state.public_read_only = true;
+        for request in [json!([]), json!(vec![json!({ "id": 1, "method": "aether_status" }); PUBLIC_MAX_BATCH + 1])] {
+            let expected = handle_value(&state, request.clone()).await;
+            assert_eq!(handle_peer_value(&state, request.clone()).await, expected);
+            assert_eq!(http(state.clone(), Some("https://example.invalid"), request).await, expected);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1676,6 +1785,7 @@ mod release_tests {
             prover: None,
             shards: None,
             public_read_only: false,
+            app_bundles: None,
         };
         st.snapshot.0.building.store(true, Ordering::Release);
         assert!(cached_snapshot(&st).unwrap_err().1.contains("already running"));
@@ -2203,7 +2313,7 @@ mod public_read_tests {
                 gossip,
                 faucet: None, registrar: None, network: None, upstream: None,
                 handoff: None, snapshot: Default::default(), prover: None,
-                shards: None, public_read_only: public,
+                shards: None, app_bundles: None, public_read_only: public,
             }
         };
         let free = || {
@@ -2272,7 +2382,7 @@ mod public_read_tests {
             gossip,
             faucet: None, registrar: None, network: None, upstream: None,
             handoff: None, snapshot: Default::default(), prover: None,
-            shards: None, public_read_only: false,
+            shards: None, app_bundles: None, public_read_only: false,
         };
         let app = Router::new().route("/era/{name}", get(serve_era_file)).with_state(st);
         rt.block_on(async {
@@ -2337,7 +2447,7 @@ mod public_read_tests {
             gossip,
             faucet: None, registrar: None, network: None, upstream: None,
             handoff: None, snapshot: Default::default(), prover: None,
-            shards: None, public_read_only: false,
+            shards: None, app_bundles: None, public_read_only: false,
         };
         let app = Router::new().route("/era/{name}", get(serve_era_file)).with_state(st);
         rt.block_on(async {
@@ -2468,7 +2578,7 @@ mod public_read_tests {
             gossip,
             faucet: None, registrar: None, network: None, upstream: None,
             handoff: None, snapshot: Default::default(), prover: None,
-            shards: None, public_read_only: true,
+            shards: None, app_bundles: None, public_read_only: true,
         };
         st.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
         // The budget already exhausted by other strangers' reconstructions:
@@ -2522,7 +2632,7 @@ mod public_read_tests {
             gossip,
             faucet: None, registrar: None, network: None, upstream: None,
             handoff: None, snapshot: Default::default(), prover: None,
-            shards: None, public_read_only: false,
+            shards: None, app_bundles: None, public_read_only: false,
         };
         rt.block_on(async {
             let a = tokio::spawn({

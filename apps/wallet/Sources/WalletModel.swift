@@ -104,6 +104,12 @@ final class WalletModel: ObservableObject {
 
     // MARK: Explore tab (the in-app browser)
 
+    struct BrowserLinkRequest: Equatable {
+        let id = UUID()
+        let raw: String
+    }
+    @Published var browserLinkRequest: BrowserLinkRequest?
+
     /// While this is true, the Explore tab's provider answers nothing — reads
     /// included — exactly as the extension's vault does while locked.
     var exploreLocked: Bool { enclave == nil || keyError != nil }
@@ -121,8 +127,8 @@ final class WalletModel: ObservableObject {
     }
 
     /// Remember (or replace) a site's grant after the user approved the sheet.
-    func grantSitePermission(origin: String, address: String) {
-        sitePermissions.grant(origin: origin, address: address)
+    func grantSitePermission(origin: String, address: String, displayOrigin: String? = nil) {
+        sitePermissions.grant(origin: origin, address: address, displayOrigin: displayOrigin)
         sitePermissions.save()
     }
 
@@ -152,7 +158,7 @@ final class WalletModel: ObservableObject {
         let validatorsNow = validators
         let action = CallDescribe.action(to: tx.to, data: tx.data)
         let who = tx.to.isEmpty ? "a new contract" : Short.address(tx.to)
-        let item = ActivityItem(kind: .sent, title: "\(action) at \(origin)",
+        let item = ActivityItem(kind: .sent, title: "\(action) at \(title)",
                                 amount: Double(Wei.format(tx.valueWei)).map { -$0 },
                                 recipients: tx.to.isEmpty ? [] : [tx.to.lowercased()])
         do {
@@ -819,13 +825,24 @@ final class WalletModel: ObservableObject {
     /// `aether://pay?to=0x…&amount=1.5&memo=…&callback=https://…` from a web page
     /// (no extension needed): the payment is shown for approval, never sent by itself.
     func open(url: URL) {
-        // The rename kept every existing aether:// payment link alive: both
-        // schemes stay registered and both are parsed the same way.
-        guard url.scheme == "eastsea" || url.scheme == "aether",
-              let c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        open(link: url.absoluteString)
+    }
+
+    func open(link raw: String) {
+        let parsed: SeaURL.Link
+        do { parsed = try SeaURL.parse(raw, chainID: status?.chainId ?? Brand.networkChainId) }
+        catch {
+            browserLinkRequest = BrowserLinkRequest(raw: raw)
+            return
+        }
+        if case .name = parsed {
+            browserLinkRequest = BrowserLinkRequest(raw: raw)
+            return
+        }
+        guard case .action(let action, let original) = parsed,
+              let c = URLComponents(string: original) else { return }
         // A repeated parameter keeps its first value (never a crash on odd links).
         let q = Dictionary((c.queryItems ?? []).compactMap { i in i.value.map { (i.name, $0) } }, uniquingKeysWith: { first, _ in first })
-        let action = c.host ?? c.path
         // One request at a time, never written into what the user is typing.
         guard paymentRequest == nil, callRequest == nil, connectRequest == nil else {
             note("Ignored a link while another request is waiting for approval")

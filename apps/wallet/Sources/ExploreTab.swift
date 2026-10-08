@@ -8,6 +8,7 @@ import WebKit
 struct ExplorePage: View {
     @EnvironmentObject var model: WalletModel
     @EnvironmentObject var browser: BrowserController
+    @AppStorage("developerMode") private var developerMode = false
     /// Back to Home, always in the address bar: a page in the full-bleed
     /// web view must never be a dead end (founder report on 0.7.0).
     var goHome: (() -> Void)?
@@ -15,6 +16,17 @@ struct ExplorePage: View {
     var body: some View {
         VStack(spacing: 0) {
             addressBar
+            if browser.appIdentity?.isDeveloper == true {
+                Label("In development · not verified", systemImage: "exclamationmark.triangle.fill")
+                    .font(.aeFootnote.bold()).foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .background(Color.red.opacity(0.12))
+            }
+            if browser.contentLoading {
+                ProgressView("Fetching and verifying app files…")
+                    .font(.aeFootnote).padding(8)
+            }
             if let n = browser.notice {
                 Text(n).font(.aeFootnote).foregroundStyle(Color.warn)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -53,12 +65,23 @@ struct ExplorePage: View {
                     .buttonStyle(.borderless).help("Back")
             }
             #endif
-            Image(systemName: "lock.fill").font(.aeCaption).foregroundStyle(.secondary)
+            Image(systemName: browser.appIdentity?.isDeveloper == true ? "exclamationmark.triangle" : "lock.fill")
+                .font(.aeCaption).foregroundStyle(.secondary)
             TextField("Enter a web address (https)", text: $browser.addressField)
                 .textFieldStyle(.roundedBorder).font(.aeBody)
                 .onSubmit { browser.open(browser.addressField) }
             Button("Go") { browser.open(browser.addressField) }
                 .buttonStyle(.borderedProminent).disabled(browser.addressField.trimmingCharacters(in: .whitespaces).isEmpty)
+            #if os(macOS)
+            if developerMode {
+                Button { browser.openLocalAppFolder() } label: {
+                    Image(systemName: "folder")
+                }
+                .buttonStyle(.bordered)
+                .help("Open a local app folder")
+                .accessibilityLabel("Open a local app folder")
+            }
+            #endif
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
     }
@@ -258,7 +281,7 @@ struct ConnectedSitesSection: View {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(site.origin).font(.aeBody.monospaced())
+                                Text(site.displayOrigin ?? site.origin).font(.aeBody.monospaced())
                                 Text("may see \(Short.address(site.address)) · connected \(site.grantedAt, style: .date)")
                                     .font(.aeFootnote).foregroundStyle(.secondary)
                             }

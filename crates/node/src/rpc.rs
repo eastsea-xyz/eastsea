@@ -164,11 +164,37 @@ struct SnapshotCacheInner {
     building: AtomicBool,
     last_attempt: Mutex<Option<Instant>>,
     manifest: Mutex<Option<(std::sync::Weak<Vec<u8>>, String)>>,
+    /// The snapshot a rebuild replaced, and when: its chunks stay served for
+    /// [`SNAPSHOT_GRACE`], so a follower mid-download finishes the snapshot it
+    /// started instead of failing on "moved on" (2026-10-07).
+    previous: Mutex<Option<(CachedSnapshot, Instant)>>,
 }
+
+/// How long a replaced snapshot's chunks stay downloadable.
+pub const SNAPSHOT_GRACE: Duration = Duration::from_secs(10 * 60);
 
 impl SnapshotCache {
     pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Option<CachedSnapshot>>> {
         self.0.bytes.lock()
+    }
+
+    /// The bytes of the snapshot at `height` while it is served: the current
+    /// one, or the one it replaced within [`SNAPSHOT_GRACE`] (an expired one
+    /// is dropped here). `Err` names the current height, as before.
+    fn at(&self, height: u64) -> Result<Arc<Vec<u8>>, (i64, String)> {
+        let current = self.lock().expect("snapshot cache").clone();
+        let (h, bytes) = current.ok_or((-32000, "snapshot not available; request aether_snapshot first".to_string()))?;
+        if h == height {
+            return Ok(bytes);
+        }
+        let mut previous = self.0.previous.lock().expect("previous snapshot");
+        if previous.as_ref().is_some_and(|(_, at)| at.elapsed() >= SNAPSHOT_GRACE) {
+            *previous = None;
+        }
+        match previous.as_ref() {
+            Some(((ph, bytes), _)) if *ph == height => Ok(bytes.clone()),
+            _ => Err((-32000, format!("snapshot moved on to height {h}"))),
+        }
     }
 
     fn manifest(&self, bytes: &Arc<Vec<u8>>) -> String {
@@ -227,7 +253,8 @@ fn cached_snapshot(st: &RpcState) -> Result<CachedSnapshot, (i64, String)> {
     }
     let built = (s.summary.height, Arc::new(bytes));
     *st.snapshot.0.manifest.lock().expect("snapshot manifest") = Some((Arc::downgrade(&built.1), blake3_hex(&built.1)));
-    *st.snapshot.lock().expect("snapshot cache") = Some(built.clone());
+    let replaced = st.snapshot.lock().expect("snapshot cache").replace(built.clone());
+    *st.snapshot.0.previous.lock().expect("previous snapshot") = replaced.map(|old| (old, Instant::now()));
     Ok(built)
 }
 
@@ -483,6 +510,7 @@ async fn single(st: &RpcState, req: Value) -> Value {
     }
     let result = match &*method {
         "aether_getFinalized" => finalized(st, &params).await,
+        "aether_getFinalizedRange" => finalized_range(st, &params).await,
         "eth_call" => eth_call(st, &params, if st.public_read_only { PUBLIC_CALL_GAS } else { PRIVATE_CALL_GAS }).await,
         "aether_getReceiptProof" => receipt_proof(st, &params).await,
         "aether_historyProof" => history_proof(st, &params).await,
@@ -569,6 +597,49 @@ async fn receipt_proof(st: &RpcState, p: &Value) -> RpcResult {
 
 /// Codec bytes of finalized block `h` and its finalization certificate.
 /// Light clients verify both themselves; nothing here needs to be trusted.
+/// Blocks one `aether_getFinalizedRange` answer may hold.
+pub const FINALIZED_RANGE_MAX: u64 = 32;
+/// Its answer stops growing past this many bytes of hex (one block always fits).
+const FINALIZED_RANGE_BYTES: usize = 4 << 20;
+/// Range answers built at once by this node, across every peer: one range
+/// costs a peer one token at the transport but up to 32 block reads here, so
+/// the work it can ask for at once is bounded — the rest hear "server busy"
+/// with a retry hint, as at the transport.
+const FINALIZED_RANGE_CONCURRENT: usize = 8;
+static FINALIZED_RANGES: AtomicUsize = AtomicUsize::new(0);
+
+/// `[from, count]`: `aether_getFinalized` for `from..from+count` (at most
+/// [`FINALIZED_RANGE_MAX`]) in one answer — a follower catching up asks one
+/// request per span instead of one per block. The list stops at the first
+/// height this node has no certified block for, or at the byte budget; an
+/// error on the first height is the answer (a pruned one sends the follower
+/// to the era file), one later just ends the list.
+async fn finalized_range(st: &RpcState, p: &Value) -> RpcResult {
+    let from: u64 = param(p, 0)?;
+    let count: u64 = param::<u64>(p, 1)?.clamp(1, FINALIZED_RANGE_MAX);
+    let Some(_slot) = BudgetSlot::acquire(&FINALIZED_RANGES, FINALIZED_RANGE_CONCURRENT) else {
+        return Err((-32000, format!("{}; retry_after_ms=100", aether_net::BUSY)));
+    };
+    let mut out = Vec::new();
+    let mut bytes = 0usize;
+    for h in from..from.saturating_add(count) {
+        let v = match finalized(st, &json!([h])).await {
+            Ok(v) => v,
+            Err(e) if out.is_empty() => return Err(e),
+            Err(_) => break,
+        };
+        if v.is_null() {
+            break;
+        }
+        bytes += v["block"].as_str().map_or(0, str::len) + v["finalization"].as_str().map_or(0, str::len);
+        out.push(v);
+        if bytes >= FINALIZED_RANGE_BYTES {
+            break;
+        }
+    }
+    Ok(Value::Array(out))
+}
+
 async fn finalized(st: &RpcState, p: &Value) -> RpcResult {
     use commonware_codec::Encode;
     use commonware_consensus::types::Height;
@@ -874,6 +945,11 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // caught up, or when nothing told it a height), and whether it
                 // is still catching up.
                 "catching_up": behind > 0,
+                // The gap a snapshot jump skipped, while its certified blocks
+                // are backfilled newest first (null: none running). The app
+                // shows "이전 내역을 불러오는 중" while it is set; balances and
+                // beacons are current regardless.
+                "backfill": crate::backfill::status(),
                 "behind": behind,
                 // Stage-wise progress (red team #2): a frozen height with a
                 // rising `activity` is a node busy on a snapshot, a store
@@ -959,11 +1035,9 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let height: u64 = param(p, 0)?;
             let index: usize = param(p, 1)?;
             // Chunk requests never initiate a rebuild. An old manifest stays
-            // downloadable while the next manifest is being prepared.
-            let (h, bytes) = st.snapshot.lock().expect("snapshot cache").clone().ok_or((-32000, "snapshot not available; request aether_snapshot first".to_string()))?;
-            if h != height {
-                return Err((-32000, format!("snapshot moved on to height {h}")));
-            }
+            // downloadable while the next manifest is being prepared, and for
+            // SNAPSHOT_GRACE after it replaced it.
+            let bytes = st.snapshot.at(height)?;
             let start = index.saturating_mul(SNAPSHOT_CHUNK).min(bytes.len());
             let end = (start + SNAPSHOT_CHUNK).min(bytes.len());
             Ok(json!({ "data": hex::encode(&bytes[start..end]) }))
@@ -1645,6 +1719,81 @@ mod release_tests {
         assert_eq!(page["entries"][0]["published_at"], 1_000);
         assert_eq!(page["entries"][0]["emergency"], true);
         assert!(release_entries(&state, address, 2, 1, 200)["entries"].as_array().unwrap().is_empty());
+    }
+
+    fn bare_state(archive: Arc<crate::follow::FinalityArchive>) -> RpcState {
+        let (chain, _) = Chain::new(crate::chain::ChainConfig {
+            chain_id: 7781,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        });
+        RpcState {
+            chain,
+            finality: Finality::Archive(archive),
+            gossip: mpsc::unbounded_channel().0,
+            faucet: None,
+            registrar: None,
+            network: None,
+            upstream: None,
+            handoff: None,
+            snapshot: Default::default(),
+            prover: None,
+            shards: None,
+            public_read_only: false,
+        }
+    }
+
+    /// 2026-10-07: a follower's download failed whenever the validator's
+    /// snapshot was rebuilt under it. The replaced snapshot's chunks stay
+    /// served for the grace window; after it, the old answer stands.
+    #[test]
+    fn a_replaced_snapshot_stays_downloadable_for_the_grace_window() {
+        let st = bare_state(Default::default());
+        let (old, new) = (Arc::new(vec![1u8; 10]), Arc::new(vec![2u8; 10]));
+        *st.snapshot.lock().unwrap() = Some((10, new.clone()));
+        *st.snapshot.0.previous.lock().unwrap() = Some(((5, old.clone()), Instant::now()));
+        assert!(Arc::ptr_eq(&st.snapshot.at(10).unwrap(), &new), "the current one");
+        assert!(Arc::ptr_eq(&st.snapshot.at(5).unwrap(), &old), "the replaced one, inside the grace window");
+        assert_eq!(st.snapshot.at(7).unwrap_err().1, "snapshot moved on to height 10", "any other height: as before");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let chunk = rt.block_on(handle_value(&st, json!({ "id": 1, "method": "aether_snapshotChunk", "params": [5, 0] })));
+        assert_eq!(chunk["result"]["data"], hex::encode([1u8; 10]), "{chunk}");
+        let expired = Instant::now().checked_sub(SNAPSHOT_GRACE + Duration::from_secs(1)).unwrap();
+        *st.snapshot.0.previous.lock().unwrap() = Some(((5, old), expired));
+        assert_eq!(st.snapshot.at(5).unwrap_err().1, "snapshot moved on to height 10", "the grace window is over");
+        assert!(st.snapshot.0.previous.lock().unwrap().is_none(), "and the bytes are let go");
+    }
+
+    /// One request per span of blocks for a follower catching up: the list
+    /// stops at the first missing height, is capped, and its building is
+    /// bounded across peers (busy with a retry hint past the bound).
+    #[test]
+    fn a_finalized_range_answers_a_span_in_one_request() {
+        let archive = Arc::new(crate::follow::FinalityArchive::default());
+        for h in 1..=40u64 {
+            if h != 6 {
+                archive.insert(h, json!({ "height": h, "block": "00", "finalization": "00", "links": [] }));
+            }
+        }
+        let st = bare_state(archive);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let ask = |from: u64, count: u64| rt.block_on(handle_value(&st, json!({ "id": 1, "method": "aether_getFinalizedRange", "params": [from, count] })));
+        let heights = |v: &Value| v["result"].as_array().unwrap().iter().map(|b| b["height"].as_u64().unwrap()).collect::<Vec<_>>();
+        assert_eq!(heights(&ask(1, 10)), vec![1, 2, 3, 4, 5], "stops at the first height it has none for");
+        assert_eq!(heights(&ask(7, 1_000)).len() as u64, FINALIZED_RANGE_MAX, "capped");
+        assert!(heights(&ask(41, 5)).is_empty(), "nothing yet past the tip");
+        let taken: Vec<_> = (0..FINALIZED_RANGE_CONCURRENT).map(|_| BudgetSlot::acquire(&FINALIZED_RANGES, FINALIZED_RANGE_CONCURRENT).unwrap()).collect();
+        let busy = ask(1, 5);
+        let m = busy["error"]["message"].as_str().unwrap();
+        assert!(m.starts_with(aether_net::BUSY) && aether_net::busy_retry_after(m).is_some(), "{m}");
+        drop(taken);
+        assert_eq!(heights(&ask(1, 2)), vec![1, 2], "free again");
+        let public = RpcState { public_read_only: true, ..st.clone() };
+        let refused = rt.block_on(handle_value(&public, json!({ "id": 1, "method": "aether_getFinalizedRange", "params": [1, 2] })));
+        assert_eq!(refused["error"]["code"], -32601, "not a public gateway read: {refused}");
     }
 
     #[test]

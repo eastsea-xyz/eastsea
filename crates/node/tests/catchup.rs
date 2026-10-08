@@ -602,6 +602,11 @@ fn a_follower_that_slept_jumps_to_a_certified_snapshot() {
         .unwrap();
     assert_eq!(adopted, 5_100, "most of it by the jump, the rest replayed");
     assert_eq!(follower.chain.finalized_height(), 5_100);
+    assert_eq!(
+        aether_node::backfill::stored(&follower.chain),
+        Some(aether_node::backfill::Gap { low: 1, high: 4_999 }),
+        "the snapshot commit records the gap even before the outer follow loop runs"
+    );
     let root = src.chain.lock().finalized.state.root();
     assert_eq!(
         follower.chain.lock().finalized.state.root(),
@@ -904,7 +909,8 @@ fn a_short_gap_replays_without_a_snapshot() {
     let (dir_src, dir_fol) = (tmp("short-src"), tmp("short-follower"));
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut src = Node::start(&dir_src);
-    src.run_to(1_000, |h| h % 200 == 0);
+    // Under `JUMP_BEHIND` (300) both times: a replay, never a jump.
+    src.run_to(250, |h| h % 50 == 0);
     let st = rpc_state(&src, None);
     // 20 ms per request: the replay stays observably in progress.
     let (url, calls) = serve(&st, &rt, Duration::from_millis(20));
@@ -919,7 +925,7 @@ fn a_short_gap_replays_without_a_snapshot() {
         )
     };
 
-    // First sync (1,000 behind): a replay from genesis, reported as catching up.
+    // First sync (250 behind): a replay from genesis, reported as catching up.
     let caught = catch();
     wait_until("the first sync in progress", || {
         status()["catching_up"] == json!(true)
@@ -931,10 +937,10 @@ fn a_short_gap_replays_without_a_snapshot() {
         (json!(false), json!(0)),
         "{s}"
     );
-    assert_eq!(follower.chain.finalized_height(), 1_000);
+    assert_eq!(follower.chain.finalized_height(), 250);
 
     // Slept 100 blocks: replays them, still without a snapshot.
-    src.run_to(1_100, |_| false);
+    src.run_to(350, |_| false);
     let caught = catch();
     wait_until("the catch-up in progress", || {
         status()["catching_up"] == json!(true)
@@ -948,7 +954,7 @@ fn a_short_gap_replays_without_a_snapshot() {
         (json!(false), json!(0)),
         "{s}"
     );
-    assert_eq!(follower.chain.finalized_height(), 1_100);
+    assert_eq!(follower.chain.finalized_height(), 350);
     assert_eq!(
         follower.chain.lock().finalized.state.root(),
         src.chain.lock().finalized.state.root()
@@ -1420,7 +1426,8 @@ fn pipelined_following_beats_serial_fetches_over_a_slow_link() {
     let (dir_src, dir_b, dir_a) = (tmp("slow-src"), tmp("slow-before"), tmp("slow-after"));
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut src = Node::start(&dir_src);
-    src.run_to(448, |h| h % 64 == 0);
+    // Under `JUMP_BEHIND`: a replay, not a snapshot jump.
+    src.run_to(288, |h| h % 64 == 0);
     let st = rpc_state(&src, None);
     let (url, _calls) = serve(&st, &rt, Duration::from_millis(150));
     let up = || Upstream::Http(vec![url.clone()]);
@@ -1446,10 +1453,10 @@ fn pipelined_following_beats_serial_fetches_over_a_slow_link() {
             .unwrap();
         t.elapsed()
     };
-    assert_eq!(follower_height(&dir_a), 448);
+    assert_eq!(follower_height(&dir_a), 288);
 
-    let (rate_before, rate_after) = (64f64 / before.as_secs_f64(), 448f64 / after.as_secs_f64());
-    println!("catch-up over a 150 ms link: {rate_before:.1} blocks/s one-fetch-per-block ({before:.1?} for 64), {rate_after:.1} blocks/s pipelined ({after:.1?} for 448)");
+    let (rate_before, rate_after) = (64f64 / before.as_secs_f64(), 288f64 / after.as_secs_f64());
+    println!("catch-up over a 150 ms link: {rate_before:.1} blocks/s one-fetch-per-block ({before:.1?} for 64), {rate_after:.1} blocks/s pipelined ({after:.1?} for 288)");
     // The product target (hundreds of blocks/s over a 150 ms link) is a release
     // number: a debug build spends ~20 ms per block just executing and committing
     // it, which no amount of pipelining can hide behind a 150 ms round trip.
@@ -1476,4 +1483,339 @@ fn pipelined_following_beats_serial_fetches_over_a_slow_link() {
 fn follower_height(dir: &Path) -> u64 {
     let store = Store::open(&dir.join("state.redb")).unwrap();
     store.head().unwrap().unwrap().0
+}
+
+/// A 7780 validator as it runs in the field, on the real follower transport:
+/// a local iroh endpoint serving `aether/rpc/1` through `aether_net::serve_rpc`
+/// — the same DoS gate the validators run (16 requests in flight per peer, a
+/// burst of 64 then 32 a second, each refusal "server busy") — in front of a
+/// real node's RPC, over a relayed path (20 ms an answer, 200 ms a snapshot
+/// chunk), with a big state: a manifest takes 3 s to answer (the 7780
+/// validators rebuild a multi-GB state's snapshot when asked). With `old` (the binary of 2026-09-29): no
+/// `aether_getFinalizedRange`, no `aether_proverProgram` (the follower's
+/// prover asks for it every few seconds and is refused), no batches, and a
+/// snapshot cache that serves
+/// chunks of its CURRENT snapshot only ("snapshot moved on" for any other
+/// height); its first chunk request is answered as if another follower's
+/// manifest request had just rebuilt it — the race the founder's Mac lost
+/// every round on 2026-10-07. Without `old`, the node's own RPC answers
+/// everything, as an upgraded validator does.
+struct Validator {
+    st: RpcState,
+    old: bool,
+    manifest: Mutex<Option<u64>>,
+    moved_on_once: AtomicBool,
+    log: Arc<Mutex<Vec<String>>>,
+}
+
+fn rpc_error(id: &Value, code: i64, message: String) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+}
+
+async fn answer_as_validator(s: Arc<Validator>, req: Value) -> Value {
+    let id = req.get("id").cloned().unwrap_or(Value::Null);
+    let method = req.get("method").and_then(Value::as_str).unwrap_or_default().to_string();
+    s.log.lock().expect("log").push(method.clone());
+    let relay = match method.as_str() {
+        "aether_snapshot" => Duration::from_secs(3),
+        "aether_snapshotChunk" => Duration::from_millis(200),
+        _ => Duration::from_millis(20),
+    };
+    tokio::time::sleep(relay).await;
+    if s.old {
+        if req.is_array() || method == "aether_getFinalizedRange" || method == "aether_proverProgram" {
+            return rpc_error(&id, -32601, format!("method not found: {method}"));
+        }
+        if method == "aether_snapshotChunk" {
+            let asked = req["params"][0].as_u64().unwrap_or_default();
+            if !s.moved_on_once.swap(true, Ordering::SeqCst) {
+                return rpc_error(&id, -32000, format!("snapshot moved on to height {}", asked + 1));
+            }
+            if let Some(h) = *s.manifest.lock().expect("manifest") {
+                if h != asked {
+                    return rpc_error(&id, -32000, format!("snapshot moved on to height {h}"));
+                }
+            }
+        }
+    }
+    let resp = rpc::handle_value(&s.st, req).await;
+    if method == "aether_snapshot" {
+        if let Some(h) = resp["result"]["height"].as_u64() {
+            *s.manifest.lock().expect("manifest") = Some(h);
+        }
+    }
+    resp
+}
+
+/// Four validators of one network on local iroh endpoints (each with its own
+/// snapshot cache, so their snapshots sit at different heights, as the 7780
+/// four do), and the follower's transport to them: the iroh client every
+/// follower in the field uses. Keep the routers alive for the test.
+fn validators(
+    src: &Node,
+    rt: &tokio::runtime::Runtime,
+    old: bool,
+) -> (aether_net::RpcClient, Vec<aether_net::Router>, Arc<Mutex<Vec<String>>>) {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut addrs = Vec::new();
+    let mut routers = Vec::new();
+    for _ in 0..4 {
+        let v = Arc::new(Validator {
+            st: rpc_state(src, None),
+            old,
+            manifest: Mutex::new(None),
+            moved_on_once: AtomicBool::new(false),
+            log: log.clone(),
+        });
+        let (addr, router) = rt.block_on(async move {
+            let secret = aether_net::SecretKey::generate();
+            let id = secret.public();
+            let server = aether_net::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .relay_mode(iroh::RelayMode::Disabled)
+                .alpns(vec![aether_net::ALPN_RPC.to_vec()])
+                .secret_key(secret)
+                .bind()
+                .await
+                .unwrap();
+            let port = server.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("an IPv4 socket").port();
+            let router = aether_net::serve_rpc(server, move |req: Value| answer_as_validator(v.clone(), req));
+            let addr = aether_net::EndpointAddr::from_parts(
+                id,
+                [aether_net::TransportAddr::Ip(std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)))],
+            );
+            (addr, router)
+        });
+        addrs.push(addr);
+        routers.push(router);
+    }
+    let client = rt.block_on(aether_net::RpcClient::with_addrs(addrs)).unwrap();
+    (client, routers, log)
+}
+
+/// The founder's Mac on 2026-10-07: back after ~3 hours, 10,000 blocks behind
+/// a chain that keeps moving, following the 7780 validators. The follower
+/// must jump FIRST (certified snapshot) and be at the tip within a bound —
+/// its state current, so its balance reads and beacons are right away — then
+/// backfill the gap's certified blocks newest to oldest in the background.
+/// Against old validators (limits, no range method, snapshots that move on)
+/// and upgraded ones alike. Before the fix the jump never succeeded (the
+/// chunk requests landed on a validator with another snapshot, or on one
+/// that had moved on) and the replay was throttled to ~16 blocks a round.
+#[test]
+fn a_follower_10k_behind_a_moving_chain_jumps_first_then_backfills() {
+    pin_snapshot_gate();
+    const BEHIND: u64 = 10_000;
+    // Catch-up bound: the jump plus a short replay. Before the fix the
+    // follower gained ~1.5 blocks a second and needed hours for this gap.
+    const BOUND: Duration = Duration::from_secs(90);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let dir_src = tmp("moving-src");
+    let mut src = Node::start(&dir_src);
+    // Every certificate kept on disk: the in-memory archive keeps only the
+    // last 8,192, and the backfill asks for all of them.
+    src.archive = Arc::new(FinalityArchive::new(src.chain.store()));
+    let built = Instant::now();
+    src.run_to(BEHIND, |h| h % 1_000 == 0);
+    println!("built {BEHIND} blocks in {:.1?}", built.elapsed());
+    let source = src.chain.clone();
+    let source_archive = src.archive.clone();
+    let (old_client, _old_routers, old_log) = validators(&src, &rt, true);
+    let (new_client, _new_routers, new_log) = validators(&src, &rt, false);
+
+    // The chain keeps moving: a block every 100 ms for the whole test.
+    let stop = Arc::new(AtomicBool::new(false));
+    let producer = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                src.step(vec![]);
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            src
+        })
+    };
+
+    for (name, client, log) in [("old", old_client, old_log), ("upgraded", new_client, new_log)] {
+        let dir = tmp(&format!("moving-follower-{name}"));
+        let follower = Node::start(&dir);
+        let archive = Arc::new(FinalityArchive::new(follower.chain.store()));
+        let upstream = Arc::new(Upstream::Iroh(client, Default::default()));
+        let task = rt.spawn(follow::run(follower.chain.clone(), upstream.clone(), set(), archive.clone(), None, false));
+        // The rest of the node shares the follower's upstream, as in the
+        // app: the prover confirms the validators' proof program every few
+        // seconds (main.rs, `aether_proverProgram`; 7780 answers "method not
+        // found").
+        let prover = rt.spawn(async move {
+            loop {
+                let _ = upstream.first("aether_proverProgram", json!([])).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+        let started = Instant::now();
+        let deadline = started + BOUND;
+        while follower.chain.finalized_height() + follow::BEHIND_MARGIN < source.finalized_height() {
+            assert!(
+                Instant::now() < deadline,
+                "{name}: still {} blocks behind after {BOUND:?} (height {}, tip {})",
+                source.finalized_height() - follower.chain.finalized_height(),
+                follower.chain.finalized_height(),
+                source.finalized_height()
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let took = started.elapsed();
+        let replayed = log.lock().unwrap().iter().filter(|m| *m == "aether_getFinalized").count();
+        println!("{name} validators: at the tip in {took:.1?}, {replayed} single-block fetches so far");
+        assert!(
+            log.lock().unwrap().iter().any(|m| m == "aether_snapshotChunk"),
+            "{name}: it jumped to a certified snapshot"
+        );
+        assert!(replayed < 3_000, "{name}: it jumped rather than replayed ({replayed} fetches)");
+        // Current right away: the state at the tip is the network's.
+        let at = follower.chain.finalized_height();
+        wait_until("the source's summary of the follower's height", || source.lock().blocks.contains_key(&at));
+        assert_eq!(
+            follower.chain.lock().blocks[&at].state_root,
+            source.lock().blocks[&at].state_root,
+            "{name}: the same state as the network at {at}"
+        );
+        if name == "upgraded" {
+            // The gap's certified blocks come back newest to oldest, each
+            // checked, down to the follower's own start.
+            // Every block's certificate is checked (a pairing each): a debug
+            // build spends most of this verifying.
+            let fill_bound = if cfg!(debug_assertions) { Duration::from_secs(300) } else { BOUND };
+            let filled = Instant::now();
+            while (1..=BEHIND).any(|h| archive.get(h).is_none()) {
+                assert!(
+                    filled.elapsed() < fill_bound,
+                    "{name}: the backfill did not finish within {fill_bound:?}: {} of {BEHIND} still missing, highest missing {:?}",
+                    (1..=BEHIND).filter(|h| archive.get(*h).is_none()).count(),
+                    (1..=BEHIND).rev().find(|h| archive.get(*h).is_none())
+                );
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            println!("{name} validators: backfilled the gap in {:.1?}", filled.elapsed());
+            for h in [1, BEHIND / 2, BEHIND] {
+                assert_eq!(archive.get(h), source_archive.get(h), "{name}: certified block {h} as the network has it");
+            }
+        }
+        task.abort();
+        prover.abort();
+        drop(follower);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    stop.store(true, Ordering::SeqCst);
+    drop(producer.join().unwrap());
+    let _ = std::fs::remove_dir_all(&dir_src);
+}
+
+/// A range response is allowed to end at its byte budget. The descending
+/// walk must still obtain the upper suffix before linking and serving it.
+#[test]
+fn backfill_finishes_when_range_answers_are_size_limited() {
+    pin_snapshot_gate();
+    let dir_src = tmp("short-range-src");
+    let dir_fol = tmp("short-range-follower");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut src = Node::start(&dir_src);
+    src.run_to(64, |_| false);
+    let snapshot = aether_node::snapshot::Snapshot::of(&src.chain);
+    src.step(vec![]);
+    let follower = Node::start(&dir_fol);
+    let state = snapshot.check(&src.blocks[65], &config(), set().identity()).unwrap();
+    snapshot.install_over(&follower.chain.store().unwrap(), &state, follower.chain.lock().finalized.state.repo().entries().collect::<Vec<_>>()).unwrap();
+    let (head, summary) = snapshot.head(state);
+    follower.chain.adopt(head, summary);
+    let archive = Arc::new(FinalityArchive::new(follower.chain.store()));
+    let st = rpc_state(&src, None);
+    let app = Router::new().route("/", post(|State(st): State<RpcState>, Json(req): Json<Value>| async move {
+        let limited = req["method"] == "aether_getFinalizedRange";
+        let mut response = rpc::handle_value(&st, req).await;
+        if limited {
+            if let Some(items) = response["result"].as_array_mut() {
+                items.truncate(3); // Model the wire budget without multi-MiB fixtures.
+            }
+        }
+        Json(response)
+    })).with_state(st);
+    let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    rt.spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let gap = aether_node::backfill::plan(&follower.chain, 1, 63).unwrap();
+    let task = rt.spawn(aether_node::backfill::run(follower.chain.clone(), Arc::new(Upstream::Http(vec![url])), set(), archive.clone(), gap));
+    let finished = rt.block_on(async { tokio::time::timeout(Duration::from_secs(30), task).await });
+    assert!(finished.is_ok(), "short range responses must not stall backfill");
+    for h in [1, 31, 63, 64] {
+        assert_eq!(archive.get(h), src.archive.get(h), "certified, linked block {h}");
+    }
+    assert!(aether_node::backfill::stored(&follower.chain).is_none());
+    drop(follower);
+    drop(src);
+    drop(rt);
+    std::fs::remove_dir_all(dir_src).unwrap();
+    std::fs::remove_dir_all(dir_fol).unwrap();
+}
+
+/// Run the monitor in a separate process: its pinned disk readings must not
+/// pause other catch-up tests running in this integration-test executable.
+#[test]
+fn backfill_respects_disk_floor_after_an_inflight_fetch() {
+    const CHILD: &str = "AETHER_BACKFILL_DISK_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "backfill_respects_disk_floor_after_an_inflight_fetch", "--nocapture"])
+            .env(CHILD, "1")
+            .output().unwrap();
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    let dir_src = tmp("disk-backfill-src");
+    let dir_fol = tmp("disk-backfill-follower");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut src = Node::start(&dir_src);
+    src.run_to(32, |_| false);
+    let snapshot = aether_node::snapshot::Snapshot::of(&src.chain);
+    src.step(vec![]);
+    let follower = Node::start(&dir_fol);
+    let state = snapshot.check(&src.blocks[33], &config(), set().identity()).unwrap();
+    snapshot.install_over(&follower.chain.store().unwrap(), &state, follower.chain.lock().finalized.state.repo().entries().collect::<Vec<_>>()).unwrap();
+    let (head, summary) = snapshot.head(state);
+    follower.chain.adopt(head, summary);
+    let archive = Arc::new(FinalityArchive::new(follower.chain.store()));
+    let reached = Arc::new(AtomicBool::new(false));
+    let go = Arc::new(tokio::sync::Notify::new());
+    let st = rpc_state(&src, None);
+    let app = {
+        let (reached, go) = (reached.clone(), go.clone());
+        Router::new().route("/", post(move |Json(req): Json<Value>| {
+            let (st, reached, go) = (st.clone(), reached.clone(), go.clone());
+            async move {
+                if req["method"] == "aether_getFinalizedRange" && !reached.swap(true, Ordering::SeqCst) {
+                    go.notified().await;
+                }
+                Json(rpc::handle_value(&st, req).await)
+            }
+        }))
+    };
+    let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    rt.spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let gap = aether_node::backfill::plan(&follower.chain, 1, 31).unwrap();
+    aether_node::resources::install_test_monitor(aether_node::resources::Limits::default(), &dir_fol);
+    let task = rt.spawn(aether_node::backfill::run(follower.chain.clone(), Arc::new(Upstream::Http(vec![url])), set(), archive.clone(), gap));
+    wait_until("backfill request in flight", || reached.load(Ordering::SeqCst));
+    aether_node::resources::set_test_free_disk(Some(0));
+    go.notify_one();
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(archive.get(32).is_none(), "no archival write after the disk floor trips in flight");
+    assert_eq!(aether_node::backfill::stored(&follower.chain), Some(gap), "paused backfill keeps its durable cursor");
+    aether_node::resources::set_test_free_disk(Some(20 << 30));
+    rt.block_on(async { tokio::time::timeout(Duration::from_secs(30), task).await }).expect("backfill resumes after space frees").unwrap();
+    assert_eq!(archive.get(1), src.archive.get(1));
+    drop(follower);
+    drop(src);
+    drop(rt);
+    std::fs::remove_dir_all(dir_src).unwrap();
+    std::fs::remove_dir_all(dir_fol).unwrap();
 }

@@ -964,6 +964,7 @@ fn needs_a_validator(method: &str) -> bool {
         "aether_sendTransaction"
             | "aether_faucet"
             | "aether_registerDevice"
+            | "aether_registrarEncryptionKey"
             | "aether_sendBeacon"
             | "aether_sendRegistration"
             | "aether_reattest"
@@ -1579,6 +1580,9 @@ fn check_anchor_chain(block: &[u8], links: &[Vec<u8>], chain_id: u64) -> R<()> {
 }
 
 static COMMITTEE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// The registrar signing identity from trusted network configuration. Even a
+/// valid empty-block certificate under a reused committee cannot select it.
+static PINNED_REGISTRAR: std::sync::Mutex<Option<PublicKey>> = std::sync::Mutex::new(None);
 static NODES: std::sync::Mutex<Option<Vec<aether_net::EndpointId>>> = std::sync::Mutex::new(None);
 /// The chain's consensus group (0 today): certificates verify under its
 /// namespace and every block must carry it.
@@ -1699,6 +1703,7 @@ pub fn configure_network(network_json: String) -> R<u32> {
     if let Some(id) = identity {
         ValidatorSet::from_hex(id).map_err(|e| WalletError::Invalid(format!("identity: {e}")))?;
     }
+    let registrar = registrar_config_pin(v.get("registrar"))?;
     // The old client, certificate floor and local route belong to the old
     // configuration. In particular, a devnet key must not survive a return
     // to the bundled network.
@@ -1706,6 +1711,7 @@ pub fn configure_network(network_json: String) -> R<u32> {
     NETWORK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     *cached = None;
     *COMMITTEE.lock().expect("committee lock") = identity.map(str::to_owned);
+    *PINNED_REGISTRAR.lock().expect("registrar pin lock") = registrar;
     DEVNET_KEYS.store(devnet, std::sync::atomic::Ordering::Relaxed);
     *CHAIN_ID.lock().expect("chain id lock") = chain;
     *LOCAL_NODE.lock().expect("local node lock") = None;
@@ -2075,12 +2081,27 @@ pub fn prepare_register_node(
     let beaconer: Address = beaconer.parse().map_err(|_| WalletError::Invalid("beaconer address".into()))?;
     let pk = p256_key(&p256_public_key)?;
     let operator = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
-    let a = registrar_call(json!([device_token, operator, hex_lower(&key), hex_lower(&node), beaconer, ownership]))?;
+    let device_token = p256::elliptic_curve::zeroize::Zeroizing::new(device_token);
+    let status = call("aether_status", json!([]))?;
+    let chain_id = expected_chain(&status)?;
+    let registrar = authenticated_registrar()?;
+    let public_params = vec![json!(operator), json!(hex_lower(&key)), json!(hex_lower(&node)), json!(beaconer), json!(ownership)];
+    let mut attestation = None;
+    for _ in 0..2 {
+        let descriptor: aether_crypto::registrar::EncryptionKey = parse(&registrar_rpc_call("aether_registrarEncryptionKey", json!([]))?, "registrar encryption key")?;
+        let params = encrypted_registration_params(&device_token, chain_id, &registrar, &descriptor, &public_params)?;
+        match registrar_rpc_call("aether_registerDevice", params) {
+            Ok(a) => { attestation = Some(a); break; }
+            // A registrar restart destroys its recipient key. Retry with a
+            // newly authenticated descriptor, always re-encrypting the token.
+            Err(e) if e.to_string().contains("registrar encryption key expired") => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    let a = attestation.ok_or_else(|| WalletError::Network("registrar encryption key changed; retry registration".into()))?;
     let (r, s) = (hex32(a["r"].as_str().unwrap_or_default(), "attestation r")?, hex32(a["s"].as_str().unwrap_or_default(), "attestation s")?);
     let attestation = [r, s].concat();
-    let status = call("aether_status", json!([]))?;
     if status["free_registration"].as_bool().unwrap_or(false) {
-        let chain_id = expected_chain(&status)?;
         let height = status["height"].as_u64().unwrap_or_default();
         let nonce = call("aether_registrationNonce", json!([operator]))?.as_u64().unwrap_or_default();
         let expiry = height.saturating_add(REGISTRATION_TTL);
@@ -2109,12 +2130,71 @@ pub fn prepare_register_node(
     prepare(&p256_public_key, None, |_| Ok(EvmCall { to: Some(aether_execution::registry::REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None }))
 }
 
-/// Ask validators in turn until the one running the registrar answers.
-fn registrar_call(params: Value) -> R<Value> {
+/// The chain's registrar signing key, proven under ONE certified state root.
+/// A key learned only from a validator's JSON is never used to encrypt tokens.
+fn authenticated_registrar() -> R<PublicKey> {
+    let pinned = PINNED_REGISTRAR.lock().expect("registrar pin lock").clone()
+        .ok_or_else(|| WalletError::Verification("network.json has no registrar signing-key pin; no DeviceCheck token sent".into()))?;
+    demote_on_failure(|| {
+        let set = trusted_set(validator_count())?;
+        let replies = [call("aether_getStorage", json!([aether_execution::registry::REGISTRY, U256::ZERO]))?,
+            call("aether_getStorage", json!([aether_execution::registry::REGISTRY, U256::from(1)]))?];
+        let height = replies[0]["height"].as_u64().ok_or_else(|| WalletError::Verification("registrar state height missing".into()))?;
+        if replies[1]["height"].as_u64() != Some(height) {
+            return Err(WalletError::Verification("registrar slots came from different blocks; retry registration".into()));
+        }
+        let anchor = anchor(height, &set)?;
+        registrar_from_proofs(&anchor, &replies, Some(&pinned))
+    })
+}
+
+fn registrar_config_pin(value: Option<&Value>) -> R<Option<PublicKey>> {
+    let raw = match value {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(raw)) => raw,
+        Some(_) => return Err(WalletError::Invalid("network.json: registrar must be a P-256 x/y hex signing-key pin".into())),
+    };
+    let bytes = from_hex(raw).map_err(|_| WalletError::Invalid("network.json: invalid registrar signing-key pin".into()))?;
+    if bytes.len() != 64 { return Err(WalletError::Invalid("network.json: registrar pin must be 64 bytes (x/y)".into())); }
+    p256_key(&[&[4u8][..], &bytes].concat()).map(Some)
+        .map_err(|_| WalletError::Invalid("network.json: registrar pin is not a valid P-256 point".into()))
+}
+
+fn registrar_from_proofs(anchor: &VerifiedBlock, replies: &[Value; 2], pinned: Option<&PublicKey>) -> R<PublicKey> {
+    let pinned = pinned.ok_or_else(|| WalletError::Verification("network.json has no registrar signing-key pin; no DeviceCheck token sent".into()))?;
+    let mut sec1 = vec![4u8];
+    for (slot, reply) in replies.iter().enumerate() {
+        let proof: Proof = parse(&reply["proof"], "registrar storage proof")?;
+        let value = aether_light::verify_storage(anchor, &aether_execution::registry::REGISTRY, U256::from(slot), &proof)
+            .map_err(|e| WalletError::Verification(format!("registrar storage proof: {e}")))?;
+        sec1.extend_from_slice(&value.to_be_bytes::<32>());
+    }
+    let proven = p256_key(&sec1).map_err(|_| WalletError::Verification("the authenticated registrar is stopped or invalid".into()))?;
+    if aether_crypto::p256_xy(&proven.bytes).ok() != aether_crypto::p256_xy(&pinned.bytes).ok() {
+        return Err(WalletError::Verification("certified registrar differs from the trusted network.json pin; refresh the trusted config after registrar rotation; no DeviceCheck token sent".into()));
+    }
+    Ok(proven)
+}
+
+fn encrypted_registration_params(token: &str, chain_id: u64, registrar: &PublicKey, descriptor: &aether_crypto::registrar::EncryptionKey, public_params: &[Value]) -> R<Value> {
+    let recipient = descriptor.authenticate(chain_id, registrar).map_err(WalletError::Verification)?;
+    let json = serde_json::to_vec(public_params).map_err(|_| WalletError::Invalid("registration params".into()))?;
+    let context = aether_crypto::registrar::request_context(chain_id, "aether_registerDevice", &json);
+    let seed = p256::elliptic_curve::zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
+    let envelope = aether_crypto::registrar::seal(token, &recipient, &context, &seed, rand::random()).map_err(WalletError::Invalid)?;
+    let mut params = vec![serde_json::to_value(envelope).map_err(|_| WalletError::Invalid("encrypted token".into()))?];
+    params.extend_from_slice(public_params);
+    Ok(Value::Array(params))
+}
+
+/// Ask validators in turn until the one running the registrar answers. Params
+/// may contain only a signed-key discovery or a token ciphertext, never token
+/// plaintext; encryption is complete before this function is entered.
+fn registrar_rpc_call(method: &str, params: Value) -> R<Value> {
     let n = net()?;
     let mut last = WalletError::Network("no registrar reachable".into());
     for _ in 0..8 {
-        match n.rt.block_on(n.client.call("aether_registerDevice", params.clone())) {
+        match n.rt.block_on(n.client.call(method, params.clone())) {
             Ok(v) => return Ok(v),
             Err(e) if e.to_string().contains("does not register devices") => {
                 n.rt.block_on(n.client.rotate());
@@ -2124,6 +2204,68 @@ fn registrar_call(params: Value) -> R<Value> {
         }
     }
     Err(last)
+}
+
+#[cfg(test)]
+mod registration_privacy_tests {
+    use super::*;
+    use aether_crypto::{registrar::{EncryptionKey, RecipientSecret}, P256Signer, Signer as _};
+
+    #[test]
+    fn wallet_registration_json_contains_ciphertext_and_requires_the_authenticated_registrar() {
+        let signer = P256Signer::from_seed(&[4; 32]).unwrap();
+        let secret = RecipientSecret::from_seed(&[5; 32]).unwrap();
+        let descriptor = EncryptionKey::signed(7781, &secret.public_key(), |m| signer.sign(m).map_err(|e| e.to_string())).unwrap();
+        let public = vec![json!(Address::repeat_byte(1)), json!("11".repeat(32)), json!("22".repeat(32)), json!(Address::repeat_byte(2)), json!("33".repeat(64))];
+        let token = "PRIVATE_DEVICECHECK_TOKEN_in_the_wallet";
+        let params = encrypted_registration_params(token, 7781, &signer.public_key(), &descriptor, &public).unwrap();
+        let serialized = json!({"jsonrpc":"2.0","id":1,"method":"aether_registerDevice","params":params}).to_string();
+        assert!(!serialized.contains(token));
+        assert!(params[0].is_object());
+        let envelope = serde_json::from_value(params[0].clone()).unwrap();
+        let context = aether_crypto::registrar::request_context(7781, "aether_registerDevice", &serde_json::to_vec(&public).unwrap());
+        assert_eq!(&**secret.open(&envelope, &context).unwrap(), token);
+        let wrong = P256Signer::from_seed(&[6; 32]).unwrap();
+        assert!(encrypted_registration_params(token, 7781, &wrong.public_key(), &descriptor, &public).is_err());
+        assert!(encrypted_registration_params(token, 7782, &signer.public_key(), &descriptor, &public).is_err());
+    }
+
+    #[test]
+    fn wallet_authenticates_registry_storage_before_encrypting_any_token() {
+        use aether_state::{layout::storage_slot_key, StateRepository as _};
+        let mut state = aether_execution::WorldState::default();
+        let signer = P256Signer::from_seed(&[4; 32]).unwrap();
+        let (x, y) = aether_crypto::p256_xy(&signer.public_key().bytes).unwrap();
+        aether_execution::registry::set_registrar(&mut state, (x, y));
+        let anchor = VerifiedBlock { height: 2, digest: String::new(), timestamp_ms: 1,
+            parent_state_root: state.root(), receipts_root: None, history_root: Default::default() };
+        let repo = state.repo();
+        let replies: [Value; 2] = std::array::from_fn(|slot| {
+            let proof = repo.prove(&[storage_slot_key(repo.hasher(), &aether_execution::registry::REGISTRY, U256::from(slot))]).remove(0);
+            json!({"height":1,"proof":proof})
+        });
+        let pin = signer.public_key();
+        let authenticated = registrar_from_proofs(&anchor, &replies, Some(&pin)).unwrap();
+        assert_eq!(aether_crypto::p256_xy(&authenticated.bytes).unwrap(), (x, y));
+        // An empty anchor has no committed chain ID. A valid proof and a
+        // descriptor signed by another chain's registrar still cannot select
+        // that registrar because the configured signing-key pin must match.
+        let other = P256Signer::from_seed(&[6; 32]).unwrap().public_key();
+        assert!(registrar_from_proofs(&anchor, &replies, Some(&other)).is_err());
+        assert!(registrar_from_proofs(&anchor, &[Value::Null, Value::Null], None).unwrap_err().to_string().contains("no registrar signing-key pin"));
+        assert!(registrar_config_pin(None).unwrap().is_none());
+        assert!(registrar_config_pin(Some(&json!("00".repeat(64)))).is_err());
+        assert!(registrar_config_pin(Some(&json!("not-a-key"))).is_err());
+        let configured = registrar_config_pin(Some(&json!(format!("{}{}", hex_lower(&x), hex_lower(&y))))).unwrap().unwrap();
+        registrar_from_proofs(&anchor, &replies, Some(&configured)).unwrap();
+        let mut corrupted = replies;
+        let mut proof: Proof = serde_json::from_value(corrupted[0]["proof"].clone()).unwrap();
+        proof.value = Some([9; 32]);
+        corrupted[0]["proof"] = serde_json::to_value(proof).unwrap();
+        assert!(registrar_from_proofs(&anchor, &corrupted, Some(&pin)).is_err());
+        let wrong_root = VerifiedBlock { parent_state_root: Default::default(), ..anchor };
+        assert!(registrar_from_proofs(&wrong_root, &corrupted, Some(&pin)).is_err());
+    }
 }
 
 /// Attach a Secure Enclave signature (raw r‖s, 64 bytes) and submit: a signed
@@ -2524,6 +2666,7 @@ mod tests {
 
     fn reset_network() {
         *COMMITTEE.lock().expect("committee lock") = None;
+        *PINNED_REGISTRAR.lock().expect("registrar pin lock") = None;
         *GROUP.lock().expect("group lock") = 0;
         DEVNET_KEYS.store(false, std::sync::atomic::Ordering::Relaxed);
         *CHAIN_ID.lock().expect("chain id lock") = 7_777;

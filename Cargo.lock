@@ -90,10 +90,13 @@ version = "0.2.0"
 dependencies = [
  "aether-types",
  "alloy-primitives",
+ "chacha20poly1305",
  "ed25519-dalek",
+ "hex",
  "k256 0.14.0",
  "p256 0.14.0",
  "proptest",
+ "serde",
  "sha2 0.11.0",
 ]
 
@@ -1574,6 +1577,7 @@ dependencies = [
  "cipher 0.5.2",
  "cpufeatures 0.3.1",
  "rand_core 0.10.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -1586,6 +1590,7 @@ dependencies = [
  "chacha20",
  "cipher 0.5.2",
  "poly1305",
+ "zeroize",
 ]
 
 [[package]]

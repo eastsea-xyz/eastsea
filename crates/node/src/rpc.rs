@@ -530,6 +530,9 @@ async fn single(st: &RpcState, req: Value, local_settings: bool) -> Value {
     if !local_settings && method == "aether_setPresenceCountry" {
         return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"presence country settings are local-only"}});
     }
+    if !local_settings && method == "aether_peers" {
+        return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"peer diagnostics are local-only"}});
+    }
     // Before any handler or upstream hop: on the public gateway only the
     // allowlisted reads (within their caps) reach the machinery in RpcState.
     if st.public_read_only {
@@ -548,13 +551,10 @@ async fn single(st: &RpcState, req: Value, local_settings: bool) -> Value {
         // of retained-history work the routes above meter (audit 7 A7-6).
         "aether_eraInfo" => era_info(st, &params).await,
         "aether_snapshot" => snapshot_manifest(st).await,
+        "aether_registrarEncryptionKey" => registrar_encryption_key(st, &params).await,
         "aether_registerDevice" => register_device(st, &params).await,
         "aether_sendBeacon" => send_beacon(st, &params).await,
         "aether_sendRegistration" => send_registration(st, &params).await,
-        // A follower without the registrar key asks upstream (one hop).
-        "aether_reattest" if st.registrar.is_none() && st.upstream.is_some() => {
-            st.upstream.as_ref().expect("checked").first("aether_reattest", params.clone()).await.map_err(|e| (-32000, e))
-        }
         "aether_reattest" => reattest(st, &params).await,
         // Followers ask validators (one hop: a forwarded question is never forwarded again).
         "aether_rotation" | "aether_network" if st.upstream.is_some() => match params.get(0) {
@@ -855,15 +855,38 @@ async fn era_info(st: &RpcState, p: &Value) -> RpcResult {
     .map_err(|e| (-32000, e.to_string()))
 }
 
-/// `[device_token (base64), operator, validator_key (hex 32), node_id (hex 32), beaconer, ownership (hex)]`
+/// `[]`: a short-lived encryption key attested by the on-chain registrar.
+/// Clients verify the signer with certified registry storage BEFORE sending a
+/// token. Nonregistrars may forward this public descriptor, never attest it.
+async fn registrar_encryption_key(st: &RpcState, p: &Value) -> RpcResult {
+    if p.as_array().is_none_or(|p| !p.is_empty()) {
+        return Err((-32602, "registrar encryption key takes no params".into()));
+    }
+    let Some(r) = &st.registrar else {
+        return match &st.upstream {
+            Some(up) => up.first("aether_registrarEncryptionKey", p.clone()).await.map_err(|e| (-32000, e)),
+            None => Err((-32601, "this node does not register devices".into())),
+        };
+    };
+    crate::devicecheck::registrar_key_check(&st.chain.lock().finalized.state, &r.signer.public_hex()).map_err(|e| (-32000, e))?;
+    serde_json::to_value(r.encryption_key().map_err(|e| (-32000, e))?).map_err(|_| (-32000, "registrar encryption key unavailable".into()))
+}
+
+/// `[encrypted_token, operator, validator_key (hex 32), node_id (hex 32), beaconer, ownership (hex)]`
 /// (`ownership`: the voting key's signature, `aether candidate-info --operator`)
 /// → the registrar's attestation (r, s) to submit to the registry contract.
 async fn register_device(st: &RpcState, p: &Value) -> RpcResult {
+    validate_devicecheck_request(p, 6)?;
+    if st.registrar.is_none() {
+        return match &st.upstream {
+            Some(up) => up.first("aether_registerDevice", p.clone()).await.map_err(|e| (-32000, e)),
+            None => Err((-32601, "this node does not register devices".into())),
+        };
+    }
     let r = st.registrar.as_ref().ok_or((-32601, "this node does not register devices".to_string()))?;
     // The registry's registrar key decides: if the committee rotated or stopped
     // it, this node must not sign attestations that are already dead (G11).
     crate::devicecheck::registrar_key_check(&st.chain.lock().finalized.state, &r.signer.public_hex()).map_err(|e| (-32000, e))?;
-    let token: String = param(p, 0)?;
     let operator: Address = param(p, 1)?;
     let hex32 = |i: usize| -> Result<[u8; 32], (i64, String)> {
         let s: String = param(p, i)?;
@@ -873,6 +896,7 @@ async fn register_device(st: &RpcState, p: &Value) -> RpcResult {
     let beaconer: Address = param(p, 4)?;
     let ownership: String = param(p, 5)?;
     let ownership = hex::decode(ownership.trim_start_matches("0x")).map_err(|_| (-32602, "param 5: ownership signature hex".to_string()))?;
+    let token = r.open_token("aether_registerDevice", p).map_err(|e| (-32602, e))?;
     let a = r.register(&token, operator, key, node, beaconer, &ownership).await.map_err(|e| (-32000, e.to_string()))?;
     Ok(json!({ "r": hex::encode(a.r), "s": hex::encode(a.s), "registered_at": a.registered_at }))
 }
@@ -912,12 +936,18 @@ async fn send_registration(st: &RpcState, p: &Value) -> RpcResult {
     Ok(json!({ "hash": id, "accepted": new }))
 }
 
-/// `[device_token (base64), validator_key (hex 32), period, ownership (hex)]`
+/// `[encrypted_token, validator_key (hex 32), period, ownership (hex)]`
 /// → the registrar's re-attestation `{period, r, s}` for a beacon answer.
 /// Only for the current re-attestation period (or the next, near its start).
 async fn reattest(st: &RpcState, p: &Value) -> RpcResult {
+    validate_devicecheck_request(p, 4)?;
+    if st.registrar.is_none() {
+        return match &st.upstream {
+            Some(up) => up.first("aether_reattest", p.clone()).await.map_err(|e| (-32000, e)),
+            None => Err((-32601, "this node does not re-attest devices".into())),
+        };
+    }
     let r = st.registrar.as_ref().ok_or((-32601, "this node does not re-attest devices".to_string()))?;
-    let token: String = param(p, 0)?;
     let key: String = param(p, 1)?;
     let key: [u8; 32] = hex::decode(key.trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or((-32602, "param 1: 32-byte hex".to_string()))?;
     let period: u64 = param(p, 2)?;
@@ -935,8 +965,16 @@ async fn reattest(st: &RpcState, p: &Value) -> RpcResult {
     if period < low || period > high {
         return Err((-32000, format!("period {period} is not current ({low}..={high})")));
     }
+    let token = r.open_token("aether_reattest", p).map_err(|e| (-32602, e))?;
     let (rr, ss) = r.reattest(&token, key, period, &ownership).await.map_err(|e| (-32000, e.to_string()))?;
     Ok(json!({ "period": period, "r": hex::encode(rr), "s": hex::encode(ss) }))
+}
+
+fn validate_devicecheck_request(p: &Value, count: usize) -> Result<(), (i64, String)> {
+    if p.as_array().is_none_or(|p| p.len() != count) {
+        return Err((-32602, "invalid encrypted DeviceCheck request params".into()));
+    }
+    crate::devicecheck::encrypted_token(p).map(|_| ()).map_err(|e| (-32602, e))
 }
 
 fn param<T: serde::de::DeserializeOwned>(p: &Value, i: usize) -> Result<T, (i64, String)> {
@@ -1421,7 +1459,7 @@ fn release_entries(state: &aether_execution::WorldState, address: Address, start
 /// A chain at genesis in an `RpcState` with nothing attached — enough to
 /// check routing, gates and errors (shared by the test modules below).
 #[cfg(test)]
-fn bare_state() -> RpcState {
+pub(crate) fn bare_state() -> RpcState {
     let (chain, _) = Chain::new(crate::chain::ChainConfig {
         chain_id: 7781,
         limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
@@ -1451,6 +1489,10 @@ fn bare_state() -> RpcState {
 async fn call(st: &RpcState, method: &str, params: Value) -> Value {
     handle_value(st, json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })).await
 }
+
+#[cfg(test)]
+#[path = "devicecheck_privacy_tests.rs"]
+mod devicecheck_privacy_tests;
 
 #[cfg(test)]
 pub(crate) fn writer_lease_status_for_test() -> Value {

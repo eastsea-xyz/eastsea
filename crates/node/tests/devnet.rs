@@ -944,7 +944,7 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     // This legacy devnet has no free lane; its genesis funds dev account 4,
     // so the contract registration pays normally.
     assert_eq!(net.rpc(0, "aether_status", json!([])).unwrap()["free_registration"], false);
-    let out = net.cli(&["candidate-register", "--data", data.to_str().unwrap(), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", "4"]);
+    let out = net.cli(&["candidate-register", "--devnet", "--data", data.to_str().unwrap(), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", "4"]);
     assert!(out.contains("candidate") && out.contains("success=true"), "{out}");
     let mine = |net: &Net| net.rpc(0, "aether_candidates", json!([])).expect("candidates");
     let c = mine(&net);
@@ -960,7 +960,7 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     assert!(candidate["hours_to_eligible"].as_f64().is_some_and(|h| h > 0.0), "a live devnet has a measured ETA: {c}");
     // Registering the same Mac again is refused by the registry.
     assert!(!net
-        .cli_fails(&["candidate-register", "--data", data.to_str().unwrap(), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", "4"])
+        .cli_fails(&["candidate-register", "--devnet", "--data", data.to_str().unwrap(), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", "4"])
         .is_empty());
 
     // Two more epochs pass: the node beacons by itself and the streak grows.

@@ -113,7 +113,8 @@ impl PeerTracker {
     /// One row per connected node, deduplicating parallel protocol connections.
     /// `last_seen` is when a received packet was last observed by this tracker;
     /// the selected path is re-read on every snapshot. Times are Unix seconds.
-    /// Role and version are filled by the node from its signed presence table.
+    /// The node may fill validator roles from its pinned roster; individual
+    /// build versions are no longer advertised by the presence protocol.
     /// Addresses and relay URLs never enter the returned rows.
     pub fn snapshot(&self) -> Vec<Value> {
         let mut connections = self.connections.lock().expect("peer tracker lock");

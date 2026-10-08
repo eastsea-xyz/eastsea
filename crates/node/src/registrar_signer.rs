@@ -1,9 +1,12 @@
 //! Where the registrar's P-256 attestation key lives (docs/ops/registrar.md).
 //!
-//! The registrar signs two things: a registration attestation that
+//! The registrar signs a registration attestation that
 //! `CommitteeRegistry.register` verifies on chain, and a per-period
 //! re-attestation that validators verify against the same key in the registry
-//! (docs/design/14-registration.md). This module is the seam over the key:
+//! (docs/design/14-registration.md), and the binding of an in-memory encryption
+//! key to that same on-chain identity. The helper stays signing-only; it never
+//! receives DeviceCheck tokens or exports a private key. This module is the
+//! seam over the key:
 //!
 //! - [`FileSigner`]: the key is a seed file, `<data>/registrar.key` written by
 //!   `aether registrar-key` — local devnets and rehearsals, exactly as before.

@@ -35,6 +35,16 @@ struct SettingsView: View {
             HistoryStorageSection()
             ResourcesSection()
             PresencePrivacySection()
+            Section("Privacy") {
+                Group {
+                    Text("Private keys stay on this device. Addresses, balances, transactions, rewards and registration records are public on chain indefinitely, even after you stop using the app.")
+                    Text("Joining encrypts a DeviceCheck token to Pipln's registrar; only it can decrypt it and send it to Apple (USA), at registration and for daily checks. The registrar keeps the voting key, operator and beacon addresses, node ID and registration time without automatic expiry.")
+                    Text("Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Ask privacy@eastsea.xyz to delete removable service data; public chain copies cannot be recalled.")
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Link("Read the privacy policy", destination: Terms.privacyURL)
+            }
             Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting \(Brand.name) stops it.")
                 .font(.caption).foregroundStyle(.secondary)
             // Honest power ranges (docs/research/mac-power-cost-2026.md): the node is
@@ -125,6 +135,7 @@ private struct AccountPayoutSettings: View {
 
 struct PresencePrivacySection: View {
     @EnvironmentObject var node: NodeController
+    @State private var showCountryNotice = false
 
     private var countryLocale: Locale {
         Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en")
@@ -132,18 +143,29 @@ struct PresencePrivacySection: View {
 
     var body: some View {
         Section("Live network privacy") {
-            Toggle("Share this Mac's country", isOn: $node.presenceShareCountry)
-            if node.presenceShareCountry {
-                Picker("Country", selection: $node.presenceCountryCode) {
-                    Text("Choose a country").tag("")
-                    ForEach(PresenceCountry.codes, id: \.self) { code in
-                        Text(verbatim: countryLocale.localizedString(forRegionCode: code) ?? code).tag(code)
+            if node.needsCountryNotice {
+                Button("Choose country sharing…") { showCountryNotice = true }
+            } else {
+                Toggle("Share this Mac's country", isOn: $node.presenceShareCountry)
+                if node.presenceShareCountry {
+                    Picker("Country", selection: $node.presenceCountryCode) {
+                        Text("Choose a country").tag("")
+                        ForEach(PresenceCountry.codes, id: \.self) { code in
+                            Text(verbatim: countryLocale.localizedString(forRegionCode: code) ?? code).tag(code)
+                        }
                     }
                 }
             }
-            Text("Your relay's continent is shared automatically. Country sharing is off by default and uses only the country you choose. No IP address, city or coordinates are shared.")
+            Text("Country sharing is optional. Your selected country stays on this Mac and chooses a broad region bucket. Public observations show only counts for groups of at least three. Turning it off stops future use of the country preference. Your relay's region and connection IP address remain visible to peers.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .sheet(isPresented: $showCountryNotice) {
+            CountryNoticeSheet(country: node.presenceCountryCode)
+                .environmentObject(node)
+                .onChange(of: node.needsCountryNotice) { _, needed in
+                    if !needed { showCountryNotice = false }
+                }
         }
     }
 }

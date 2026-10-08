@@ -130,22 +130,26 @@ export async function homeView(ctx) {
 }
 
 function liveNetwork(presence) {
-  const scope = h('p', { class: 'small muted source' }, 'what this node can see · refreshes every 10 seconds');
+  const scope = h('p', { class: 'small muted source' }, 'unverified cohort observation · checks every 10 seconds');
   if (!presence) return card('Live network',
     h('p', { class: 'live-total' }, 'Unavailable'), scope,
     message('plain', 'Live presence is unavailable from this source. It will be checked again; choose another node in Settings to read its view.'));
+  if (presence.total === null) return card('Live network',
+    h('p', { class: 'live-total' }, 'Count withheld'), scope,
+    message('plain', 'Groups smaller than three are withheld. Counts are released in fixed 10-minute windows and are separate from consensus.'));
   const breakdown = (title, pairs) => h('div', { class: 'live-breakdown' },
     h('h3', {}, title), pairs.length ? h('dl', { class: 'live-counts' }, ...pairs.flatMap(([label, count]) => [
       h('dt', {}, label), h('dd', {}, formatInt(count)),
     ])) : h('p', { class: 'small muted source' }, 'None observed'));
   return card('Live network',
-    h('p', { class: 'live-total' }, `${formatInt(presence.total)} Mac${presence.total === 1 ? '' : 's'} online now`),
+    h('p', { class: 'live-total' }, `${formatInt(presence.total)} observed transports`),
     scope,
     h('div', { class: 'live-breakdowns' },
-      breakdown('By role', PRESENCE_ROLES.map((role) => [role[0].toUpperCase() + role.slice(1), presence.byRole[role]])),
-      breakdown('By version', Object.entries(presence.byVersion).sort(([a], [b]) => b.localeCompare(a, undefined, { numeric: true }))),
-      breakdown('By region', PRESENCE_REGIONS.map(([key, label]) => [label, presence.byRegion[key]]))),
-    h('p', { class: 'small muted source' }, `Regions follow home relays. Presence expires after ${formatInt(presence.ttlSeconds)} seconds and is separate from consensus.`));
+      breakdown('By role', PRESENCE_ROLES.filter((role) => Object.hasOwn(presence.byRole, role))
+        .map((role) => [role[0].toUpperCase() + role.slice(1), presence.byRole[role]])),
+      breakdown('By region', PRESENCE_REGIONS.filter(([key]) => Object.hasOwn(presence.byRegion, key))
+        .map(([key, label]) => [label, presence.byRegion[key]]))),
+    h('p', { class: 'small muted source' }, `Small groups are merged into broader buckets. Regions use local choices or home relays. Counts stay fixed for ${formatInt(presence.ttlSeconds)} seconds and are separate from consensus.`));
 }
 
 function tile(label, value, sub, extra = '') {

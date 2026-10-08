@@ -1,7 +1,8 @@
-//! Ephemeral, signed observations of this network. No consensus or chain writes.
-//! A signature proves a node key, not a physical Mac or a claimed location.
+//! Ephemeral cohort observations. Public RPC and gossip share the same privacy
+//! boundary: no individual records, observer identifiers or signed metadata.
+//! Transport peers are authenticated, but their aggregate claims are unverified.
 
-use aether_net::{Endpoint, EndpointAddr, EndpointId, SecretKey, Signature};
+use aether_net::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -9,14 +10,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const PING_INTERVAL: Duration = Duration::from_secs(60);
+/// Local transport observations expire sooner than the public release window.
 pub const TTL_SECONDS: u64 = 180;
+pub const TIME_BUCKET_SECONDS: u64 = 600;
+pub const MIN_BUCKET_SIZE: usize = 3;
 pub const MAX_ENTRIES: usize = 4096;
-pub const MAX_BATCH: usize = 64;
-const MAX_PING_BYTES: usize = 512;
-const CLOCK_SKEW_SECONDS: u64 = 10;
 const MIN_UPDATE_SECONDS: u64 = 10;
 const FANOUT: usize = 8;
-const REGIONS: [&str; 7] = [
+const SCOPE: &str = "unverified cohort observation";
+const REGIONS: [&str; 8] = [
     "asia",
     "europe",
     "north_america",
@@ -24,9 +26,10 @@ const REGIONS: [&str; 7] = [
     "africa",
     "oceania",
     "unknown",
+    "world",
 ];
-// Marketing release version: Cargo's workspace version predates the Mac releases.
-// Release builders may override this through AETHER_VERSION at compile time.
+
+// Marketing release version, for local diagnostics only. It is not gossiped.
 pub const NODE_VERSION: &str = match option_env!("AETHER_VERSION") {
     Some(v) => v,
     None => "0.7.4",
@@ -40,214 +43,224 @@ pub enum Role {
     Follower,
 }
 
-/// Signed wire record. The canonical signing tuple binds every public field,
-/// the protocol version and network, preventing replays across chains.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+impl Role {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Validator => "validator",
+            Self::Candidate => "candidate",
+            Self::Follower => "follower",
+        }
+    }
+}
+
+/// The only public presence record. Every breakdown is a disjoint partition
+/// of `total`; a suppressed small total has no breakdowns at all.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct Ping {
-    pub schema: u8,
-    pub node_id: String,
-    pub role: Role,
-    pub version: String,
-    pub timestamp: u64,
-    pub region: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub country: Option<String>,
-    pub network: String,
-    pub signature: String,
+struct Snapshot {
+    schema: u8,
+    available: bool,
+    scope: String,
+    observed_at: u64,
+    ttl_seconds: u64,
+    minimum_bucket_size: usize,
+    total: Option<usize>,
+    by_role: BTreeMap<String, usize>,
+    by_region: BTreeMap<String, usize>,
+    by_version: BTreeMap<String, usize>,
 }
 
-impl Ping {
-    #[allow(clippy::too_many_arguments)]
-    pub fn signed(
-        key: &SecretKey,
-        role: Role,
-        version: &str,
-        timestamp: u64,
-        region: &str,
-        country: Option<String>,
-        network: &str,
-    ) -> Self {
-        let mut p = Self {
-            schema: 1,
-            node_id: key.public().to_string(),
-            role,
-            version: version.into(),
-            timestamp,
-            region: region.into(),
-            country,
-            network: network.into(),
-            signature: String::new(),
-        };
-        p.signature = hex::encode(key.sign(&p.message()).to_bytes());
-        p
-    }
-
-    fn message(&self) -> Vec<u8> {
-        serde_json::to_vec(&(
-            "aether-presence-v1",
-            self.schema,
-            &self.node_id,
-            self.role,
-            &self.version,
-            self.timestamp,
-            &self.region,
-            &self.country,
-            &self.network,
-        ))
-        .expect("presence signing tuple")
-    }
-
-    fn verify(&self, network: &str, now: u64) -> Result<EndpointId, String> {
-        if self.schema != 1 || self.network != network {
-            return Err("presence protocol or network differs".into());
-        }
-        if serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > MAX_PING_BYTES
-            || self.version.is_empty()
-            || self.version.len() > 32
-            || !self
-                .version
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
-            || !REGIONS.contains(&self.region.as_str())
-        {
-            return Err("presence fields exceed their bounds".into());
-        }
-        validate_country(self.country.as_deref())?;
-        if self.timestamp > now.saturating_add(CLOCK_SKEW_SECONDS)
-            || now.saturating_sub(self.timestamp) >= TTL_SECONDS
-        {
-            return Err("presence timestamp is expired or ahead of this clock".into());
-        }
-        let id: EndpointId = self
-            .node_id
-            .parse()
-            .map_err(|_| "invalid presence node id")?;
-        // Canonical hex only: a key has one spelling, even on the wire.
-        if self.node_id != id.to_string() || self.signature.len() != 128 {
-            return Err("presence identity or signature is not canonical".into());
-        }
-        let bytes = hex::decode(&self.signature).map_err(|_| "invalid presence signature")?;
-        let sig =
-            Signature::try_from(bytes.as_slice()).map_err(|_| "invalid presence signature")?;
-        id.verify(&self.message(), &sig)
-            .map_err(|_| "presence signature rejected")?;
-        Ok(id)
-    }
-}
-
-// ISO 3166-1 alpha-2. No locale or geolocation lookup is performed here.
-pub fn validate_country(country: Option<&str>) -> Result<(), String> {
-    const ISO: &str = "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW";
-    if country.is_some_and(|c| c.len() != 2 || !ISO.split_ascii_whitespace().any(|iso| c == iso)) {
-        return Err(
-            "country must be an uppercase ISO 3166-1 alpha-2 code, or null to stop sharing".into(),
-        );
-    }
-    Ok(())
-}
-
-struct Entry {
-    ping: Ping,
-    seen: u64,
-    expires: Instant,
-}
-
-/// Time is explicit in this table so expiry and replay tests need no sleep.
-pub struct Table {
-    network: String,
-    entries: BTreeMap<EndpointId, Entry>,
-}
-
-impl Table {
-    pub fn new(network: String) -> Self {
+impl Snapshot {
+    fn empty(available: bool, wall: u64) -> Self {
         Self {
-            network,
-            entries: BTreeMap::new(),
+            schema: 2,
+            available,
+            scope: SCOPE.into(),
+            observed_at: time_bucket(wall),
+            ttl_seconds: TIME_BUCKET_SECONDS,
+            minimum_bucket_size: MIN_BUCKET_SIZE,
+            total: None,
+            by_role: BTreeMap::new(),
+            by_region: BTreeMap::new(),
+            by_version: BTreeMap::new(),
         }
     }
 
-    pub fn accept(&mut self, ping: Ping, wall: u64, mono: Instant) -> Result<bool, String> {
-        let id = ping.verify(&self.network, wall)?;
-        self.prune(mono, wall);
-        if let Some(old) = self.entries.get(&id) {
-            // Relaying the same signed ping never renews its TTL. One key gets
-            // at most one update per ten seconds, even through different peers.
-            if ping.timestamp <= old.ping.timestamp {
-                return Ok(false);
-            }
-            if ping.timestamp - old.ping.timestamp < MIN_UPDATE_SECONDS {
-                return Err("presence node update rate exceeded".into());
-            }
-        } else if self.entries.len() >= MAX_ENTRIES {
-            return Err("presence table is full".into());
+    fn from_counts(
+        wall: u64,
+        total: usize,
+        roles: BTreeMap<String, usize>,
+        regions: BTreeMap<String, usize>,
+    ) -> Self {
+        let mut value = Self::empty(true, wall);
+        if total >= MIN_BUCKET_SIZE {
+            value.total = Some(total);
+            value.by_role = fold_small(roles, "other");
+            value.by_region = fold_small(regions, "world");
+            // Individual peer versions/quality are no longer collected. Keep
+            // the versioned consumer field as one coarse, safe unknown group.
+            value.by_version.insert("unknown".into(), total);
         }
-        let lifetime = TTL_SECONDS - wall.saturating_sub(ping.timestamp);
-        self.entries.insert(
-            id,
-            Entry {
-                ping,
-                seen: wall,
-                expires: mono + Duration::from_secs(lifetime),
-            },
-        );
-        Ok(true)
+        value
     }
 
-    fn prune(&mut self, now: Instant, wall: u64) {
-        // Exported records must still pass the signed clock window. A wall
-        // clock jump or suspend must not keep an old record looking live;
-        // the monotonic deadline also prevents a rollback renewing its TTL.
-        self.entries.retain(|_, e| {
-            e.expires > now
-                && wall.saturating_sub(e.ping.timestamp) < TTL_SECONDS
-                && e.ping.timestamp <= wall.saturating_add(CLOCK_SKEW_SECONDS)
-        });
+    fn valid(&self, wall: u64) -> bool {
+        if self.schema != 2
+            || !self.available
+            || self.scope != SCOPE
+            || self.observed_at != time_bucket(wall)
+            || self.ttl_seconds != TIME_BUCKET_SECONDS
+            || self.minimum_bucket_size != MIN_BUCKET_SIZE
+        {
+            return false;
+        }
+        let valid_partition = |counts: &BTreeMap<String, usize>, keys: &[&str]| {
+            counts.len() <= keys.len()
+                && counts.iter().all(|(key, count)| {
+                    keys.contains(&key.as_str())
+                        && *count >= MIN_BUCKET_SIZE
+                        && *count <= MAX_ENTRIES
+                })
+                && counts.values().copied().sum::<usize>() == self.total.unwrap_or_default()
+        };
+        match self.total {
+            None => {
+                self.by_role.is_empty() && self.by_region.is_empty() && self.by_version.is_empty()
+            }
+            Some(total) => {
+                total >= MIN_BUCKET_SIZE
+                    && total <= MAX_ENTRIES
+                    && valid_partition(
+                        &self.by_role,
+                        &["validator", "candidate", "follower", "unknown", "other"],
+                    )
+                    && valid_partition(&self.by_region, &REGIONS)
+                    && valid_partition(&self.by_version, &["unknown"])
+            }
+        }
     }
+}
 
-    fn rows(&mut self, now: Instant, wall: u64) -> Vec<Value> {
-        self.prune(now, wall);
-        self.entries.values().map(|e| {
-            let p = &e.ping;
-            let mut row = json!({"node_id":p.node_id,"role":p.role,"version":p.version,"timestamp":p.timestamp,"last_seen":e.seen,"region":p.region});
-            if let Some(country) = &p.country { row["country"] = json!(country); }
-            row
-        }).collect()
+/// Merge rare categories upward. When their combined remainder is still below
+/// k, merge a whole safe sibling too: exposing that sibling and an exact total
+/// would otherwise disclose the suppressed remainder by subtraction.
+fn fold_small(mut counts: BTreeMap<String, usize>, parent: &str) -> BTreeMap<String, usize> {
+    let mut folded = counts.remove(parent).unwrap_or_default();
+    counts.retain(|_, count| {
+        if *count < MIN_BUCKET_SIZE {
+            folded += *count;
+            false
+        } else {
+            true
+        }
+    });
+    if folded > 0 && folded < MIN_BUCKET_SIZE {
+        if let Some(key) = counts
+            .iter()
+            .min_by_key(|(_, count)| **count)
+            .map(|(key, _)| key.clone())
+        {
+            folded += counts.remove(&key).expect("folded sibling");
+        }
     }
+    if folded >= MIN_BUCKET_SIZE {
+        counts.insert(parent.into(), folded);
+    }
+    counts
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Packet {
     schema: u8,
-    sender: String,
-    binding_signature: String,
-    pings: Vec<Ping>,
+    network: String,
+    aggregate: Snapshot,
 }
 
-fn binding_message(transport: EndpointId, sender: EndpointId, timestamp: u64) -> Vec<u8> {
-    serde_json::to_vec(&(
-        "aether-presence-peer-v1",
-        transport.to_string(),
-        sender.to_string(),
-        timestamp,
-    ))
-    .expect("presence binding tuple")
+struct Observation {
+    snapshot: Snapshot,
+    wall: u64,
+    expires: Instant,
+}
+
+struct Table {
+    network: String,
+    observations: BTreeMap<EndpointId, Observation>,
+    released: Option<(Snapshot, Instant)>,
+}
+
+impl Table {
+    fn new(network: String) -> Self {
+        Self {
+            network,
+            observations: BTreeMap::new(),
+            released: None,
+        }
+    }
+
+    fn prune(&mut self, mono: Instant, wall: u64) {
+        self.observations.retain(|_, observation| {
+            observation.expires > mono
+                && wall.saturating_sub(observation.wall) < TTL_SECONDS
+                && observation.snapshot.observed_at == time_bucket(wall)
+        });
+    }
+
+    fn accept(&mut self, remote: EndpointId, packet: Packet, wall: u64, mono: Instant) -> bool {
+        if packet.schema != 2 || packet.network != self.network || !packet.aggregate.valid(wall) {
+            return false;
+        }
+        self.prune(mono, wall);
+        // One authenticated immediate peer gets one observation. The peer's
+        // transport id stays local; it is never put in the exported packet.
+        if self.observations.len() >= MAX_ENTRIES && !self.observations.contains_key(&remote) {
+            return false;
+        }
+        self.observations.insert(
+            remote,
+            Observation {
+                snapshot: packet.aggregate,
+                wall,
+                expires: mono + Duration::from_secs(TTL_SECONDS),
+            },
+        );
+        true
+    }
+
+    fn release(&mut self, local: Snapshot, wall: u64, mono: Instant) -> Snapshot {
+        // A floor timestamp alone is insufficient: changing counts inside a
+        // window would still reveal the exact moment someone joined or left.
+        if let Some((snapshot, until)) = &self.released {
+            if snapshot.observed_at == time_bucket(wall) && *until > mono {
+                return snapshot.clone();
+            }
+        }
+        self.prune(mono, wall);
+        let mut best = local;
+        for observation in self.observations.values() {
+            if observation.snapshot.total > best.total {
+                best = observation.snapshot.clone();
+            }
+        }
+        // Never add anonymous populations: their overlap cannot be established
+        // without reintroducing individual identifiers. This is one complete
+        // unverified cohort claim, not a global distinct-node census.
+        self.released = Some((
+            best.clone(),
+            mono + Duration::from_secs(TIME_BUCKET_SECONDS),
+        ));
+        best
+    }
 }
 
 pub struct Presence {
     endpoint: Endpoint,
-    identity: SecretKey,
-    // A signed binding associates a logical node with its authenticated RPC
-    // transport. Candidates retain the established, separate wallet endpoint
-    // so background resharing remains the sole owner of their public node id.
-    bindings: Mutex<BTreeMap<EndpointId, EndpointId>>,
+    identity: EndpointId,
     pub peers: aether_net::peers::PeerTracker,
     role: Role,
     country: Mutex<Option<String>>,
     table: Mutex<Table>,
     validators: BTreeSet<EndpointId>,
-    packet_cursor: std::sync::atomic::AtomicUsize,
     local_settings: std::sync::atomic::AtomicBool,
 }
 
@@ -275,63 +288,16 @@ impl Presence {
         network: String,
         country: Option<String>,
     ) -> Arc<Self> {
-        let p = Arc::new(Self {
+        Arc::new(Self {
             endpoint,
-            identity,
-            bindings: Mutex::new(BTreeMap::new()),
+            identity: identity.public(),
             peers,
             role,
-            country: Mutex::new(country),
+            country: Mutex::new(country.filter(|c| validate_country(Some(c)).is_ok())),
             table: Mutex::new(Table::new(network)),
             validators: validators.into_iter().collect(),
-            packet_cursor: std::sync::atomic::AtomicUsize::new(0),
             local_settings: std::sync::atomic::AtomicBool::new(true),
-        });
-        p.renew();
-        p
-    }
-
-    fn renew(&self) {
-        let region = self
-            .endpoint
-            .addr()
-            .relay_urls()
-            .next()
-            .map(|r| relay_region(&r.to_string()))
-            .unwrap_or("unknown");
-        let country = self.country.lock().expect("presence country").clone();
-        let mut table = self.table.lock().expect("presence table");
-        let ping = Ping::signed(
-            &self.identity,
-            self.role,
-            NODE_VERSION,
-            unix_now(),
-            region,
-            country,
-            &table.network,
-        );
-        // Own heartbeat cannot be crowded out by other keys. Replacement is
-        // local-only; received copies still go through signature/rate checks.
-        let id = self.identity.public();
-        table.prune(Instant::now(), unix_now());
-        if table.entries.len() >= MAX_ENTRIES && !table.entries.contains_key(&id) {
-            if let Some(oldest) = table
-                .entries
-                .iter()
-                .min_by_key(|(_, e)| e.expires)
-                .map(|(id, _)| *id)
-            {
-                table.entries.remove(&oldest);
-            }
-        }
-        table.entries.insert(
-            id,
-            Entry {
-                ping,
-                seen: unix_now(),
-                expires: Instant::now() + Duration::from_secs(TTL_SECONDS),
-            },
-        );
+        })
     }
 
     pub fn set_country(&self, country: Option<String>) -> Result<(), String> {
@@ -343,7 +309,8 @@ impl Presence {
         }
         validate_country(country.as_deref())?;
         *self.country.lock().expect("presence country") = country;
-        self.renew();
+        // Do not invalidate the public cache: choices cannot reveal an exact
+        // change time or a rare country by changing the aggregate mid-window.
         Ok(())
     }
 
@@ -352,45 +319,65 @@ impl Presence {
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub fn snapshot(&self) -> Value {
-        let nodes = self
-            .table
-            .lock()
-            .expect("presence table")
-            .rows(Instant::now(), unix_now());
-        summarize(Some(self.identity.public()), &nodes)
+    fn own_region(&self) -> &'static str {
+        if let Some(country) = self.country.lock().expect("presence country").as_deref() {
+            return country_region(country);
+        }
+        self.endpoint
+            .addr()
+            .relay_urls()
+            .next()
+            .map(|relay| relay_region(&relay.to_string()))
+            .unwrap_or("unknown")
     }
 
+    fn aggregate(&self) -> Snapshot {
+        let (wall, mono) = (unix_now(), Instant::now());
+        let mut table = self.table.lock().expect("presence table");
+        table.prune(mono, wall);
+        let mut observed: BTreeSet<_> = self.peers.connected_ids().into_iter().collect();
+        observed.extend(table.observations.keys().copied());
+        observed.remove(&self.endpoint.id());
+        observed.remove(&self.identity);
+        let mut roles = BTreeMap::from([(self.role.name().into(), 1)]);
+        let mut total = 1;
+        for id in observed.into_iter().take(MAX_ENTRIES - 1) {
+            let role = if self.validators.contains(&id) {
+                "validator"
+            } else {
+                "unknown"
+            };
+            *roles.entry(role.into()).or_default() += 1;
+            total += 1;
+        }
+        // Remote individuals never advertise their region or build quality.
+        // Only this node's local choice/home relay contributes a known region.
+        let mut regions = BTreeMap::from([(self.own_region().into(), 1)]);
+        *regions.entry("unknown".into()).or_default() += total - 1;
+        let local = Snapshot::from_counts(wall, total, roles, regions);
+        table.release(local, wall, mono)
+    }
+
+    pub fn snapshot(&self) -> Value {
+        serde_json::to_value(self.aggregate()).expect("presence snapshot")
+    }
+
+    /// Identifiable connection diagnostics are exposed only by the native
+    /// loopback aether_peers RPC, never by the public presence snapshot/gossip.
     pub fn peer_snapshot(&self) -> Value {
-        let nodes = self
-            .table
-            .lock()
-            .expect("presence table")
-            .rows(Instant::now(), unix_now());
-        let metadata: BTreeMap<_, _> = nodes
-            .iter()
-            .map(|n| (n["node_id"].as_str().unwrap_or_default(), n))
-            .collect();
-        let rows = self.peers.snapshot();
-        let active: BTreeSet<EndpointId> = rows
-            .iter()
-            .filter_map(|r| r["node_id"].as_str()?.parse().ok())
-            .collect();
-        let mut bindings = self.bindings.lock().expect("presence bindings");
-        bindings.retain(|id, _| active.contains(id));
-        let peers: Vec<_> = rows
+        if !self
+            .local_settings
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return json!([]);
+        }
+        let peers: Vec<_> = self
+            .peers
+            .snapshot()
             .into_iter()
             .map(|mut row| {
-                let transport: Option<EndpointId> =
-                    row["node_id"].as_str().and_then(|id| id.parse().ok());
-                let logical = transport.map(|id| bindings.get(&id).copied().unwrap_or(id));
-                let id = logical.map(|id| id.to_string()).unwrap_or_default();
-                if let Some(p) = metadata.get(id.as_str()) {
-                    row["role"] = p["role"].clone();
-                    row["version"] = p["version"].clone();
-                }
-                if row["role"].is_null() && logical.is_some_and(|id| self.validators.contains(&id))
-                {
+                let id: Option<EndpointId> = row["node_id"].as_str().and_then(|id| id.parse().ok());
+                if id.is_some_and(|id| self.validators.contains(&id)) {
                     row["role"] = json!("validator");
                 }
                 row
@@ -408,83 +395,36 @@ impl Presence {
     }
 
     fn ingest(&self, remote: EndpointId, bytes: &[u8]) {
-        if bytes.len() > aether_net::MAX_PRESENCE_MESSAGE {
+        if bytes.len() > aether_net::MAX_PRESENCE_MESSAGE
+            || remote == self.endpoint.id()
+            || remote == self.identity
+        {
             return;
         }
         let Ok(packet) = serde_json::from_slice::<Packet>(bytes) else {
             return;
         };
-        if packet.schema != 1 || packet.pings.len() > MAX_BATCH {
-            return;
-        }
-        let mut table = self.table.lock().expect("presence table");
-        let (wall, mono) = (unix_now(), Instant::now());
-        for ping in packet.pings {
-            if ping.node_id != self.identity.public().to_string() {
-                let _ = table.accept(ping, wall, mono);
-            }
-        }
-        // Only the logical identity's signature over this transport id earns
-        // peer metadata. A forwarded ping alone proves no transport binding.
-        if let Ok(sender) = packet.sender.parse::<EndpointId>() {
-            if let Some(entry) = table.entries.get(&sender) {
-                let valid = hex::decode(&packet.binding_signature)
-                    .ok()
-                    .and_then(|s| Signature::try_from(s.as_slice()).ok())
-                    .is_some_and(|sig| {
-                        sender
-                            .verify(&binding_message(remote, sender, entry.ping.timestamp), &sig)
-                            .is_ok()
-                    });
-                if valid {
-                    let mut bindings = self.bindings.lock().expect("presence bindings");
-                    if bindings.len() < MAX_ENTRIES || bindings.contains_key(&remote) {
-                        bindings.insert(remote, sender);
-                    }
-                }
-            }
-        }
+        self.table.lock().expect("presence table").accept(
+            remote,
+            packet,
+            unix_now(),
+            Instant::now(),
+        );
     }
 
     fn packet(&self) -> Vec<u8> {
-        use std::sync::atomic::Ordering;
-        let mut table = self.table.lock().expect("presence table");
-        table.prune(Instant::now(), unix_now());
-        let mine = table
-            .entries
-            .get(&self.identity.public())
-            .map(|e| e.ping.clone());
-        let all: Vec<_> = table
-            .entries
-            .iter()
-            .filter(|(id, _)| **id != self.identity.public())
-            .map(|(_, e)| e.ping.clone())
-            .collect();
-        let mut pings: Vec<_> = mine.into_iter().collect();
-        let start = self
-            .packet_cursor
-            .fetch_add(MAX_BATCH - 1, Ordering::Relaxed);
-        for i in 0..all.len().min(MAX_BATCH - pings.len()) {
-            pings.push(all[(start.wrapping_add(i)) % all.len()].clone());
-        }
-        let timestamp = pings.first().map(|p| p.timestamp).unwrap_or_default();
-        let sender = self.identity.public();
-        let binding_signature = hex::encode(
-            self.identity
-                .sign(&binding_message(self.endpoint.id(), sender, timestamp))
-                .to_bytes(),
-        );
+        let aggregate = self.aggregate();
+        let network = self.table.lock().expect("presence table").network.clone();
         serde_json::to_vec(&Packet {
-            schema: 1,
-            sender: sender.to_string(),
-            binding_signature,
-            pings,
+            schema: 2,
+            network,
+            aggregate,
         })
         .expect("presence packet")
     }
 
-    /// Send one bounded batch each minute to a rotating sample of bootstrap
-    /// and connected neighbors. Replies gossip their signed observations back.
+    /// Exchange the same frozen privacy-filtered cohort each minute with at
+    /// most eight rotating neighbors. Raw identity/metadata gossip is gone.
     pub fn start(self: &Arc<Self>, seeds: Vec<EndpointAddr>) {
         let this = self.clone();
         tokio::spawn(async move {
@@ -494,7 +434,6 @@ impl Presence {
             ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! { _ = this.endpoint.closed() => break, _ = ticks.tick() => {} }
-                this.renew();
                 let mut destinations: BTreeMap<_, _> =
                     seeds.iter().map(|a| (a.id, a.clone())).collect();
                 for id in this.peers.connected_ids() {
@@ -503,7 +442,7 @@ impl Presence {
                         .or_insert_with(|| EndpointAddr::from(id));
                 }
                 destinations.remove(&this.endpoint.id());
-                destinations.remove(&this.identity.public());
+                destinations.remove(&this.identity);
                 let destinations: Vec<_> = destinations.into_values().collect();
                 let bytes = this.packet();
                 let mut exchanges = tokio::task::JoinSet::new();
@@ -524,9 +463,6 @@ impl Presence {
                         _ => failed = true,
                     }
                 }
-                // A peer may still be starting when our first ping goes out.
-                // Bound startup retries; unsupported old nodes never create
-                // a permanent retry loop or change the steady 60-second rate.
                 if failed && startup_retries > 0 {
                     startup_retries -= 1;
                     ticks.reset_at(
@@ -540,32 +476,11 @@ impl Presence {
 }
 
 pub fn unavailable() -> Value {
-    summarize(None, &[])
+    serde_json::to_value(Snapshot::empty(false, unix_now())).expect("unavailable presence")
 }
 
-fn summarize(observer: Option<EndpointId>, nodes: &[Value]) -> Value {
-    let mut roles: BTreeMap<String, usize> = ["validator", "candidate", "follower"]
-        .map(|s| (s.into(), 0))
-        .into();
-    let mut regions: BTreeMap<String, usize> = REGIONS.map(|s| (s.into(), 0)).into();
-    let (mut versions, mut countries) = (
-        BTreeMap::<String, usize>::new(),
-        BTreeMap::<String, usize>::new(),
-    );
-    for n in nodes {
-        for (field, counts) in [
-            ("role", &mut roles),
-            ("region", &mut regions),
-            ("version", &mut versions),
-            ("country", &mut countries),
-        ] {
-            if let Some(s) = n[field].as_str() {
-                *counts.entry(s.into()).or_default() += 1;
-            }
-        }
-    }
-    json!({"schema":1,"available":observer.is_some(),"observer":observer.map(|id| id.to_string()),"scope":"what this node can see",
-        "observed_at":unix_now(),"ttl_seconds":TTL_SECONDS,"total":nodes.len(),"by_role":roles,"by_version":versions,"by_region":regions,"by_country":countries,"nodes":nodes})
+fn time_bucket(wall: u64) -> u64 {
+    wall / TIME_BUCKET_SECONDS * TIME_BUCKET_SECONDS
 }
 
 pub fn unix_now() -> u64 {
@@ -575,8 +490,36 @@ pub fn unix_now() -> u64 {
         .as_secs()
 }
 
-/// Map the *home relay*, never the Mac's address, to a continent. Custom or
-/// unrecognized relay names stay unknown. No URL leaves this function.
+// ISO 3166-1 alpha-2 input is local only; no locale or GeoIP lookup here.
+pub fn validate_country(country: Option<&str>) -> Result<(), String> {
+    const ISO: &str = "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW";
+    if country.is_some_and(|c| c.len() != 2 || !ISO.split_ascii_whitespace().any(|iso| c == iso)) {
+        return Err(
+            "country must be an uppercase ISO 3166-1 alpha-2 code, or null to stop sharing".into(),
+        );
+    }
+    Ok(())
+}
+
+/// A local optional country choice becomes a continent, never a country field.
+/// Ambiguous, transcontinental and unlisted codes remain unknown.
+fn country_region(country: &str) -> &'static str {
+    for (region, countries) in [
+        ("asia", "AE AF BD BH BN BT CN HK ID IL IN IQ IR JO JP KH KP KR KW LA LB LK MM MN MO MV MY NP OM PH PK PS QA SA SG TH TL TW VN YE"),
+        ("europe", "AD AL AT AX BA BE BG BY CH CZ DE DK EE ES FI FO FR GB GG GI GR HR HU IE IM IS IT JE LI LT LU LV MC MD ME MK MT NL NO PL PT RO RS SE SI SJ SK SM UA VA"),
+        ("north_america", "AG AI AW BB BL BM BQ BS BZ CA CR CU CW DM DO GD GL GP GT HN HT JM KN KY LC MF MQ MS MX NI PA PM PR SV SX TC TT US VC VG VI"),
+        ("south_america", "AR BO BR CL CO EC FK GF GY PE PY SR UY VE"),
+        ("africa", "AO BF BI BJ BW CD CF CG CI CM CV DJ DZ EG EH ER ET GA GH GM GN GQ GW KE KM LR LS LY MA MG ML MR MU MW MZ NA NE NG RE RW SC SD SH SL SN SO SS ST SZ TD TG TN TZ UG YT ZA ZM ZW"),
+        ("oceania", "AS AU CK FJ FM GU KI MH MP NC NF NR NU NZ PF PG PN PW SB TK TO TV VU WF WS"),
+    ] {
+        if countries.split_ascii_whitespace().any(|code| code == country) {
+            return region;
+        }
+    }
+    "unknown"
+}
+
+/// Home relay continent only; custom or unrecognized domains stay unknown.
 pub fn relay_region(url: &str) -> &'static str {
     let Some(host) = url
         .strip_prefix("https://")
@@ -610,337 +553,372 @@ pub fn relay_region(url: &str) -> &'static str {
 mod tests {
     use super::*;
 
-    fn ping(i: u64, at: u64) -> Ping {
-        Ping::signed(
-            &aether_net::devnet_node_secret(i),
-            Role::Follower,
-            "0.7.4",
-            at,
-            "asia",
-            None,
-            "7777:0",
-        )
+    fn counts(pairs: &[(&str, usize)]) -> BTreeMap<String, usize> {
+        pairs
+            .iter()
+            .map(|(key, count)| ((*key).into(), *count))
+            .collect()
     }
 
-    #[test]
-    fn expiry_and_replays_never_renew_the_ttl() {
-        let now = Instant::now();
-        let mut t = Table::new("7777:0".into());
-        assert!(t.accept(ping(1, 1000), 1000, now).unwrap());
-        assert!(!t
-            .accept(ping(1, 1000), 1100, now + Duration::from_secs(100))
-            .unwrap());
-        assert_eq!(t.rows(now + Duration::from_secs(179), 1179).len(), 1);
-        assert!(t.rows(now + Duration::from_secs(180), 1180).is_empty());
-        assert!(t
-            .accept(ping(1, 1000), 1180, now + Duration::from_secs(180))
-            .is_err());
-        assert!(t
-            .accept(ping(1, 1180), 1180, now + Duration::from_secs(180))
-            .unwrap());
-    }
-
-    #[test]
-    fn cached_records_expire_on_either_clock_without_ttl_renewal() {
-        let mono = Instant::now();
-        let mut t = Table::new("7777:0".into());
-        t.accept(ping(1, 1000), 1000, mono).unwrap();
-        // Wall time advanced while this runtime's monotonic clock did not.
-        assert!(t.rows(mono, 1180).is_empty());
-        let mut t = Table::new("7777:0".into());
-        t.accept(ping(1, 1000), 1000, mono).unwrap();
-        // A wall clock rollback cannot extend an already elapsed deadline.
-        assert!(t.rows(mono + Duration::from_secs(180), 999).is_empty());
-    }
-
-    #[test]
-    fn every_field_is_signed_and_networks_are_isolated() {
-        let p = ping(1, 1000);
-        for field in [
-            "role",
-            "version",
-            "region",
-            "country",
-            "timestamp",
-            "node_id",
-            "signature",
-            "network",
-            "schema",
-        ] {
-            let mut v = serde_json::to_value(&p).unwrap();
-            v[field] = match field {
-                "role" => json!("validator"),
-                "country" => json!("KR"),
-                "timestamp" => json!(1001),
-                "schema" => json!(2),
-                "node_id" => json!(aether_net::devnet_node_id(2).to_string()),
-                "signature" => json!("00".repeat(64)),
-                _ => json!("europe"),
-            };
-            let p: Ping = serde_json::from_value(v).unwrap();
-            assert!(p.verify("7777:0", 1000).is_err(), "{field}");
+    fn assert_safe(snapshot: &Snapshot) {
+        assert_eq!(snapshot.observed_at % TIME_BUCKET_SECONDS, 0);
+        for partition in [&snapshot.by_role, &snapshot.by_region, &snapshot.by_version] {
+            assert!(partition.values().all(|count| *count >= MIN_BUCKET_SIZE));
+            assert_eq!(
+                partition.values().sum::<usize>(),
+                snapshot.total.unwrap_or_default()
+            );
         }
-        assert!(p.verify("7780:0", 1000).is_err());
+        let json = serde_json::to_value(snapshot).unwrap();
+        for field in [
+            "nodes",
+            "node_id",
+            "observer",
+            "country",
+            "by_country",
+            "timestamp",
+            "last_seen",
+            "sender",
+            "signature",
+            "binding_signature",
+            "pings",
+        ] {
+            assert!(
+                !json.as_object().unwrap().contains_key(field),
+                "{field} never exported"
+            );
+        }
     }
 
     #[test]
-    fn one_key_counts_once_and_stale_metadata_cannot_replace_it() {
-        let now = Instant::now();
-        let mut t = Table::new("7777:0".into());
-        t.accept(ping(1, 1000), 1000, now).unwrap();
-        let mut newer = ping(1, 1060);
-        newer = Ping::signed(
-            &aether_net::devnet_node_secret(1),
-            Role::Candidate,
-            "0.7.4",
-            newer.timestamp,
-            "europe",
-            Some("KR".into()),
-            "7777:0",
+    fn small_cohorts_and_residuals_are_suppressed_at_the_producer() {
+        for total in 1..MIN_BUCKET_SIZE {
+            let value = Snapshot::from_counts(
+                1791440017,
+                total,
+                counts(&[("validator", total)]),
+                counts(&[("asia", total)]),
+            );
+            assert_eq!(value.total, None);
+            assert_safe(&value);
+        }
+        let cases = [
+            (
+                4,
+                counts(&[("validator", 3), ("follower", 1)]),
+                counts(&[("asia", 3), ("europe", 1)]),
+            ),
+            (
+                8,
+                counts(&[("validator", 6), ("follower", 2)]),
+                counts(&[("asia", 6), ("europe", 2)]),
+            ),
+            (
+                6,
+                counts(&[("validator", 3), ("candidate", 1), ("follower", 2)]),
+                counts(&[("asia", 3), ("europe", 1), ("africa", 2)]),
+            ),
+            (
+                9,
+                counts(&[("validator", 6), ("follower", 3)]),
+                counts(&[("asia", 6), ("europe", 3)]),
+            ),
+        ];
+        for (total, roles, regions) in cases {
+            let value = Snapshot::from_counts(1791440017, total, roles, regions);
+            assert!(value.valid(1791440017));
+            assert_safe(&value);
+        }
+        assert_eq!(
+            fold_small(counts(&[("validator", 3), ("follower", 1)]), "other"),
+            counts(&[("other", 4)])
         );
-        t.accept(newer, 1060, now + Duration::from_secs(60))
-            .unwrap();
-        assert!(!t
-            .accept(ping(1, 1000), 1060, now + Duration::from_secs(60))
-            .unwrap());
-        t.accept(ping(2, 1060), 1060, now + Duration::from_secs(60))
-            .unwrap();
-        let rows = t.rows(now + Duration::from_secs(60), 1060);
-        let v = summarize(Some(aether_net::devnet_node_id(1)), &rows);
-        assert_eq!(v["total"], 2);
-        assert_eq!(v["by_role"]["candidate"], 1);
-        assert_eq!(v["by_region"]["europe"], 1);
-        assert_eq!(v["by_country"]["KR"], 1);
+        assert_eq!(
+            fold_small(counts(&[("asia", 6), ("europe", 2)]), "world"),
+            counts(&[("world", 8)])
+        );
+        // Rare quality data uses the same complementary suppression rule.
+        assert_eq!(
+            fold_small(counts(&[("common", 6), ("rare", 2)]), "other"),
+            counts(&[("other", 8)])
+        );
+    }
+
+    #[test]
+    fn releases_are_fixed_within_a_ten_minute_window_and_gossip_is_never_summed() {
+        let mono = Instant::now();
+        let mut table = Table::new("7777:0".into());
+        let local = Snapshot::from_counts(
+            1201,
+            4,
+            counts(&[("validator", 4)]),
+            counts(&[("unknown", 4)]),
+        );
+        let release = table.release(local.clone(), 1201, mono);
+        let larger = Snapshot::from_counts(
+            1202,
+            9,
+            counts(&[("validator", 9)]),
+            counts(&[("unknown", 9)]),
+        );
+        let packet = Packet {
+            schema: 2,
+            network: "7777:0".into(),
+            aggregate: larger.clone(),
+        };
+        assert!(table.accept(aether_net::devnet_node_id(2), packet, 1202, mono));
+        assert_eq!(
+            table.release(larger, 1799, mono + Duration::from_secs(598)),
+            release
+        );
+        let next = Snapshot::from_counts(
+            1800,
+            3,
+            counts(&[("validator", 3)]),
+            counts(&[("unknown", 3)]),
+        );
+        assert_eq!(
+            table.release(next.clone(), 1800, mono + Duration::from_secs(599)),
+            next
+        );
+
+        let mut table = Table::new("7777:0".into());
+        for id in 2..=3 {
+            let packet = Packet {
+                schema: 2,
+                network: "7777:0".into(),
+                aggregate: local.clone(),
+            };
+            assert!(table.accept(aether_net::devnet_node_id(id), packet, 1201, mono));
+        }
+        let tiny = Snapshot::from_counts(
+            1201,
+            1,
+            counts(&[("follower", 1)]),
+            counts(&[("unknown", 1)]),
+        );
+        assert_eq!(
+            table.release(tiny, 1201, mono).total,
+            Some(4),
+            "overlapping claims never add to eight"
+        );
+    }
+
+    #[test]
+    fn invalid_or_identifying_aggregate_payloads_are_not_accepted() {
+        let value = Snapshot::from_counts(
+            1200,
+            4,
+            counts(&[("validator", 4)]),
+            counts(&[("unknown", 4)]),
+        );
+        for field in [
+            "nodes",
+            "observer",
+            "country",
+            "sender",
+            "signature",
+            "pings",
+        ] {
+            let mut json = serde_json::to_value(&value).unwrap();
+            json[field] = json!("private");
+            assert!(serde_json::from_value::<Snapshot>(json).is_err(), "{field}");
+        }
+        let mut rare = value.clone();
+        rare.by_role = counts(&[("validator", 3), ("follower", 1)]);
+        assert!(!rare.valid(1200));
+        let mut residual = value.clone();
+        residual.by_region = counts(&[("asia", 3)]);
         assert!(
-            !rows[1].as_object().unwrap().contains_key("country")
-                || !rows[0].as_object().unwrap().contains_key("country")
+            !residual.valid(1200),
+            "exact total cannot expose a hidden residual"
         );
+        let mut exact_time = value.clone();
+        exact_time.observed_at += 1;
+        assert!(!exact_time.valid(1201));
+        assert!(!value.valid(1800), "previous bucket is stale");
+        let mut version = value.clone();
+        version.by_version = counts(&[("0.7.4", 4)]);
+        assert!(!version.valid(1200), "individual build quality was removed");
+        let mut table = Table::new("7777:0".into());
+        let wrong = Packet {
+            schema: 2,
+            network: "7780:0".into(),
+            aggregate: value,
+        };
+        assert!(!table.accept(aether_net::devnet_node_id(2), wrong, 1200, Instant::now()));
+        assert!(table.observations.is_empty());
     }
 
     #[test]
-    fn clock_size_country_and_node_rate_are_bounded() {
-        assert!(ping(1, 1011).verify("7777:0", 1000).is_err());
-        let mut p = ping(1, 1000);
-        p.version = "x".repeat(513);
-        assert!(p.verify("7777:0", 1000).is_err());
+    fn country_stays_local_and_only_yields_a_broad_region() {
+        assert_eq!(country_region("KR"), "asia");
+        assert_eq!(country_region("US"), "north_america");
+        assert_eq!(country_region("AU"), "oceania");
+        assert_eq!(country_region("RU"), "unknown");
         for c in ["kr", "ZZ", "Korea", "127.0.0.1"] {
             assert!(validate_country(Some(c)).is_err());
         }
         assert!(validate_country(None).is_ok());
         assert!(validate_country(Some("KR")).is_ok());
-        let now = Instant::now();
-        let mut t = Table::new("7777:0".into());
-        t.accept(ping(1, 1000), 1000, now).unwrap();
-        assert!(t
-            .accept(ping(1, 1001), 1001, now + Duration::from_secs(1))
-            .is_err());
-    }
-
-    #[test]
-    fn relay_regions_are_coarse_and_unknown_is_honest() {
         assert_eq!(relay_region("https://aps1-1.relay.n0.iroh.link./"), "asia");
-        assert_eq!(relay_region("https://euw1-1.relay.iroh.network/"), "europe");
-        assert_eq!(
-            relay_region("https://use1-1.relay.n0.iroh.link./"),
-            "north_america"
-        );
-        assert_eq!(
-            relay_region("https://aps2-1.relay.iroh.network/"),
-            "oceania"
-        );
         assert_eq!(relay_region("https://my-relay.example/"), "unknown");
-        assert_eq!(relay_region("https://127.0.0.1/"), "unknown");
-        assert_eq!(relay_region("https://aps1-1.custom.example/"), "unknown");
         assert_eq!(
             relay_region("https://aps1-1.relay.n0.iroh.link.attacker.example/"),
             "unknown"
         );
     }
 
+    /// Inspect actual request/reply bytes over local QUIC and the actual public
+    /// RPC handler JSON, including a populated cohort with a rare residual.
     #[tokio::test]
-    async fn stable_identity_is_separate_from_transport_and_metadata_needs_its_binding() {
-        let logical = aether_net::devnet_node_secret(1);
-        let transport = aether_net::devnet_node_secret(41);
-        let peers = aether_net::peers::PeerTracker::new();
-        let server =
-            aether_net::bind_local(transport, "127.0.0.1:0".parse().unwrap(), peers.clone())
-                .await
-                .unwrap();
-        let candidate = Presence::with_identity(
-            server.clone(),
-            peers,
-            logical.clone(),
-            Role::Candidate,
-            vec![],
-            "7777:0".into(),
-            None,
-        );
-        let router = aether_net::serve_with_presence(
-            server.clone(),
-            |_| async { json!({}) },
-            None,
-            None,
-            Some(candidate.callback()),
-        );
-        let peer_tracker = aether_net::peers::PeerTracker::new();
-        let client = aether_net::bind_local(
-            aether_net::devnet_node_secret(2),
-            "127.0.0.1:0".parse().unwrap(),
-            peer_tracker.clone(),
-        )
-        .await
-        .unwrap();
-        let observer = Presence::new(
-            client.clone(),
-            peer_tracker,
-            Role::Follower,
-            vec![],
-            "7777:0".into(),
-            None,
-        );
-        let connection = client
-            .connect(server.addr(), aether_net::ALPN_PRESENCE)
+    async fn actual_rpc_and_gossip_export_only_the_same_safe_aggregates() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let tracker = aether_net::peers::PeerTracker::new();
+            let server = aether_net::bind_local(
+                aether_net::devnet_node_secret(1),
+                "127.0.0.1:0".parse().unwrap(),
+                tracker.clone(),
+            )
             .await
             .unwrap();
-        let packet = candidate.packet();
-        // A candidate's ping is valid when forwarded, but cannot attribute
-        // role/version to an unrelated authenticated transport.
-        observer.ingest(aether_net::devnet_node_id(42), &packet);
-        let rows = observer.peer_snapshot();
-        assert!(rows[0]["role"].is_null());
-        assert!(rows[0]["version"].is_null());
-        observer.ingest(server.id(), &packet);
-        let rows = observer.peer_snapshot();
-        assert_eq!(rows[0]["node_id"], server.id().to_string());
-        assert_eq!(rows[0]["role"], "candidate");
-        assert_eq!(rows[0]["version"], NODE_VERSION);
-        assert_eq!(observer.snapshot()["total"], 2);
-        assert_eq!(
-            candidate.snapshot()["observer"],
-            logical.public().to_string()
-        );
-        assert_ne!(server.id(), logical.public());
-
-        // A paused follower advertising the same logical key is still one
-        // node, even though its active transport has a different key.
-        let at = unix_now() + MIN_UPDATE_SECONDS;
-        let paused = Ping::signed(
-            &logical,
-            Role::Follower,
-            NODE_VERSION,
-            at,
-            "unknown",
-            None,
-            "7777:0",
-        );
-        let mut table = observer.table.lock().unwrap();
-        table.accept(paused, at, Instant::now()).unwrap();
-        assert_eq!(table.rows(Instant::now(), unix_now()).len(), 2);
-        drop(table);
-        assert_eq!(observer.snapshot()["by_role"]["candidate"], 0);
-        assert_eq!(observer.snapshot()["by_role"]["follower"], 2);
-        drop(connection);
-        client.close().await;
-        router.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn country_opt_in_and_opt_out_renew_every_signed_field() {
-        let peers = aether_net::peers::PeerTracker::new();
-        let endpoint = aether_net::bind_local(
-            aether_net::devnet_node_secret(1),
-            "127.0.0.1:0".parse().unwrap(),
-            peers.clone(),
-        )
+            let presence = Presence::new(
+                server.clone(),
+                tracker,
+                Role::Validator,
+                (1..=3).map(aether_net::devnet_node_id).collect(),
+                "7777:0".into(),
+                Some("KR".into()),
+            );
+            let captured = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+            let callback = presence.callback();
+            let packets = captured.clone();
+            let router = aether_net::serve_with_presence(
+                server.clone(),
+                |_| async { json!({}) },
+                None,
+                None,
+                Some(Arc::new(move |remote, bytes| {
+                    packets.lock().unwrap().push(bytes.to_vec());
+                    callback(remote, bytes)
+                })),
+            );
+            let address = aether_net::EndpointAddr::from_parts(
+                server.id(),
+                server
+                    .bound_sockets()
+                    .into_iter()
+                    .map(aether_net::TransportAddr::Ip),
+            );
+            let mut clients = Vec::new();
+            let mut connections = Vec::new();
+            for id in 2..=4 {
+                let tracker = aether_net::peers::PeerTracker::new();
+                let client = aether_net::bind_local(
+                    aether_net::devnet_node_secret(id),
+                    "127.0.0.1:0".parse().unwrap(),
+                    tracker.clone(),
+                )
+                .await
+                .unwrap();
+                connections.push(
+                    client
+                        .connect(address.clone(), aether_net::ALPN_RPC)
+                        .await
+                        .unwrap(),
+                );
+                let publisher = Presence::new(
+                    client.clone(),
+                    tracker,
+                    Role::Follower,
+                    vec![],
+                    "7777:0".into(),
+                    Some("JP".into()),
+                );
+                clients.push((client, publisher));
+            }
+            // Two pinned validator peers + self and one unclassified peer:
+            // publishing validator=3,total=4 would leak that one peer.
+            while presence.peers.connected_ids().len() < 3 {
+                tokio::task::yield_now().await;
+            }
+            let sent = clients[0].1.packet();
+            let reply = aether_net::presence_exchange(&clients[0].0, address, &sent)
+                .await
+                .unwrap();
+            let received: Packet = serde_json::from_slice(&reply).unwrap();
+            assert_safe(&received.aggregate);
+            assert_eq!(received.aggregate.total, Some(4));
+            assert_eq!(received.aggregate.by_role, counts(&[("other", 4)]));
+            assert_eq!(received.aggregate.by_region, counts(&[("world", 4)]));
+            assert_eq!(captured.lock().unwrap().as_slice(), &[sent.clone()]);
+            for wire in [&sent, &reply] {
+                let packet: Packet = serde_json::from_slice(wire).unwrap();
+                assert_safe(&packet.aggregate);
+                let encoded = String::from_utf8(wire.to_vec()).unwrap();
+                for id in 1..=4 {
+                    assert!(!encoded.contains(&aether_net::devnet_node_id(id).to_string()));
+                }
+                for forbidden in [
+                    "node_id",
+                    "observer",
+                    "signature",
+                    "sender",
+                    "pings",
+                    "country",
+                    "KR",
+                    "JP",
+                    NODE_VERSION,
+                ] {
+                    assert!(
+                        !encoded.contains(forbidden),
+                        "{forbidden} absent from actual gossip"
+                    );
+                }
+                assert_eq!(packet.aggregate.observed_at % TIME_BUCKET_SECONDS, 0);
+            }
+            let mut state = crate::rpc::bare_state();
+            state.public_read_only = true;
+            state.presence = Some(presence.clone());
+            let answer = crate::rpc::handle_remote_value(
+                &state,
+                json!({"jsonrpc":"2.0","id":7,"method":"aether_presence","params":[]}),
+            )
+            .await;
+            let serialized: Value =
+                serde_json::from_slice(&serde_json::to_vec(&answer).unwrap()).unwrap();
+            assert_eq!(
+                serialized["result"],
+                serde_json::to_value(&received.aggregate).unwrap()
+            );
+            assert!(!serialized.to_string().contains(&server.id().to_string()));
+            presence.set_country(None).unwrap();
+            assert_eq!(
+                presence.snapshot(),
+                serialized["result"],
+                "country changes do not alter a frozen export"
+            );
+            assert!(presence.set_country(Some("ZZ".into())).is_err());
+            presence.disable_country_settings();
+            assert!(presence.set_country(Some("US".into())).is_err());
+            assert_eq!(
+                presence.peer_snapshot(),
+                json!([]),
+                "non-loopback binds cannot expose individual diagnostics"
+            );
+            // The removed wire shape is rejected rather than quietly relayed.
+            presence.ingest(
+                clients[1].0.id(),
+                br#"{"schema":1,"sender":"private","binding_signature":"private","pings":[]}"#,
+            );
+            assert_eq!(presence.snapshot(), serialized["result"]);
+            drop(connections);
+            for (client, _) in clients {
+                client.close().await;
+            }
+            router.shutdown().await.unwrap();
+        })
         .await
-        .unwrap();
-        let p = Presence::new(
-            endpoint.clone(),
-            peers,
-            Role::Follower,
-            vec![],
-            "7777:0".into(),
-            None,
-        );
-        assert_eq!(p.snapshot()["by_country"], json!({}));
-        assert!(!p.snapshot()["nodes"][0]
-            .as_object()
-            .unwrap()
-            .contains_key("country"));
-        p.set_country(Some("KR".into())).unwrap();
-        assert_eq!(p.snapshot()["by_country"]["KR"], 1);
-        let packet: Packet = serde_json::from_slice(&p.packet()).unwrap();
-        assert_eq!(packet.pings[0].country.as_deref(), Some("KR"));
-        assert!(packet.pings[0].verify("7777:0", unix_now()).is_ok());
-        assert!(p.set_country(Some("ZZ".into())).is_err());
-        assert_eq!(p.snapshot()["by_country"]["KR"], 1);
-        p.set_country(None).unwrap();
-        let packet: Packet = serde_json::from_slice(&p.packet()).unwrap();
-        assert!(packet.pings[0].country.is_none());
-        assert!(packet.pings[0].verify("7777:0", unix_now()).is_ok());
-        p.disable_country_settings();
-        assert!(p.set_country(Some("KR".into())).is_err());
-        assert_eq!(p.snapshot()["by_country"], json!({}));
-        endpoint.close().await;
-    }
-
-    #[tokio::test]
-    async fn oversized_batches_and_invalid_pings_do_not_enter_the_table() {
-        let peers = aether_net::peers::PeerTracker::new();
-        let endpoint = aether_net::bind_local(
-            aether_net::devnet_node_secret(1),
-            "127.0.0.1:0".parse().unwrap(),
-            peers.clone(),
-        )
-        .await
-        .unwrap();
-        let p = Presence::new(
-            endpoint.clone(),
-            peers,
-            Role::Follower,
-            vec![],
-            "7777:0".into(),
-            None,
-        );
-        let foreign = Ping::signed(
-            &aether_net::devnet_node_secret(2),
-            Role::Follower,
-            NODE_VERSION,
-            unix_now(),
-            "unknown",
-            None,
-            "7777:0",
-        );
-        let packet = Packet {
-            schema: 1,
-            sender: foreign.node_id.clone(),
-            binding_signature: "00".repeat(64),
-            pings: vec![foreign.clone(); MAX_BATCH + 1],
-        };
-        p.ingest(
-            aether_net::devnet_node_id(2),
-            &serde_json::to_vec(&packet).unwrap(),
-        );
-        assert_eq!(p.snapshot()["total"], 1);
-        let mut invalid = foreign;
-        invalid.country = Some("KR".into()); // Signature did not authorize it.
-        let packet = Packet {
-            schema: 1,
-            sender: invalid.node_id.clone(),
-            binding_signature: "00".repeat(64),
-            pings: vec![invalid],
-        };
-        p.ingest(
-            aether_net::devnet_node_id(2),
-            &serde_json::to_vec(&packet).unwrap(),
-        );
-        assert_eq!(p.snapshot()["total"], 1);
-        p.ingest(
-            aether_net::devnet_node_id(2),
-            &vec![0; aether_net::MAX_PRESENCE_MESSAGE + 1],
-        );
-        assert_eq!(p.snapshot()["total"], 1);
-        assert!(p.packet().len() <= aether_net::MAX_PRESENCE_MESSAGE);
-        endpoint.close().await;
+        .expect("local presence privacy test completed");
     }
 }

@@ -122,12 +122,33 @@ final class NodeController: ObservableObject {
     @AppStorage("proverOnBattery") var proverOnBattery = false {
         didSet { restartIfRunning() }
     }
-    /// Default off; only a country the owner explicitly selects may be shared.
-    @AppStorage("presenceShareCountry") var presenceShareCountry = false {
-        didSet { if presenceShareCountry != oldValue { pushPresenceCountry() } }
+    /// An existing preference, a background start and either founder mode
+    /// remain country-free until the new first-launch screen is answered.
+    @AppStorage("presenceCountryChoiceV1") private var presenceCountryChoice = "" {
+        didSet { if presenceCountryChoice != oldValue, !applyingCountryChoice { pushPresenceCountry() } }
     }
     @AppStorage("presenceCountryCode") var presenceCountryCode = "" {
-        didSet { if presenceCountryCode != oldValue { pushPresenceCountry() } }
+        didSet { if presenceCountryCode != oldValue, !applyingCountryChoice { pushPresenceCountry() } }
+    }
+    private var applyingCountryChoice = false
+    var presenceCountryPreference: PresenceCountry.Preference {
+        PresenceCountry.Preference(choice: presenceCountryChoice, country: presenceCountryCode)
+    }
+    var needsCountryNotice: Bool { !presenceCountryPreference.answered }
+    var presenceShareCountry: Bool {
+        get { presenceCountryPreference.choice == .share }
+        set { answerPresenceCountry(sharing: newValue, country: presenceCountryCode) }
+    }
+
+    /// Commit both fields before synchronizing any child or saved argv. The
+    /// notice and later Settings use the same path; declining changes no
+    /// wallet, registration, node-enable or unattended-enable preference.
+    func answerPresenceCountry(sharing: Bool, country: String) {
+        applyingCountryChoice = true
+        presenceCountryCode = PresenceCountry.normalize(country) ?? ""
+        presenceCountryChoice = sharing ? PresenceCountry.Choice.share.rawValue : PresenceCountry.Choice.decline.rawValue
+        applyingCountryChoice = false
+        pushPresenceCountry()
     }
     private var presenceCountryNeedsSync = true
     private var presenceCountryRestartPending = false
@@ -205,6 +226,7 @@ final class NodeController: ObservableObject {
     }
 
     private func pushPresenceCountry() {
+        objectWillChange.send()
         unattended?.syncMarker()
         presenceCountryNeedsSync = true
         presenceCountryRestartPending = true
@@ -230,15 +252,16 @@ final class NodeController: ObservableObject {
               process != nil || attached, Date().timeIntervalSince(lastPresenceCountryAttempt) >= 10 else { return }
         presenceCountrySyncInFlight = true
         lastPresenceCountryAttempt = Date()
-        let country = PresenceCountry.shared(sharing: presenceShareCountry, country: presenceCountryCode)
+        let preference = presenceCountryPreference
+        let country = preference.shared
         let pid = process?.processIdentifier ?? unattended?.runningNodePID
-        let params: [Any] = [country.map { $0 as Any } ?? NSNull()]
+        let params = preference.controlParams
         Task {
             let result = await LocalRPC.call(port: Self.port, method: "aether_setPresenceCountry", params: params)
             presenceCountrySyncInFlight = false
             guard process != nil || attached,
                   (process?.processIdentifier ?? unattended?.runningNodePID) == pid else { return }
-            let latest = PresenceCountry.shared(sharing: presenceShareCountry, country: presenceCountryCode)
+            let latest = presenceCountryPreference.shared
             if latest != country {
                 lastPresenceCountryAttempt = .distantPast
                 syncPresenceCountry()
@@ -1025,7 +1048,7 @@ final class NodeController: ObservableObject {
                                            activeProcessors: ProcessInfo.processInfo.activeProcessorCount),
             storageFlag: StorageSetting.flag(shards: storageShards),
             locationFlags: BlockDataLocation.flags(chainDataPath: chainDataPath, archive: archive),
-            presenceFlags: PresenceCountry.flags(sharing: presenceShareCountry, country: presenceCountryCode))
+            presenceFlags: presenceCountryPreference.flags)
         args += ["--exit-with-parent"]
         unattended?.nodeSwitchedOn()
         let p = Process()

@@ -52,6 +52,7 @@ run browser-permissions SitePermissions.swift
 run browser-routing Brand.swift BrowserPolicy.swift
 run browser-verify Brand.swift BrowserOriginPolicy.swift BrowserPolicy.swift VerifyBridge.swift
 run candidate-eligibility CandidateEligibilityText.swift
+run country-sharing LivePresence.swift UnattendedDecision.swift
 run diagnostic-report Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift HealthCheck.swift DiagnosticReport.swift
 run earnings EarningsModel.swift
 run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift EarningsExport.swift
@@ -93,6 +94,12 @@ W=apps/bridge/Sources; T=apps/bridge/Tests
 run bridge-plan BridgePlan.swift
 # Native identity fixtures need signed task-owned executables and arguments.
 if [ "$(uname -s)" = Darwin ]; then
+  if bash "apps/wallet/Tests/country-sharing/test-wrapper.sh" > "tmp/sw-country-wrapper.out" 2> "tmp/sw-country-wrapper.err"; then
+    echo "OK   country-wrapper"
+  else
+    echo "FAIL country-wrapper :: $(tail -2 "tmp/sw-country-wrapper.err") $(tail -2 "tmp/sw-country-wrapper.out")"
+    bad=$((bad+1))
+  fi
   for fixture in update-daemon update-listener; do
     if bash "scripts/test-$fixture.sh" > "tmp/sw-$fixture.out" 2> "tmp/sw-$fixture.err"; then
       echo "OK   $fixture"

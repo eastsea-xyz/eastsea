@@ -241,8 +241,8 @@ case "$ferr" in
 esac
 
 echo "== registering the two candidate Macs (operators: dev 2 and 3, free lane)"
-if reg1=$("$A" candidate-register --data "$D/c1" --registrar-rpc "http://127.0.0.1:${rpcp[0]}" --rpc "http://127.0.0.1:${rpcp[0]}" --from-dev 2 2>&1) \
-  && reg2=$("$A" candidate-register --data "$D/c2" --registrar-rpc "http://127.0.0.1:${rpcp[0]}" --rpc "http://127.0.0.1:${rpcp[0]}" --from-dev 3 2>&1); then
+if reg1=$("$A" candidate-register --data "$D/c1" --network "$D/network.json" --registrar-rpc "http://127.0.0.1:${rpcp[0]}" --rpc "http://127.0.0.1:${rpcp[0]}" --from-dev 2 2>&1) \
+  && reg2=$("$A" candidate-register --data "$D/c2" --network "$D/network.json" --registrar-rpc "http://127.0.0.1:${rpcp[0]}" --rpc "http://127.0.0.1:${rpcp[0]}" --from-dev 3 2>&1); then
   if [[ "$reg1" == *"success=true  gas=0"* && "$reg2" == *"success=true  gas=0"* ]]; then
     ok "two candidates registered through the free lane (zero balance, zero gas receipts)"
   else

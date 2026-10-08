@@ -21,6 +21,8 @@ if [ -e "$data/key-binding-refused" ] || [ -L "$data/key-binding-refused" ]; the
 fi
 binary=$($pb -c 'Print :binary' "$marker" 2>/dev/null) || exit 1
 prove=$($pb -c 'Print :prove' "$marker" 2>/dev/null)
+country_choice=$($pb -c 'Print :presence_country_choice' "$marker" 2>/dev/null)
+country=$($pb -c 'Print :presence_country' "$marker" 2>/dev/null)
 
 # Read the native argv array, preserving XML escapes in paths and accepting
 # PlistBuddy's whitespace rather than relying on plutil's XML indentation.
@@ -28,6 +30,31 @@ args=()
 while IFS= read -r line; do
   args+=("$line")
 done < <("$pb" -c 'Print :argv' "$marker" 2>/dev/null | sed -e '1d' -e 's/^ *//' -e 's/ *$//' -e '/^$/d' -e '/^}$/d')
+
+# A pre-notice marker from an older app may contain a country. Both founder
+# modes require a new screen answer: preserve only the exact country recorded
+# by the current app after an affirmative choice. A decline or missing choice
+# still starts the same node, with its ordinary country-free arguments.
+filtered_args=()
+skip_country_value=false
+for argument in "${args[@]}"; do
+  if [ "$skip_country_value" = true ]; then
+    skip_country_value=false
+    continue
+  fi
+  case "$argument" in
+    --presence-country)
+      skip_country_value=true
+      ;;
+    --presence-country=*)
+      if [ "$country_choice" = share ] && [[ "$country" = [A-Z][A-Z] ]] && [ "$argument" = "--presence-country=$country" ]; then
+        filtered_args+=("$argument")
+      fi
+      ;;
+    *) filtered_args+=("$argument") ;;
+  esac
+done
+args=("${filtered_args[@]}")
 
 [ -x "$binary" ] || exit 1
 [ "${args[0]:-}" = "run" ] || exit 1

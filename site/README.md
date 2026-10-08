@@ -113,7 +113,7 @@ python3 -m http.server -d site                  # 미리보기 http://localhost:
 | 노드 스위치: 네트워크의 모든 거래를 다시 계산해 확인(= 체인 추종, 모든 블록 재실행) | 오늘 사실 | eastsea-xyz/eastsea README, `apps/wallet/Sources/NodeController.swift` |
 | VPN·포트 없이 집 인터넷(DHT + QUIC 홀펀칭) | 오늘 사실 | `README.md` |
 | AI 에이전트 결제: 수신인 승인 전 결제 꺼짐, 체인이 한도 집행, 기본 1/10 DBLN·7일 | 오늘 사실(테스트넷) | `README.md` §Wallet for AI agents, `AGENTS.md` |
-| 지갑 무분석, 등록 외 개인정보 수집 없음 | 오늘 사실 | `DISCLAIMER.md` §4 item 5 |
+| 별도의 원격 사용 분석 업로드 없음; 공개 체인·등록/일일 Apple 확인·Cloudflare 접속·GitHub 업데이트 IP/버전·민원메일 처리는 별도 설명 | 오늘 사실 | `DISCLAIMER.md` §4, `docs/ops/privacy-policy.md`, 5개 언어 `privacy.html` |
 | 탐색기 explorer.eastsea.xyz | 오늘 사실 | HTTP 200 (2026-10-07) |
 | 툴박스: 예제+테스트, ETH·SOL 호환성 증명·벤치, 네이티브 설계, AS IS·비운영 | 오늘 사실 | eastsea-xyz/eastsea-toolbox README, 툴박스 공개 정책(2026-10-06) |
 | 브라우저 확장(Chrome·Edge·Brave·Arc): 아직 배포 전 | 오늘 사실 | 0.7.0 릴리스 자산에 확장 없음, `README.md` §Browser extension |

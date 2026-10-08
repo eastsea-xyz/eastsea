@@ -537,6 +537,13 @@ enum Cmd {
     CandidateRegister {
         #[arg(long)]
         data: String,
+        /// Pinned network.json (defaults to <data>/network.json).
+        #[arg(long)]
+        network: Option<String>,
+        /// Use the public four-member development committee; only the mock
+        /// token "dev" is accepted in this mode, never a real DeviceCheck token.
+        #[arg(long, conflicts_with = "network")]
+        devnet: bool,
         /// The registrar node's RPC.
         #[arg(long)]
         registrar_rpc: String,
@@ -1226,13 +1233,27 @@ fn main() {
                 .run(&_lock)
             })()
         }
-        Cmd::CandidateRegister { data, registrar_rpc, rpc, from_dev, device_token, tip } => (|| {
+        Cmd::CandidateRegister { data, network, devnet, registrar_rpc, rpc, from_dev, device_token, tip } => (|| {
+            validate_registration_mode(devnet, &device_token)?;
             let keys = aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data))?;
             let operator = dev_address(from_dev)?;
             let (vk, nid, beaconer) = (keys.validator_key(), keys.node_id(), keys.beaconer());
-            let chain_id = call(&registrar_rpc, "aether_status", json!([]))?["chain_id"].as_u64().ok_or("registrar has no chain id")?;
+            let (chain_id, registrar_key) = registration_registrar(&rpc, std::path::Path::new(&data), network.as_deref(), devnet)?;
             let ownership = hex::encode(keys.ownership(chain_id, operator));
-            let a = call(&registrar_rpc, "aether_registerDevice", json!([device_token, operator, hex::encode(vk), hex::encode(nid), beaconer, ownership]))?;
+            let token = p256::elliptic_curve::zeroize::Zeroizing::new(device_token);
+            let public = vec![json!(operator), json!(hex::encode(vk)), json!(hex::encode(nid)), json!(beaconer), json!(ownership)];
+            let mut attestation = None;
+            for _ in 0..2 {
+                let descriptor: aether_crypto::registrar::EncryptionKey = serde_json::from_value(call(&registrar_rpc, "aether_registrarEncryptionKey", json!([]))?)
+                    .map_err(|_| "registrar encryption key unavailable")?;
+                let params = aether_node::devicecheck::encrypt_token_request(&token, &descriptor, chain_id, &registrar_key, "aether_registerDevice", public.clone())?;
+                match call(&registrar_rpc, "aether_registerDevice", params) {
+                    Ok(a) => { attestation = Some(a); break; }
+                    Err(e) if e.contains("registrar encryption key expired") => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            let a = attestation.ok_or("registrar encryption key changed; retry registration")?;
             let part = |k: &str| -> Result<[u8; 32], String> {
                 hex::decode(a[k].as_str().unwrap_or_default()).ok().and_then(|b| b.try_into().ok()).ok_or(format!("registrar gave no {k}"))
             };
@@ -3763,6 +3784,72 @@ fn candidate_registration_uses_lane(status: &Value) -> bool {
     status["free_registration"].as_bool().unwrap_or(false)
 }
 
+fn validate_registration_mode(devnet: bool, token: &str) -> Result<(), String> {
+    if devnet && token != "dev" { return Err("--devnet accepts only the mock token dev; real DeviceCheck tokens need a pinned network".into()); }
+    Ok(())
+}
+
+/// The development CLI authenticates registrar slots with the existing
+/// committee pin in <data>/network.json (or the explicit public devnet set).
+/// The registrar endpoint's own description is never a trust anchor.
+fn registration_registrar(rpc: &str, data: &std::path::Path, network_path: Option<&str>, devnet: bool) -> Result<(u64, aether_crypto::PublicKey), String> {
+    let file = network_path.map(std::path::PathBuf::from).unwrap_or_else(|| data.join(aether_node::roster::NETWORK_FILE));
+    let network = if file.exists() { Some(aether_node::roster::NetworkFile::load(&file)?) } else { None };
+    if network.is_none() && !devnet { return Err("registration requires pinned network.json (or --devnet with mock token dev)".into()); }
+    let pinned = registration_config_pin(network.as_ref().and_then(|f| f.registrar.as_deref()), devnet)?;
+    let status = call(rpc, "aether_status", json!([]))?;
+    let chain_id = status["chain_id"].as_u64().ok_or("registration RPC has no chain id")?;
+    let set = match network {
+        Some(f) => {
+            if f.chain_id != chain_id { return Err("registration RPC is on another chain".into()); }
+            match f.identity {
+                Some(identity) => trusted(f.validators.len() as u64, Some(identity))?.with_group(f.group.unwrap_or(0)),
+                None if devnet => trusted(4, None)?,
+                None => return Err("network.json has no committee identity; authenticate it before registration".into()),
+            }
+        }
+        None => trusted(4, None)?,
+    };
+    let replies = [call(rpc, "aether_getStorage", json!([aether_execution::registry::REGISTRY, U256::ZERO]))?,
+        call(rpc, "aether_getStorage", json!([aether_execution::registry::REGISTRY, U256::from(1)]))?];
+    let height = replies[0]["height"].as_u64().ok_or("registrar proof has no height")?;
+    if replies[1]["height"].as_u64() != Some(height) { return Err("registrar slots came from different blocks; retry registration".into()); }
+    let anchor = certified_anchor_for_chain(rpc, height, &set, Some(chain_id))?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis() as u64;
+    if anchor.height != height + 1 || now.saturating_sub(anchor.timestamp_ms) > 10 * 60 * 1000 {
+        return Err("registrar certificate has the wrong height or is stale".into());
+    }
+    let mut sec1 = vec![4u8];
+    for (slot, reply) in replies.iter().enumerate() {
+        let proof: Proof = serde_json::from_value(reply["proof"].clone()).map_err(|_| "invalid registrar storage proof")?;
+        let value = aether_light::verify_storage(&anchor, &aether_execution::registry::REGISTRY, U256::from(slot), &proof).map_err(|e| format!("registrar proof: {e}"))?;
+        sec1.extend_from_slice(&value.to_be_bytes::<32>());
+    }
+    aether_crypto::p256_xy(&sec1).map_err(|_| "the authenticated registrar is stopped or invalid")?;
+    let proven = aether_crypto::PublicKey { scheme: aether_types::SignerScheme::P256, bytes: sec1 };
+    registration_match_pin(&proven, &pinned)?;
+    Ok((chain_id, proven))
+}
+
+fn registration_config_pin(raw: Option<&str>, devnet: bool) -> Result<aether_crypto::PublicKey, String> {
+    let Some(raw) = raw else {
+        return if devnet { P256Signer::from_seed(&dev_seed(DEV_REGISTRAR)).map(|s| s.public_key()).map_err(|e| e.to_string()) }
+            else { Err("network.json has no registrar signing-key pin; no DeviceCheck token sent".into()) };
+    };
+    let bytes = hex::decode(raw.trim_start_matches("0x")).map_err(|_| "network.json has an invalid registrar signing-key pin")?;
+    if bytes.len() != 64 { return Err("registrar pin must be 64 bytes (x/y)".into()); }
+    let sec1 = [&[4u8][..], &bytes].concat();
+    aether_crypto::p256_xy(&sec1).map_err(|_| "registrar pin is not a valid P-256 point")?;
+    Ok(aether_crypto::PublicKey { scheme: aether_types::SignerScheme::P256, bytes: sec1 })
+}
+
+fn registration_match_pin(proven: &aether_crypto::PublicKey, pinned: &aether_crypto::PublicKey) -> Result<(), String> {
+    if aether_crypto::p256_xy(&proven.bytes).ok() != aether_crypto::p256_xy(&pinned.bytes).ok() {
+        return Err("certified registrar differs from trusted network.json pin; refresh the trusted config after registrar rotation; no DeviceCheck token sent".into());
+    }
+    Ok(())
+}
+
 /// Fee caps from the node's next base fees: 2x headroom (~70 full blocks of
 /// growth) plus a 1 gwei tip; only the actual base + tip is charged. The
 /// state cap has the same 2x headroom over the B5 price, never under the
@@ -3872,6 +3959,15 @@ fn certified_anchor(
     height: u64,
     set: &aether_light::ValidatorSet,
 ) -> Result<aether_light::VerifiedBlock, String> {
+    certified_anchor_for_chain(rpc, height, set, None)
+}
+
+fn certified_anchor_for_chain(
+    rpc: &str,
+    height: u64,
+    set: &aether_light::ValidatorSet,
+    chain_id: Option<u64>,
+) -> Result<aether_light::VerifiedBlock, String> {
     for _ in 0..40 {
         let v = call(rpc, "aether_getFinalized", json!([height + 1]))?;
         if !v.is_null() {
@@ -3889,12 +3985,27 @@ fn certified_anchor(
                 .transpose()
                 .map_err(|e| e.to_string())?
                 .unwrap_or_default();
-            return aether_light::verify_finalized_chain(set, &block, &fin, &links)
-                .map_err(|e| format!("CERTIFICATE REJECTED: {e} — do not trust this server"));
+            let anchor = aether_light::verify_finalized_chain(set, &block, &fin, &links)
+                .map_err(|e| format!("CERTIFICATE REJECTED: {e} — do not trust this server"))?;
+            if let Some(chain_id) = chain_id { check_registration_anchor_chain(&block, &links, chain_id)?; }
+            return Ok(anchor);
         }
         std::thread::sleep(Duration::from_millis(500));
     }
     Err(format!("block {} not finalized yet", height + 1))
+}
+
+fn check_registration_anchor_chain(block: &[u8], links: &[Vec<u8>], chain_id: u64) -> Result<(), String> {
+    use commonware_codec::Decode as _;
+    for bytes in std::iter::once(block).chain(links.iter().map(Vec::as_slice)) {
+        let block = aether_light::block::Block::decode_cfg(bytes, &aether_light::block::Block::codec_config(aether_light::MAX_BLOCK_BYTES)).map_err(|_| "invalid registrar certified block")?;
+        let payload = block.payload().ok_or("invalid registrar certified payload")?;
+        if payload.txs.iter().any(|tx| tx.header.chain_id != chain_id)
+            || payload.upgrade.iter().any(|u| u.upgrade.chain_id != chain_id) {
+            return Err("registrar certificate belongs to another chain; no token sent".into());
+        }
+    }
+    Ok(())
 }
 
 fn verified_balance(rpc: &str, a: Address, set: &aether_light::ValidatorSet) -> Result<(), String> {
@@ -3963,6 +4074,42 @@ fn print_blocks(v: &Value) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn registration_never_selects_public_dev_trust_implicitly_or_sends_a_real_token_in_dev_mode() {
+        let missing = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp").join(format!("missing-registration-pin-{}", std::process::id()));
+        let err = super::registration_registrar("http://127.0.0.1:9", &missing, None, false).unwrap_err();
+        assert!(err.contains("requires pinned network"), "pin refusal precedes any RPC: {err}");
+        assert!(super::validate_registration_mode(true, "REAL_DEVICECHECK_TOKEN").is_err());
+        assert!(super::validate_registration_mode(true, "dev").is_ok());
+        assert!(super::registration_config_pin(None, false).is_err());
+        assert!(super::registration_config_pin(Some(&"00".repeat(64)), false).is_err());
+        let pin = super::registration_config_pin(None, true).unwrap();
+        let other = super::P256Signer::from_seed(&[6; 32]).unwrap();
+        assert!(super::registration_match_pin(&super::Signer::public_key(&other), &pin).is_err(), "empty certificates cannot choose another registrar");
+        assert!(super::registration_match_pin(&pin, &pin).is_ok());
+    }
+
+    #[test]
+    fn registration_rejects_other_chain_certified_blocks_and_links_before_token_encryption() {
+        use commonware_codec::Encode as _;
+        use aether_light::block::{Block, Payload};
+        let block = |chain_id| {
+            let signer = super::P256Signer::from_seed(&[7; 32]).unwrap();
+            let tx = aether_execution::sign_call_with(&signer, chain_id, 0, Default::default(), 0, &super::EvmCall {
+                to: Some(super::Address::repeat_byte(1)), value: super::U256::ZERO,
+                input: Default::default(), gas_limit: 21_000, delegate: None,
+            }).unwrap();
+            let genesis = Block::genesis(7781, Default::default());
+            let payload = Payload { txs: vec![tx], ..Default::default() };
+            Block::new(genesis.context, genesis.parent, commonware_consensus::types::Height::new(1), 1000, payload.to_bytes()).encode().to_vec()
+        };
+        let correct = block(7781);
+        let other = block(7782);
+        assert!(super::check_registration_anchor_chain(&correct, &[], 7781).is_ok());
+        assert!(super::check_registration_anchor_chain(&other, &[], 7781).is_err());
+        assert!(super::check_registration_anchor_chain(&correct, &[other], 7781).is_err());
+    }
+
     #[cfg(all(feature = "test-seam", debug_assertions))]
     #[test]
     fn fixture_key_volume_allowance_is_exact_and_confined_to_workspace_tmp() {

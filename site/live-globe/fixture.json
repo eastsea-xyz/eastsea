@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "scope": "node",
+  "total": 24,
+  "roles": { "validator": 6, "candidate": 3, "follower": 15 },
+  "versions": { "0.7.4": 21, "0.7.3": 3 },
+  "regions": [
+    { "continent": "asia", "country": "KR", "count": 6 },
+    { "continent": "asia", "count": 3 },
+    { "continent": "europe", "country": "DE", "count": 3 },
+    { "continent": "europe", "count": 3 },
+    { "continent": "north_america", "count": 6 },
+    { "continent": "south_america", "count": 1 },
+    { "continent": "oceania", "count": 1 },
+    { "continent": "unknown", "count": 1 }
+  ],
+  "recent_blocks": [
+    { "height": 184231, "continent": "asia" },
+    { "height": 184232, "continent": "europe" },
+    { "height": 184233, "continent": "north_america" }
+  ]
+}

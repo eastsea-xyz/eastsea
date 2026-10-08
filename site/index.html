@@ -27,6 +27,7 @@
 <link rel="preload" href="fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="live-globe/globe.css">
 <script>
 /* Language: stored choice first (storage can be blocked), then navigator.language.
    Runs before <body> so the right language paints first. No network, no cookies. */
@@ -252,6 +253,26 @@
         </ul>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- Live presence: locally bundled artwork, continent aggregates only. -->
+<section class="section live-network" id="live-network" aria-labelledby="live-network-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 id="live-network-title" class="h2">
+        <span class="ko" lang="ko">지금 동해를 돌리는 Mac</span>
+        <span class="en" lang="en">Macs running EastSea right now</span>
+      </h2>
+      <p class="lead">
+        <span class="ko" lang="ko">어디에 있든, 같은 바다에 연결되어 있습니다.</span>
+        <span class="en" lang="en">Across continents, connected to the same sea.</span>
+      </p>
+    </div>
+    <div id="live-network-globe"></div>
+    <noscript>
+      <p class="fine"><span class="ko" lang="ko">실시간 연결 수를 보려면 JavaScript를 켜 주세요. 정확한 위치는 수집하지 않습니다.</span><span class="en" lang="en">Enable JavaScript to see live counts. Exact locations are not collected.</span></p>
+    </noscript>
   </div>
 </section>
 
@@ -553,5 +574,6 @@
   });
 })();
 </script>
+<script type="module" src="live-network.js"></script>
 </body>
 </html>

@@ -42,6 +42,7 @@ never a write. Clear the gateway field in Settings to read your node only.
 | Page | What it shows |
 |---|---|
 | Home | finalized height (hero), tx rate over the newest 30 blocks, committee (registry candidates + epoch), protocol (with node/scheduled versions and an update pill), mempool, base fee, prover status, latest blocks, chain facts |
+| Live network (`#/network`) | privacy-safe continent totals on a draggable WebGL globe, opted-in countries only at k ≥ 3, accessible list, static reduced-motion map; public gateway presence only, separate from account/peer reads |
 | Block | every header field the RPC serves, neighbor links, this node's prover view of the block's proof, the transactions with their receipts (a pruned block shows what the era record still carries) |
 | Transaction | receipt (status, gas, contract creation, output), events decoded as ERC-20 `Transfer`/`Approval` with symbol and amount, raw logs for anything else |
 | Account | balance/nonce/code with a committee-certificate badge (`verified by committee certificate` only when the wallet's own wasm check passed — `js/verify.js`), token detection, latest rewards (`aether_rewards`), ERC-20 transfers to/from the address in the node's log window |
@@ -68,6 +69,24 @@ the bundled `token-sources.json` (kept in sync with `apps/wallet` and
 The wasm and `network.json` (the pinned committees) are build products here;
 without them the account page says `not verified`, never pretends.
 
+The **Live network** route only polls `aether_presence` at the configured public
+gateway (the gateway field in Settings on the Blocks page), every 10 seconds
+while visible. It does not request the visitor's loopback node, peer records,
+committees or block details. The caption is “Macs this node can see”, an observed
+node view rather than a network census. Geography comes from home-relay
+continents, not IP geolocation. No node markers exist; unknown regions remain in
+the count/list. Failed reads show unavailable or an explicitly stale snapshot.
+An older/unsafe response is rejected, never turned into invented zeroes.
+
+The producer must implement the aggregate-only contract and k=3 country folding
+in [docs/design/38-live-globe.md](../../docs/design/38-live-globe.md) before public
+live use. Its interim individual-record response is not appropriate for this
+page. The locally bundled illustrative view is `?globe=fixture#/network`; the
+fixture is labeled and is never an automatic fallback for a failed live RPC.
+The canonical small ES modules in `live-globe/` are also copied byte-for-byte
+into `site/live-globe/` by `node scripts/sync-live-globe.mjs` at the repo root.
+Deployments still require no build. There are no CDN/map/tracker calls.
+
 ## CORS and the node's endpoint
 
 `crates/node/src/rpc.rs` serves JSON-RPC on `POST /` with
@@ -86,7 +105,7 @@ bound to loopback. In practice:
 
 ## RPC methods used
 
-`aether_status`, `aether_recentBlocks`, `aether_getBlock`, `aether_getReceipt`,
+`aether_presence` (Live network only), `aether_status`, `aether_recentBlocks`, `aether_getBlock`, `aether_getReceipt`,
 `aether_getAccount`, `aether_candidates`, `aether_proverStatus`,
 `aether_rewards`, `aether_history`, `eth_call`, `eth_getLogs`,
 `eth_blockNumber`, and `aether_getFinalized` (the account page's certificate
@@ -114,6 +133,21 @@ metadata and origin scans (against a mock reader), the badge rules, the search
 classifier and resolver, and the JSON-RPC client (injected `fetch`, endpoint
 persistence, error and timeout paths). `test/live.mjs` is a manual smoke test
 in a minimal DOM stub — it is deliberately not part of `npm test`.
+
+Globe tests cover country folding/duplicate buckets, sanitized output, stable
+session jitter, safe request envelopes, bundle drift, local land geometry and
+the 300 KB gzipped JS budget. Real-browser offline smoke (from the repo root):
+
+```bash
+mkdir -p tmp
+# Uses existing Playwright tooling and installed Chrome; never a live node.
+TMPDIR="$(git rev-parse --show-toplevel)/tmp" PLAYWRIGHT_MODULE=/path/to/playwright node scripts/test-live-globe.mjs
+```
+
+The runner intercepts the public RPC with fixtures, verifies both deployments
+in light/dark and mobile, reduced motion, language switching,
+unavailable/empty/stale states, drag/keyboard/pause, 10-second polling and
+hidden-tab idle. Artifacts stay under `tmp/live-globe/`.
 
 ## Layout
 

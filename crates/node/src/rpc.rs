@@ -1003,10 +1003,27 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         "aether_candidates" => {
             let g = chain.lock();
             let state = &g.finalized.state;
-            let epoch = g.finalized.height / aether_execution::registry::epoch_blocks(state);
+            let params = aether_execution::registry::params(state);
+            let epoch = g.finalized.height / params.epoch_blocks;
+            let next_draw_epoch = epoch.saturating_sub(epoch % params.draw_epochs)
+                .saturating_add(params.draw_epochs);
+            let open_seats = crate::rotation::open_seats_at(&g, next_draw_epoch.saturating_mul(params.epoch_blocks));
+            // Measure from finalized blocks only, excluding genesis (its zero
+            // timestamp is not a wall-clock sample). Short devnet epochs and
+            // real-world block-time drift must not be labelled one hour each.
+            let sample_start = g.finalized.height.saturating_sub(params.epoch_blocks);
+            let hours_per_epoch = g.blocks.range(sample_start..g.finalized.height)
+                .find(|(_, b)| b.height > 0 && b.timestamp_ms > 0 && b.timestamp_ms < g.finalized.timestamp)
+                .map(|(height, b)| {
+                    (g.finalized.timestamp - b.timestamp_ms) as f64 * params.epoch_blocks as f64
+                        / (g.finalized.height - height) as f64 / 3_600_000.0
+                });
             let list: Vec<Value> = aether_execution::registry::candidates(state)
                 .into_iter()
                 .map(|c| {
+                    let verdict = crate::rotation::eligibility_verdict(
+                        state, &c, next_draw_epoch, params.min_streak, epoch, hours_per_epoch,
+                    );
                     json!({
                         "index": c.index,
                         "operator": c.operator,
@@ -1016,10 +1033,15 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                         "registered_epoch": c.registered_epoch,
                         "last_epoch": c.last_epoch,
                         "streak": c.streak,
+                        "missed": c.missed,
+                        "eligible_next_draw": verdict.eligible_next_draw,
+                        "why_not": verdict.why_not,
+                        "hours_to_eligible": verdict.hours_to_eligible,
                     })
                 })
                 .collect();
-            Ok(json!({ "epoch": epoch, "candidates": list, "max_per_epoch": aether_execution::registry::max_per_epoch(state) }))
+            Ok(json!({ "epoch": epoch, "next_draw_epoch": next_draw_epoch, "open_seats": open_seats,
+                "candidates": list, "max_per_epoch": aether_execution::registry::max_per_epoch(state) }))
         }
         "aether_faucet" => {
             let to: Address = param(p, 0)?;

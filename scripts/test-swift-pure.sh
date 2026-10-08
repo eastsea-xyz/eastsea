@@ -14,6 +14,7 @@ run browser-origin BrowserOriginPolicy.swift
 run browser-permissions SitePermissions.swift
 run browser-routing Brand.swift BrowserPolicy.swift
 run browser-verify Brand.swift BrowserOriginPolicy.swift BrowserPolicy.swift VerifyBridge.swift
+run candidate-eligibility CandidateEligibilityText.swift
 run diagnostic-report Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift HealthCheck.swift DiagnosticReport.swift
 run earnings EarningsModel.swift
 run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift EarningsExport.swift

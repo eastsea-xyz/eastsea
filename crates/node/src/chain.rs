@@ -2863,6 +2863,9 @@ impl Chain {
                 g.proposal = None;
             }
             keep(&g.store, POOL, &g.pool);
+            if let Some((draw, pool)) = &g.pool {
+                crate::rotation::log_draw_pool(*draw, pool.len(), crate::rotation::open_seats_at(&g, exec.height));
+            }
         }
         // With the draw's seed on chain, everyone draws the same next voting
         // set. Node-rewards networks committed it with the block that carries

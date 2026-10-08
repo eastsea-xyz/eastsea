@@ -54,6 +54,7 @@ run browser-verify Brand.swift BrowserOriginPolicy.swift BrowserPolicy.swift Ver
 run candidate-eligibility CandidateEligibilityText.swift
 run country-sharing LivePresence.swift UnattendedDecision.swift
 run diagnostic-report Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift HealthCheck.swift DiagnosticReport.swift
+run design-effects DesignTokens.swift Design/DesignEffects.swift Design/DesignEventEffect.swift Design/BalanceCountUp.swift Design/RewardShine.swift Design/PresentationMotion.swift Design/NavyPlateDepth.swift Design/SuccessFeedback.swift Design/NodeStatusPulse.swift Design/DesignSurface.swift Design/MenuBarPanel.swift
 run earnings EarningsModel.swift
 run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift EarningsExport.swift
 run fee-confirm EarningsModel.swift

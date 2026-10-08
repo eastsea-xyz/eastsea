@@ -11,6 +11,7 @@ import { nextPauseState, pausedLine, PAUSE_HELP } from '../src/lib/pause.js';
 import { TERMS_VERSION, DISCLAIMER_URL, noticePoints } from '../src/lib/terms.js';
 import { mergeHistory } from '../src/lib/history.js';
 import { displayTokenName } from '../src/lib/knownTokens.js';
+import { tokenArtSource, tokenFallbackAppearance } from './token-art.js';
 
 const params = new URLSearchParams(location.search);
 const approveId = params.get('approve');
@@ -38,12 +39,44 @@ function h(tag, props = {}, ...children) {
     else if (k === 'class') el.className = v;
     else el.setAttribute(k, v === true ? '' : v);
   }
+  if (tag === 'button') el.classList.add('es-control');
+  if (tag === 'h2') el.classList.add('es-section-title');
   for (const c of children.flat()) if (c != null && c !== false) el.append(c instanceof Node ? c : String(c));
   return el;
 }
 
+function nativeArt(className = 'avatar token-art') {
+  return h('img', { class: className, src: new URL('assets/dawn-flat.svg', import.meta.url).href, alt: '', 'aria-hidden': 'true', width: 40, height: 40 });
+}
+
+function holdingArt(token) {
+  const src = tokenArtSource(defaultChainId, token.address);
+  if (src) return h('img', { class: 'avatar token-art', src, alt: '', 'aria-hidden': 'true', width: 40, height: 40 });
+  const { fill, letter } = tokenFallbackAppearance(token);
+  const disc = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  disc.setAttribute('viewBox', '0 0 36 36');
+  disc.setAttribute('class', 'unverified-disc');
+  disc.setAttribute('aria-hidden', 'true');
+  const circle = document.createElementNS(disc.namespaceURI, 'circle');
+  for (const [key, value] of Object.entries({ cx: 18, cy: 18, r: 18, fill })) circle.setAttribute(key, value);
+  disc.append(circle);
+  return h('span', { class: 'avatar unverified-art', role: 'img', 'aria-label': 'Unverified token' },
+    disc,
+    h('span', { class: 'unverified-initial', 'aria-hidden': 'true' }, letter),
+    h('span', { class: 'unverified-question', 'aria-hidden': 'true' }, '?'));
+}
+
+function actionIcon(name) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  for (const [key, value] of Object.entries({ viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.7', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', class: 'ico' })) svg.setAttribute(key, value);
+  const path = document.createElementNS(svg.namespaceURI, 'path');
+  path.setAttribute('d', name === 'receive' ? 'M12 4v16M6 14l6 6 6-6' : 'M6 18 18 6M6 6h12v12');
+  svg.append(path);
+  return svg;
+}
+
 function header(extra) {
-  return h('header', {}, h('div', { class: 'logo', 'aria-hidden': 'true' }), h('h1', {}, `${Brand.project} Wallet`),
+  return h('header', {}, nativeArt('logo'), h('h1', { class: 'es-wordmark' }, Brand.project), h('span', { class: 'header-kind' }, 'Wallet'),
     developmentNetwork ? h('span', { class: 'pill warn' }, 'Dev network') : null, extra);
 }
 
@@ -103,7 +136,7 @@ function onboarding() {
     h('label', {}, 'Password again', pw2),
     create,
     h('details', {}, h('summary', { class: 'small muted' }, 'Import an existing key instead'),
-      h('div', { class: 'list', style: 'margin-top:8px' }, h('label', {}, 'Private key', secret), importBtn)),
+      h('div', { class: 'list import-fields' }, h('label', {}, 'Private key', secret), importBtn)),
     out,
   );
   form.addEventListener('submit', action(create, out, async () => { check(); await op('create', { password: pw.value }); refresh(); }));
@@ -150,7 +183,7 @@ async function approvalView(s) {
       h('span', {}, 'Sends'), h('strong', {}, `${a.value} ${coinTicker(defaultChainId)}`),
       h('span', {}, 'Network fee'), fee,
       h('span', {}, 'From'), h('span', { class: 'mono' }, s.address)));
-    if (a.tx.data !== '0x') body.push(h('details', {}, h('summary', { class: 'small muted' }, 'Call data'), h('div', { class: 'mono muted', style: 'max-height:120px;overflow:auto' }, a.tx.data)));
+    if (a.tx.data !== '0x') body.push(h('details', {}, h('summary', { class: 'small muted' }, 'Call data'), h('div', { class: 'mono muted call-data' }, a.tx.data)));
     if (a.what.startsWith('Token approval')) body.push(h('div', { class: 'warn' }, 'An approval lets the contract move your tokens later. Approve only contracts you trust.'));
   }
   yes.addEventListener('click', action(yes, out, async () => {
@@ -171,16 +204,16 @@ function nav() {
 
 /** The balance pill: "Block N", or the paused state when no block for 60 s. */
 function nodePill() {
-  const node = h('span', { class: 'pill' }, 'Connecting…');
+  const node = h('span', { class: 'pill es-status' }, 'Connecting…');
   const show = (a) => {
     pauseState = nextPauseState(pauseState, { now: Date.now(), height: a.height, blockAt: a.blockAt });
     if (pauseState.pausedSince != null) {
       node.textContent = pausedLine(pauseState.pausedSince, Date.now());
-      node.className = 'pill paused';
+      node.className = 'pill es-status paused';
       node.title = PAUSE_HELP;
     } else {
       node.textContent = `Block ${a.height}`;
-      node.className = 'pill good';
+      node.className = 'pill es-status good';
       node.removeAttribute('title');
     }
   };
@@ -189,12 +222,13 @@ function nodePill() {
 
 async function home(s) {
   const out = h('div');
-  const bal = h('div', { class: 'balance' }, '…');
-  const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : `Checking ${coinTicker(defaultChainId)} balance…`);
+  const balanceValue = h('span', { class: 'balance-value' }, '…');
+  const bal = h('div', { class: 'balance es-amount' }, balanceValue, h('span', { class: 'balance-unit' }, ` ${coinTicker(defaultChainId)}`));
+  const proofNote = h('div', { class: 'small plate-proof' }, developmentNetwork ? 'Dev network · read from the node' : `Checking ${coinTicker(defaultChainId)} balance…`);
   const { node, show } = nodePill();
   const addr = h('button', { class: 'link mono', title: 'Copy address', onclick: async () => { await navigator.clipboard.writeText(s.address); addr.textContent = 'Copied'; setTimeout(() => { addr.textContent = shortAddress(s.address); }, 900); } }, shortAddress(s.address));
-  const load = () => op('account').then((a) => { bal.textContent = `${formatAeth(a.balance)} ${coinTicker(defaultChainId)}`; show(a); if (!developmentNetwork) proofNote.textContent = `${coinTicker(defaultChainId)} balance verified with a certificate and state proof`; })
-    .catch((e) => { bal.textContent = '—'; node.textContent = 'No node'; node.className = 'pill'; proofNote.textContent = `${coinTicker(defaultChainId)} balance unavailable`; out.replaceChildren(message('error', e.message)); });
+  const load = () => op('account').then((a) => { balanceValue.textContent = formatAeth(a.balance); show(a); if (!developmentNetwork) proofNote.textContent = `${coinTicker(defaultChainId)} balance verified with a certificate and state proof`; })
+    .catch((e) => { balanceValue.textContent = '—'; node.textContent = 'No node'; node.className = 'pill es-status'; proofNote.textContent = `${coinTicker(defaultChainId)} balance unavailable`; out.replaceChildren(message('error', e.message)); });
   load();
   updaters = [load];
 
@@ -334,10 +368,12 @@ async function home(s) {
       sendForm.hidden = true;
     }
   }));
-  const receive = h('button', { onclick: () => navigator.clipboard.writeText(s.address).then(() => out.replaceChildren(message('ok', 'Address copied.'))) }, h('span', { class: 'ico' }, '⬇'), 'Receive');
-  const send = h('button', { onclick: () => { sendForm.hidden = !sendForm.hidden; if (!sendForm.hidden) { to.focus(); pickAssets(); op('activity').then((l) => { sent = l.filter((a) => !a.owner || a.owner.toLowerCase() === s.address.toLowerCase()).map((a) => a.to).filter(Boolean); warnings(); }).catch(() => {}); } } }, h('span', { class: 'ico' }, '↗'), 'Send');
-  return [h('div', { class: 'card hero' }, h('div', { class: 'row', style: 'justify-content:center' }, addr, node), bal,
-    h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network' : `${Brand.project} chain ${defaultChainId}`),
+  const receive = h('button', { onclick: () => navigator.clipboard.writeText(s.address).then(() => out.replaceChildren(message('ok', 'Address copied.'))) }, actionIcon('receive'), 'Receive');
+  const send = h('button', { class: 'primary', onclick: () => { sendForm.hidden = !sendForm.hidden; if (!sendForm.hidden) { to.focus(); pickAssets(); op('activity').then((l) => { sent = l.filter((a) => !a.owner || a.owner.toLowerCase() === s.address.toLowerCase()).map((a) => a.to).filter(Boolean); warnings(); }).catch(() => {}); } } }, actionIcon('send'), 'Send');
+  return [h('section', { class: 'es-plate hero', 'aria-label': `${coinTicker(defaultChainId)} balance` },
+    h('div', { class: 'row plate-top' }, nativeArt('plate-coin'), h('div', { class: 'grow' }, h('div', { class: 'plate-title' }, coinName(defaultChainId)), addr)),
+    bal,
+    h('div', { class: 'row plate-network' }, node, h('span', { class: 'small' }, developmentNetwork ? 'Dev network' : `${Brand.project} chain ${defaultChainId}`)),
     proofNote),
     h('div', { class: 'actions' }, receive, send), sendForm, out];
 }
@@ -362,15 +398,15 @@ function holdingRow(x, officialSymbols, { onHide, onShow } = {}) {
   if (!x.token.trusted && x.token.metadataChanged) badges.push(h('span', { class: 'pill warn' }, 'Details changed'));
   else if (x.token.unconfirmed) badges.push(h('span', { class: 'pill warn' }, 'Details not confirmed'));
   const act = onHide ? h('button', { class: 'small', onclick: onHide }, 'Hide')
-    : onShow ? h('button', { class: 'small', onclick: onShow }, 'Show in main list') : null;
-  return h('div', { class: 'item', title: x.token.address },
-    h('span', { class: 'avatar', 'aria-hidden': 'true' }, (x.token.symbol[0] || '?').toUpperCase()),
+    : onShow ? h('button', { class: 'small show-token', onclick: onShow }, 'Show in main list') : null;
+  return h('div', { class: onShow ? 'item unverified-item' : 'item', title: x.token.address },
+    holdingArt(x.token),
     h('div', { class: 'grow' },
       h('div', {}, displayTokenName(defaultChainId, x.token.address, x.token.name) || x.token.symbol),
       h('div', { class: 'small muted mono' }, tokenLabel(x.token)),
-      badges.length ? h('div', { class: 'row', style: 'gap:4px;margin-top:2px;flex-wrap:wrap' }, ...badges) : null),
+      badges.length ? h('div', { class: 'row holding-badges' }, ...badges) : null),
     act,
-    h('strong', { class: 'nowrap' }, formatTokenAmount(x.balance, x.token.decimals)), ' ', h('span', { class: 'muted' }, x.token.symbol));
+    h('div', { class: 'holding-amount' }, h('strong', { class: 'es-amount' }, formatTokenAmount(x.balance, x.token.decimals)), h('span', { class: 'small muted' }, ` ${x.token.symbol}`)));
 }
 
 /** The audit-A3 review card: the details saved on this device and the changed
@@ -401,10 +437,10 @@ async function tokenReviewCard(token, done) {
 }
 
 async function assetsView(s) {
-  const aethAmt = h('strong', {}, '…');
+  const aethAmt = h('strong', { class: 'es-amount' }, '…');
   const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : `Checking ${coinTicker(defaultChainId)} balance…`);
   const rows = h('div', { class: 'list' });
-  const review = h('div', { class: 'list', style: 'gap:10px' });
+  const review = h('div', { class: 'list token-reviews' });
   const unverified = h('div', { class: 'list' });
   const unverifiedBox = h('details', { hidden: true },
     h('summary', {}, 'Unverified'),
@@ -415,7 +451,7 @@ async function assetsView(s) {
   const load = async (force) => {
     const [acct, assets] = await Promise.allSettled([op('account'), op('assets', { force })]);
     if (acct.status === 'fulfilled') {
-      aethAmt.replaceChildren(`${formatAeth(acct.value.balance)} ${coinTicker(defaultChainId)}`);
+      aethAmt.replaceChildren(formatAeth(acct.value.balance));
       if (!developmentNetwork) proofNote.textContent = `${coinTicker(defaultChainId)} verified · token balances read from the node`;
     } else {
       aethAmt.replaceChildren('—');
@@ -452,9 +488,9 @@ async function assetsView(s) {
     h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Assets'), h('span', { class: 'small muted nowrap' }, developmentNetwork ? 'Dev network' : `${Brand.project} network`)),
     proofNote,
     h('div', { class: 'item', title: s.address },
-      h('span', { class: 'avatar', 'aria-hidden': 'true' }, Brand.project[0]),
+      nativeArt(),
       h('div', { class: 'grow' }, h('div', {}, coinName(defaultChainId)), h('div', { class: 'small muted mono' }, shortAddress(s.address))),
-      aethAmt, ' ', h('span', { class: 'muted' }, coinTicker(defaultChainId))),
+      h('div', { class: 'holding-amount' }, aethAmt, h('span', { class: 'small muted' }, ` ${coinTicker(defaultChainId)}`))),
     h('h2', {}, 'Tokens'),
     review, rows, unverifiedBox, note, updated)];
 }

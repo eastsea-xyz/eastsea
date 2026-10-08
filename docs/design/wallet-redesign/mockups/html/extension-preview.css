@@ -1,0 +1,6 @@
+.preview-notice {
+  padding: var(--space-2) var(--space-5);
+  border-bottom: 1px solid var(--c-line);
+  color: var(--c-text-muted);
+  font: var(--weight-medium) var(--text-caption-size)/var(--text-caption-line) var(--font-text);
+}

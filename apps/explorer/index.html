@@ -4,17 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>EastSea Explorer</title>
-  <meta name="color-scheme" content="dark light">
+  <meta name="color-scheme" content="light dark">
   <meta name="description" content="A read-only block explorer for any EastSea node. Static files, no analytics, no external calls.">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237d66f2'/%3E%3Cstop offset='1' stop-color='%23ec4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='16' cy='16' r='14' fill='url(%23g)'/%3E%3C/svg%3E">
+  <link rel="icon" href="assets/dawn.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="design-tokens.css">
+  <link rel="stylesheet" href="design-components.css">
   <link rel="stylesheet" href="explorer.css">
   <link rel="stylesheet" href="live-globe/tokens.css">
   <link rel="stylesheet" href="live-globe/globe.css">
 </head>
 <body>
+  <a class="skip" href="#view">Skip to explorer</a>
   <header id="top"></header>
   <div id="notice" class="container" hidden></div>
-  <main id="view" class="container"></main>
+  <main id="view" class="container" tabindex="-1"></main>
   <footer id="foot" class="container"></footer>
   <noscript><p class="container">The explorer is a static page that needs JavaScript to read the node's JSON-RPC.</p></noscript>
   <script type="module" src="js/app.js"></script>

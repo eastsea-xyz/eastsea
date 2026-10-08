@@ -1,5 +1,19 @@
 # EastSea brand art
 
+## Font embedding licenses — 0.7.4 phase 1
+
+Every redistributed web font permits embedding under SIL Open Font License 1.1. No new font or dependency was downloaded in this lane; the site masters are reused. The extension, explorer and toolbox carry the appropriate license beside each bundled family (the toolbox's standalone HTML also includes the full license).
+
+| Family | Master | License / author | Use |
+|---|---|---|---|
+| Geist | `site/fonts/geist-latin.woff2` | [OFL-Geist.txt](../../site/fonts/OFL-Geist.txt), Vercel | UI, balances; embedded web font |
+| Geist Mono | `site/fonts/geist-mono-latin.woff2` | Same Vercel OFL license as Geist | Addresses and measured data; embedded web font |
+| Newsreader | `site/fonts/newsreader-latin.woff2` | [OFL-Newsreader.txt](../../site/fonts/OFL-Newsreader.txt), Production Type | Editorial headings and wordmark; embedded web font |
+| Hahmlet | `site/fonts/hahmlet-ko-subset.woff2` | [OFL-Hahmlet.txt](../../site/fonts/OFL-Hahmlet.txt), Hypertype | Existing site Korean headlines; the supplied subset is limited to site glyphs |
+| SF Pro, SF Mono, New York, Apple SD Gothic Neo | Apple system font APIs | Platform-provided fonts; no redistribution or binary embedding | SwiftUI default, monospaced and serif designs, Korean fallback |
+
+OFL files and fonts travel together. Keep their copyright/license text intact, including in standalone exports. The wallet uses system font APIs; it does not embed Apple fonts.
+
 Final artwork for EastSea (동해), the Mac-first wallet and node, and its native Doubloon (DBLN, 더블룬). Created with Codex's built-in `image_gen.imagegen` tool on 2026-10-07. The original gold dawn-over-waves doubloon established the motif; these are new artwork and platform exports.
 
 The family uses a warm gold dawn over deep sea blue: a substantial semicircular sun, short rays and broad flowing waves. The app mark omits stars and fine ornament; the large native coin retains eight stars and a restrained satin-gold rim. There is no text in any icon or token image. The social preview contains only “EastSea”.

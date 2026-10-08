@@ -22,7 +22,15 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    // A released ephemeral port can be returned again before a node binds it.
+    // Never assign one address to two fixture listeners in this process.
+    static ASSIGNED: std::sync::Mutex<std::collections::BTreeSet<u16>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    loop {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        if ASSIGNED.lock().unwrap().insert(port) { return port; }
+    }
 }
 
 struct Net {
@@ -1069,7 +1077,9 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
             a.push(format!("--node-arg=--faucet-key={}/faucet.key", d("g1")));
         }
         let log = std::fs::File::create(dir.join(format!("{name}.log"))).unwrap();
-        let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn").stdout(log.try_clone().unwrap()).stderr(log).spawn().expect("spawn run");
+        let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn")
+            .env("AETHER_TEST_INTERNAL_KEY_DIR", d(name))
+            .stdout(log.try_clone().unwrap()).stderr(log).spawn().expect("spawn run");
         net.procs[k] = Some(child);
     }
     net.wait_height(0, 3, 90);
@@ -1242,7 +1252,9 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
             "120".into(),
         ];
         let log = std::fs::File::create(dir.join(format!("{name}.log"))).unwrap();
-        let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn").stdout(log.try_clone().unwrap()).stderr(log).spawn().expect("spawn run");
+        let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn")
+            .env("AETHER_TEST_INTERNAL_KEY_DIR", d(name))
+            .stdout(log.try_clone().unwrap()).stderr(log).spawn().expect("spawn run");
         net.procs[k] = Some(child);
     }
     net.wait_height(0, 3, 90);

@@ -38,6 +38,7 @@ use aether_node::chain::{
 use aether_node::follow::{self, FinalityArchive, Upstream};
 use aether_node::rpc::{self, RpcState};
 use aether_node::store::Store;
+use aether_test_support::Port;
 use aether_types::{Address, Bytes, FeeVector, GasVector, TxEnvelope, B256, U256};
 use axum::{extract::State, routing::post, Json, Router};
 use commonware_codec::Encode;
@@ -372,11 +373,15 @@ fn serve(
         calls: calls.clone(),
         delay,
     });
-    let listener = rt
-        .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
-        .expect("bind");
+    let port_guard = Port::reserve().expect("reserve source RPC port");
+    let listener = port_guard.bind_tcp().expect("bind");
+    listener.set_nonblocking(true).unwrap();
+    let listener = rt.block_on(async { tokio::net::TcpListener::from_std(listener).unwrap() });
     let port = listener.local_addr().unwrap().port();
-    rt.spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    rt.spawn(async move {
+        let _port = port_guard;
+        axum::serve(listener, app).await.expect("serve")
+    });
     (format!("http://127.0.0.1:{port}"), calls)
 }
 
@@ -430,11 +435,15 @@ fn serve_held(
         held_once: Arc::new(Mutex::new(false)),
         go: go.clone(),
     });
-    let listener = rt
-        .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
-        .expect("bind");
+    let port_guard = Port::reserve().expect("reserve held-source RPC port");
+    let listener = port_guard.bind_tcp().expect("bind");
+    listener.set_nonblocking(true).unwrap();
+    let listener = rt.block_on(async { tokio::net::TcpListener::from_std(listener).unwrap() });
     let port = listener.local_addr().unwrap().port();
-    rt.spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    rt.spawn(async move {
+        let _port = port_guard;
+        axum::serve(listener, app).await.expect("serve")
+    });
     (format!("http://127.0.0.1:{port}"), reached, go)
 }
 
@@ -450,11 +459,15 @@ fn serve_swappable(
     let app = Router::new()
         .route("/", post(served_swappable))
         .with_state((served.clone(), calls.clone()));
-    let listener = rt
-        .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
-        .expect("bind");
+    let port_guard = Port::reserve().expect("reserve swappable-source RPC port");
+    let listener = port_guard.bind_tcp().expect("bind");
+    listener.set_nonblocking(true).unwrap();
+    let listener = rt.block_on(async { tokio::net::TcpListener::from_std(listener).unwrap() });
     let port = listener.local_addr().unwrap().port();
-    rt.spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    rt.spawn(async move {
+        let _port = port_guard;
+        axum::serve(listener, app).await.expect("serve")
+    });
     (format!("http://127.0.0.1:{port}"), served, calls)
 }
 
@@ -518,11 +531,15 @@ fn recorder(rt: &tokio::runtime::Runtime, member: Chain) -> (String, Sent) {
     let app = Router::new()
         .route("/", post(recorded))
         .with_state((sent.clone(), member));
-    let listener = rt
-        .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
-        .expect("bind");
+    let port_guard = Port::reserve().expect("reserve recorder RPC port");
+    let listener = port_guard.bind_tcp().expect("bind");
+    listener.set_nonblocking(true).unwrap();
+    let listener = rt.block_on(async { tokio::net::TcpListener::from_std(listener).unwrap() });
     let port = listener.local_addr().unwrap().port();
-    rt.spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    rt.spawn(async move {
+        let _port = port_guard;
+        axum::serve(listener, app).await.expect("serve")
+    });
     (format!("http://127.0.0.1:{port}"), sent)
 }
 
@@ -1109,11 +1126,12 @@ fn a_catch_up_that_never_heard_a_height_is_not_success() {
     let dir_fol = tmp("deaf-follower");
     let rt = tokio::runtime::Runtime::new().unwrap();
     let follower = Node::start(&dir_fol);
+    let upstream = Port::reserve().expect("reserve unreachable upstream RPC port");
     let err = rt
         .block_on(follow::catch_up(
             &follower.chain,
             // Nothing listens there: every request is refused.
-            &Upstream::Http(vec!["http://127.0.0.1:9".into()]),
+            &Upstream::Http(vec![format!("http://{}", upstream.addr())]),
             &set(),
             follow::BEHIND_MARGIN,
         ))
@@ -1375,12 +1393,14 @@ fn a_network_that_never_answers_fails_open_after_a_real_wait() {
     node.run_to(5, |_| false);
     let patience = Duration::from_millis(700);
     let t = Instant::now();
+    let upstream = Port::reserve().expect("reserve unreachable census RPC port");
+    let upstream_url = format!("http://{}", upstream.addr());
     let adopted = rt.block_on(follow::catch_up_before_voting(
         &node.chain,
         &set(),
         follow::BEHIND_MARGIN,
         patience,
-        || async { census(&["http://127.0.0.1:9".into()]).await },
+        || async { census(&[upstream_url.clone()]).await },
         |u: &String| Upstream::Http(vec![u.clone()]),
     ));
     assert_eq!(adopted, 0);

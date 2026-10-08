@@ -1688,6 +1688,7 @@ pub async fn forward(upstream: std::sync::Arc<Upstream>, mut rx: tokio::sync::mp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_test_support::Port;
 
     #[test]
     fn repeated_upstream_timeouts_at_one_height_restart_the_follower() {
@@ -1803,11 +1804,15 @@ mod tests {
                 let id = v.get("id").cloned().unwrap_or(Value::Null);
                 axum::Json(json!({ "jsonrpc": "2.0", "id": id, "result": { "height": height } }))
             }));
-            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = probe.local_addr().unwrap();
-            drop(probe);
-            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-            tokio::spawn(async move { axum::serve(listener, app).await });
+            let port = Port::reserve().expect("reserve status RPC port");
+            let addr = port.addr();
+            let listener = port.bind_tcp().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            tokio::spawn(async move {
+                let _port = port;
+                axum::serve(listener, app).await
+            });
             format!("http://{addr}")
         };
         let (low, ahead) = (spawn_status(100).await, spawn_status(200).await);
@@ -1895,9 +1900,10 @@ mod tests {
         // corroborated at-tip answer…
         chain.lock().net_height = Some(0);
         // …then every status request fails (nothing listens there).
+        let upstream = Port::reserve().expect("reserve unreachable upstream RPC port");
         let err = advance(
             &chain,
-            &Upstream::Http(vec!["http://127.0.0.1:9".into()]),
+            &Upstream::Http(vec![format!("http://{}", upstream.addr())]),
             &aether_light::ValidatorSet::devnet(4),
             None,
             &mut AheadClaims::default(),
@@ -1944,11 +1950,15 @@ mod tests {
                 };
                 axum::Json(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
             }));
-            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = probe.local_addr().unwrap();
-            drop(probe);
-            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-            tokio::spawn(async move { axum::serve(listener, app).await });
+            let port = Port::reserve().expect("reserve status RPC port");
+            let addr = port.addr();
+            let listener = port.bind_tcp().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            tokio::spawn(async move {
+                let _port = port;
+                axum::serve(listener, app).await
+            });
             format!("http://{addr}")
         };
         // The lying source is listed first: its ahead answer is what

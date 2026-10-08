@@ -128,12 +128,13 @@ top.append(
     },
   }, searchInput, h('button', { type: 'submit', class: 'es-control' }, 'Search'), searchMsg),
   h('details', { id: 'settings' },
-    h('summary', {}, 'Settings'),
+    h('summary', { class: 'es-control' }, 'Settings'),
     h('div', { class: 'settings-body' },
       h('label', {}, 'Node JSON-RPC endpoint', nodeInput),
       h('label', {}, 'Public read gateway (tried after the node)', gatewayInput),
       h('div', { class: 'row tight' },
         h('button', {
+          class: 'es-control primary',
           onclick: () => {
             try {
               const nodeUrl = saveEndpoint(nodeInput.value, store);
@@ -146,6 +147,7 @@ top.append(
           },
         }, 'Save'),
         h('button', {
+          class: 'es-control',
           onclick: () => {
             saveEndpoint(DEFAULT_ENDPOINT, store);
             saveGateway(DEFAULT_GATEWAY, store);

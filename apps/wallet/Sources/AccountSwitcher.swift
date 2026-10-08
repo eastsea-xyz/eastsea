@@ -8,20 +8,23 @@ struct AccountSwitcherButton: View {
 
     var body: some View {
         Button { open.toggle() } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: DesignTokens.Space.s2) {
                 AccountDot(account: store.activeAccount, size: compact ? 14 : 20)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                     Text(verbatim: store.activeAccount?.name ?? String(localized: "Accounts"))
                         .font(.aeFootnote.weight(.semibold)).lineLimit(1)
                     if let account = store.activeAccount {
                         Text(verbatim: Short.address(account.address))
-                            .font(.aeCaption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                            .font(.aeCaption.monospaced()).foregroundStyle(DesignTokens.Palette.textMuted.color).lineLimit(1)
                     }
                 }
-                Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
+                Image(systemName: "chevron.down").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
             }
-            .padding(.horizontal, compact ? 6 : 12).padding(.vertical, 6)
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: compact ? 8 : 16))
+            .padding(.horizontal, compact ? DesignTokens.Space.s2 : DesignTokens.Space.s3)
+            .padding(.vertical, DesignTokens.Space.s2)
+            .foregroundStyle(DesignTokens.Palette.text.color)
+            .background(DesignTokens.Palette.surfaceSunken.color,
+                        in: RoundedRectangle(cornerRadius: compact ? DesignTokens.Radius.sm : DesignTokens.Radius.lg))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -42,14 +45,16 @@ struct AccountSwitcherPanel: View {
     @State private var error: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("Accounts").font(.aeHeadline)
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+            HStack(spacing: DesignTokens.Space.s2) {
+                EastSeaDawnMark().frame(width: 24, height: 24)
+                Text("Accounts").font(.aeTitle)
                 Spacer()
-                Button("Done") { dismiss() }.buttonStyle(.plain).foregroundStyle(.secondary)
+                Button("Done") { dismiss() }.buttonStyle(.plain)
+                    .foregroundStyle(DesignTokens.Palette.textMuted.color)
             }
             ScrollView {
-                VStack(spacing: 4) {
+                VStack(spacing: DesignTokens.Space.s1) {
                     ForEach(store.list()) { account in row(account) }
                 }
             }
@@ -59,10 +64,10 @@ struct AccountSwitcherPanel: View {
                 Text(error).font(.aeFootnote).foregroundStyle(Color.warn)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Divider()
+            Rectangle().fill(DesignTokens.Palette.line.color).frame(height: 1)
             Button { creating = true } label: { Label("Create account", systemImage: "plus") }
-                .buttonStyle(.bordered).disabled(store.state != .ready)
-            Text("A small one-time fee on first use").font(.aeCaption).foregroundStyle(.secondary)
+                .buttonStyle(EastSeaPrimaryButtonStyle()).disabled(store.state != .ready)
+            Text("A small one-time fee on first use").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 .fixedSize(horizontal: false, vertical: true)
             if !store.retiredAccountIDs.isEmpty {
                 Menu("Retired accounts") {
@@ -72,23 +77,24 @@ struct AccountSwitcherPanel: View {
                 }
             }
         }
-        .padding(18).frame(width: 340)
+        .padding(DesignTokens.Space.s4).frame(width: 336)
+        .eastSeaSheet()
         .sheet(isPresented: $creating) { AccountNameSheet(store: store) }
         .sheet(item: $renaming) { AccountNameSheet(store: store, account: $0) }
         .sheet(item: $retiring) { RetireAccountView(store: store, account: $0) }
     }
 
     private func row(_ account: WalletAccount) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DesignTokens.Space.s2) {
             Button {
                 perform { try store.select(account.id); dismiss() }
             } label: {
-                HStack(spacing: 10) {
+                HStack(spacing: DesignTokens.Space.s3) {
                     AccountDot(account: account, size: 28)
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                         Text(verbatim: account.name).font(.aeBody.weight(.medium)).lineLimit(1)
                         Text(verbatim: Short.address(account.address)).font(.aeCaption.monospaced())
-                            .foregroundStyle(.secondary).lineLimit(1)
+                            .foregroundStyle(DesignTokens.Palette.textMuted.color).lineLimit(1)
                     }
                     Spacer(minLength: 4)
                     if store.activeAccount?.id == account.id {
@@ -96,7 +102,7 @@ struct AccountSwitcherPanel: View {
                             .accessibilityLabel("Selected account")
                     }
                 }
-                .padding(10).contentShape(Rectangle())
+                .padding(DesignTokens.Space.s3).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             Menu {
@@ -111,8 +117,8 @@ struct AccountSwitcherPanel: View {
             #endif
             .fixedSize().help("Account actions")
         }
-        .background(store.activeAccount?.id == account.id ? Color.aether.opacity(0.08) : .clear,
-                    in: RoundedRectangle(cornerRadius: 10))
+        .background(store.activeAccount?.id == account.id ? DesignTokens.Palette.surfaceSunken.color : .clear,
+                    in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
     }
 
     private func move(_ account: WalletAccount, by offset: Int) {
@@ -144,17 +150,20 @@ private struct AccountNameSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(account == nil ? String(localized: "Create account") : String(localized: "Rename account"))
-                .font(.aeHeadline)
-            TextField("Account name", text: $name).textFieldStyle(.roundedBorder)
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+            HStack(spacing: DesignTokens.Space.s2) {
+                EastSeaDawnMark().frame(width: 24, height: 24)
+                Text(account == nil ? String(localized: "Create account") : String(localized: "Rename account"))
+                    .font(.aeTitle)
+            }
+            TextField("Account name", text: $name).textFieldStyle(EastSeaTextFieldStyle()).font(.aeBody)
             if account == nil {
-                Text("A small one-time fee on first use").font(.aeFootnote).foregroundStyle(.secondary)
+                Text("A small one-time fee on first use").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let error { Text(error).font(.aeFootnote).foregroundStyle(Color.warn) }
             HStack {
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }.buttonStyle(EastSeaQuietButtonStyle()).keyboardShortcut(.cancelAction)
                 Spacer()
                 Button(account == nil ? String(localized: "Create account") : String(localized: "Save")) {
                     do {
@@ -163,11 +172,12 @@ private struct AccountNameSheet: View {
                         dismiss()
                     } catch { self.error = error.localizedDescription }
                 }
-                .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                .buttonStyle(EastSeaPrimaryButtonStyle()).keyboardShortcut(.defaultAction)
                 .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(24).frame(width: 340)
+        .padding(DesignTokens.Space.s6).frame(width: 340)
+        .eastSeaSheet()
     }
 }
 
@@ -186,21 +196,28 @@ struct RetireAccountView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Retire account").font(.aeHeadline)
-            Text(verbatim: account.name).font(.aeBody.weight(.semibold))
-            Text(verbatim: Short.address(account.address)).font(.aeFootnote.monospaced()).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+            Text("Retire account").font(.aeTitle)
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
+                Text(verbatim: account.name).font(.aeBody.weight(.semibold))
+                Text(verbatim: Short.address(account.address)).font(.aeFootnote.monospaced())
+                    .foregroundStyle(DesignTokens.Palette.textMuted.color)
+            }
+            .padding(DesignTokens.Space.s4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(DesignTokens.Palette.surfaceSunken.color, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
             if let failure {
-                Label(reason(failure), systemImage: "info.circle").font(.aeBody)
+                Label(reason(failure), systemImage: "info.circle").font(.aeBody).foregroundStyle(Color.warn)
                     .fixedSize(horizontal: false, vertical: true)
                 Button("Check balance again") { self.failure = store.retirementFailure(for: account.id); error = nil }
+                    .buttonStyle(EastSeaQuietButtonStyle())
             } else {
                 Text("The key stays on this Mac. You can restore this account later.")
-                    .font(.aeFootnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color).fixedSize(horizontal: false, vertical: true)
             }
             if let error { Text(error).font(.aeFootnote).foregroundStyle(Color.warn) }
             HStack {
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }.buttonStyle(EastSeaQuietButtonStyle()).keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Retire account", role: .destructive) {
                     do { try store.delete(account.id); dismiss() }
@@ -209,10 +226,12 @@ struct RetireAccountView: View {
                         self.error = error.localizedDescription
                     }
                 }
+                .buttonStyle(EastSeaPrimaryButtonStyle())
                 .disabled(failure != nil)
             }
         }
-        .padding(24).frame(width: 360)
+        .padding(DesignTokens.Space.s6).frame(width: 360)
+        .eastSeaSheet()
     }
 
     private func reason(_ failure: AccountStore.Failure) -> String {
@@ -228,10 +247,10 @@ private struct AccountDot: View {
     let size: CGFloat
     private var color: Color {
         switch account?.color {
-        case "blue": .blue
-        case "green": .green
-        case "orange": .orange
-        case "pink": .pink
+        case "blue": DesignTokens.Palette.accent.color
+        case "green": DesignTokens.Palette.success.color
+        case "orange": DesignTokens.Palette.warn.color
+        case "pink": DesignTokens.Palette.dawn.color
         default: .aether
         }
     }

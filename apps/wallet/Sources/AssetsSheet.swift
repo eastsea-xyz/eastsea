@@ -16,46 +16,76 @@ struct AssetsSheet: View {
     private var sections: (main: [TokenHolding], unverified: [TokenHolding]) { model.tokenSections }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Assets").font(.aeTitle)
-            TokenRow(symbol: Brand.networkCoinTicker, name: Brand.networkCoinName, amount: balance, verified: model.account != nil && model.verifyError == nil)
-            if let since = model.chainPausedSince { NetworkPausedBadge(since: since) }
-            Divider()
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s5) {
+            HStack(spacing: DesignTokens.Space.s2) {
+                EastSeaDawnMark().frame(width: 24, height: 24)
+                Text("Assets").font(.aeTitle)
+            }
+            nativeBalance
             mainTokens
-            if !sections.unverified.isEmpty { Divider(); unverifiedTokens }
+            if !sections.unverified.isEmpty {
+                Rectangle().fill(DesignTokens.Palette.line.color).frame(height: 1)
+                unverifiedTokens
+            }
             HStack {
                 TimelineView(.periodic(from: .now, by: 30)) { tl in
-                    Text(updated(now: tl.date)).font(.aeCaption).foregroundStyle(.secondary)
+                    Text(updated(now: tl.date)).font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 }
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Done") { dismiss() }.buttonStyle(EastSeaQuietButtonStyle()).keyboardShortcut(.cancelAction)
             }
         }
-        .padding(24)
+        .padding(DesignTokens.Space.s6)
         .macMinSize(width: 420)
         .sheetScroll()
+        .eastSeaSheet()
         .onAppear { model.refreshTokens(force: true) }
     }
 
+    private var nativeBalance: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
+            HStack(spacing: DesignTokens.Space.s2) {
+                TokenIcon(chainId: Brand.networkChainId, address: nil, symbol: Brand.networkCoinTicker, size: 28)
+                Text(Brand.networkCoinName).font(.aeHeadline)
+                Spacer(minLength: 0)
+                if model.account != nil && model.verifyError == nil {
+                    Label("Verified", systemImage: "checkmark.shield.fill")
+                        .font(.aeCaption).foregroundStyle(DesignTokens.Palette.plateSoft.color)
+                }
+            }
+            HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.s2) {
+                Text(balance.map { Amount.text($0) } ?? "—")
+                    .font(DesignTokens.TypeScale.amountMd.font).lineLimit(1).minimumScaleFactor(0.6)
+                Text(Brand.networkCoinTicker).font(.aeFootnote)
+                    .foregroundStyle(DesignTokens.Palette.plateSoft.color)
+            }
+            if let since = model.chainPausedSince { NetworkPausedBadge(since: since, onPlate: true) }
+        }
+        .padding(DesignTokens.Space.s5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .foregroundStyle(DesignTokens.Palette.plateInk.color)
+        .eastSeaNavyPlate(cornerRadius: DesignTokens.Radius.lg)
+    }
+
     @ViewBuilder private var mainTokens: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                 Text("Tokens").font(.aeHeadline)
-                Spacer()
-                Text("Read from the node · not verified on this device").font(.aeCaption).foregroundStyle(.secondary)
-                    .multilineTextAlignment(.trailing)
+                Text("Read from the node · not verified on this device").font(.aeCaption)
+                    .foregroundStyle(DesignTokens.Palette.textMuted.color)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             rows(sections.main, unverified: false)
             if sections.main.isEmpty && sections.unverified.isEmpty {
                 if model.tokensUpdated == nil {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("Looking for tokens…").font(.aeBody).foregroundStyle(.secondary)
+                        Text("Looking for tokens…").font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     }
                 } else if model.tokensError != nil {
-                    Text("Could not read tokens from the node. It tries again shortly.").font(.aeBody).foregroundStyle(.secondary)
+                    Text("Could not read tokens from the node. It tries again shortly.").font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 } else {
-                    Text("No other tokens in this wallet.").font(.aeBody).foregroundStyle(.secondary)
+                    Text("No other tokens in this wallet.").font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 }
             }
         }
@@ -65,12 +95,12 @@ struct AssetsSheet: View {
     /// they start collapsed and out of any total. A tap still opens a send —
     /// with the address always in sight.
     private var unverifiedTokens: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
             DisclosureGroup(String(localized: "Unverified (\(sections.unverified.count))"), isExpanded: $unverifiedOpen) {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Someone sent these to you. Nothing you signed ever touched them — anyone can create a token, so check the contract address before trusting one.")
-                        .font(.aeFootnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        .padding(.bottom, 10)
+                        .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color).fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, DesignTokens.Space.s3)
                     rows(sections.unverified, unverified: true)
                 }
             }
@@ -91,7 +121,7 @@ struct AssetsSheet: View {
                         Button("Hide from main list") { model.setTokenHidden(t.token.address, true) }
                     }
                 }
-            if i < holdings.count - 1 { Divider() }
+            if i < holdings.count - 1 { Rectangle().fill(DesignTokens.Palette.line.color).frame(height: 1) }
         }
     }
 
@@ -111,19 +141,20 @@ private struct TokenHoldingRow: View {
 
     var body: some View {
         Button(action: { onSend?() }) {
-            HStack(spacing: 12) {
+            HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
                 TokenIcon(chainId: chainId, address: holding.token.address, symbol: holding.token.symbol, size: 40)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                     Text(holding.token.name.isEmpty ? holding.token.symbol
                          : KnownTokens.displayName(chainId: chainId, address: holding.token.address, name: holding.token.name)).font(.aeBody.weight(.semibold)).lineLimit(1)
                     // Never the symbol alone: anyone can deploy another "USDT".
-                    Text(TokenLabel.row(holding.token)).font(.aeCaption.monospaced()).foregroundStyle(.secondary)
+                    Text(TokenLabel.row(holding.token)).font(.aeCaption.monospaced()).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     TokenBadges(holding: holding, official: official, chainId: chainId)
                 }
                 Spacer(minLength: 8)
                 Text("\(holding.amount) \(holding.token.symbol)").font(.aeBody.weight(.semibold).monospacedDigit())
                     .lineLimit(1).minimumScaleFactor(0.7)
             }
+            .padding(.vertical, DesignTokens.Space.s2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -141,7 +172,7 @@ struct TokenBadges: View {
 
     var body: some View {
         if isLaunchpad || lookAlike || nodeDisagrees || unverifiedUnits {
-            HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                 if isLaunchpad {
                     Label("Launchpad · unverified", systemImage: "exclamationmark.bubble.fill")
                         .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
@@ -152,13 +183,14 @@ struct TokenBadges: View {
                 }
                 if nodeDisagrees {
                     Label("Node disagrees · units from the shipped list", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.aeCaption.weight(.semibold)).foregroundStyle(.secondary)
+                        .font(.aeCaption.weight(.semibold)).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 }
                 if unverifiedUnits {
                     Label("Unverified units", systemImage: "questionmark.circle")
-                        .font(.aeCaption.weight(.semibold)).foregroundStyle(.secondary)
+                        .font(.aeCaption.weight(.semibold)).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 

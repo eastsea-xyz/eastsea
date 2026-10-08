@@ -225,15 +225,17 @@ struct HealthBanner: View {
 
     var body: some View {
         if let alert = health.alert {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "exclamationmark.triangle.fill").font(.title2).foregroundStyle(Color.warn)
-                VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
+                Image(systemName: "exclamationmark.triangle.fill").font(.aeHeadline).foregroundStyle(Color.warn)
+                    .frame(width: 24, height: 24)
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
                     Text(alert.sentence).font(.aeBody)
+                        .foregroundStyle(DesignTokens.Palette.text.color)
                         .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 12) {
+                    HStack(spacing: DesignTokens.Space.s3) {
                         if let action = alert.action {
                             Button(action == .fixNode ? (health.nodeActionLabel ?? action.label()) : action.label()) { health.perform(action) }
-                                .buttonStyle(.borderedProminent).tint(Color.warn)
+                                .buttonStyle(EastSeaPrimaryButtonStyle())
                         }
                         if alert.action != .copyDiagnostics {
                             Button(copied ? (String(localized: "Copied"))
@@ -241,15 +243,19 @@ struct HealthBanner: View {
                                 health.copyDiagnostics()
                                 copied = true
                             }
-                            .buttonStyle(.borderless).font(.aeFootnote)
+                            .buttonStyle(.borderless).font(.aeFootnote).foregroundStyle(DesignTokens.Palette.accent.color)
                             .help("Copies to the clipboard only — no address, balance or node ID, nothing sent from this Mac.")
                         }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(16)
-            .background(Color.warn.opacity(0.12), in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .padding(DesignTokens.Space.s4)
+            .background(DesignTokens.Palette.surface.color, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                    .stroke(DesignTokens.Palette.line.color, lineWidth: 1)
+            }
             .onChange(of: alert.issue) { _, _ in copied = false }
         }
     }

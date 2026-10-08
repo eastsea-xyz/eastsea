@@ -1,0 +1,19 @@
+{
+  "status": "complete",
+  "changed_files": ["site/index.html", "site/privacy.html", "site/styles.css", "site/README.md", "apps/explorer/explorer.css", "apps/explorer/js/app.js", "apps/explorer/js/dom.js", "apps/explorer/js/pages.js", "apps/explorer/README.md"],
+  "generated_files_edited": false,
+  "new_dependencies": false,
+  "browser": {"old_073_captures": 36, "new_captures": 49, "errors": 0, "external_requests": 0, "overflow": 0, "broken_images": 0, "reduced_motion_active_animations": 0, "closed": true},
+  "preservation": {"site_en_ko_catalog": true, "site_and_explorer_links_actions": true, "explorer_exact_rpc_request_sets": true},
+  "tests": {"explorer_unit": "62/62 PASS", "git_diff_check": "PASS", "visual_verdict": "95/100 PASS"},
+  "routes": ["home", "block", "transaction", "account", "token", "block-empty", "block-pruned", "block-unknown", "tx-pending", "tx-dropped", "tx-failed", "tx-unknown", "account-empty", "contract", "token-unreadable", "not-found", "error", "loading"],
+  "site_matrix": "index/privacy × en/ko × light/dark × desktop/mobile",
+  "explorer_matrix": "all five main routes × light/dark × desktop/mobile; thirteen additional states × mobile light",
+  "old_evidence": "tmp/web-phase2/old-073/report.json",
+  "new_evidence": "tmp/web-phase2/after/report.json",
+  "preservation_baseline": "tmp/web-phase2/before/report.json",
+  "qa_script": "tmp/web-phase2/qa.mjs",
+  "motion": "Source check confirms finite scene entry effects and one 600ms loading acknowledgement; no infinite animations. Reduced Motion disabled every captured animation.",
+  "limits": ["Normal-motion timing and reduced-transparency rendering were source-reviewed, not separately captured.", "Explorer remains English and the site remains bilingual by existing product design; no invented web translations.", "No live remote RPC or deployed-site verification was performed."],
+  "server_fix": "The generic with_server helper leaves HTTP log pipes unread; long capture batches filled the pipe. Final local server logs were redirected into tmp/web-phase2/server-final.log, restoring full networkidle waits."
+}

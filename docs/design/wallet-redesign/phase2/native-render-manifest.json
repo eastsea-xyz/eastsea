@@ -1,0 +1,3373 @@
+{
+  "candidate": "bc6a893",
+  "source_checkout": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/apps/wallet",
+  "source_matches_baseline": true,
+  "library": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/target/release/libaether_ffi.a",
+  "binary_sha256": "325392f09933f5ecaac9f3e15ed500acc9fcd83bd8ab60de30971350fe397268",
+  "app_launched": "WalletScreens only; source-equivalent prebuilt renderer, fixture isolation",
+  "existing_073_qa_capture_count": 336,
+  "new_native_captures": 0,
+  "new_native_status": "compile-slot-wait-limit; xcodebuild did not start",
+  "frames": [
+    {
+      "name": "activity-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-en-dark.png",
+      "size": [
+        1520,
+        1418
+      ],
+      "sha256": "26f20e7989eeafccec613e0694b9538efdc834f6d90d8c27f3162d53d46d2821",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-en-dark.text.json"
+    },
+    {
+      "name": "activity-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-en-light.png",
+      "size": [
+        1520,
+        1418
+      ],
+      "sha256": "1346dd2df620b03255687e13e2da7cd14668fdcff61755e2b7359024c7ae07e1",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-en-light.text.json"
+    },
+    {
+      "name": "activity-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-ja-light.png",
+      "size": [
+        1520,
+        1418
+      ],
+      "sha256": "b4e11ee86bd8292285ac5f89c3641c22b70da2f4dd4295a908a8b49b92dc23a1",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-ja-light.text.json"
+    },
+    {
+      "name": "activity-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-ko-dark.png",
+      "size": [
+        1520,
+        1418
+      ],
+      "sha256": "2a6abc66bf14972ddb2eca708eded69206c03d08a926e70e38e596899c5da40a",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-ko-dark.text.json"
+    },
+    {
+      "name": "activity-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-ko-light.png",
+      "size": [
+        1520,
+        1418
+      ],
+      "sha256": "cec2a81adf09e590be790ee2599db4ba5fa60ee4a0e9bf4fec484f50fce78dbb",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-ko-light.text.json"
+    },
+    {
+      "name": "activity-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-zh-Hans-light.png",
+      "size": [
+        1520,
+        1418
+      ],
+      "sha256": "1ccd636af3102e42c77a35a9dc7dde43e661f2f5ff0aec359628d28ab6355ef7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-zh-Hans-light.text.json"
+    },
+    {
+      "name": "activity-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-zh-Hant-light.png",
+      "size": [
+        1520,
+        1418
+      ],
+      "sha256": "f9022ea590bf51dd51800168d140d20d8dfe4c62a0a1978784db14826696c426",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/activity-zh-Hant-light.text.json"
+    },
+    {
+      "name": "alert-install-place-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-en-dark.png",
+      "size": [
+        520,
+        468
+      ],
+      "sha256": "bf6ab1a439ac4913276f2ea526bb902ed7cd643f5f4d8a0d0b548d3af1c650de",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-en-dark.text.json"
+    },
+    {
+      "name": "alert-install-place-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-en-light.png",
+      "size": [
+        520,
+        468
+      ],
+      "sha256": "fa238d0a7e32191645a6de2a8062c03b1930c7ace3893804bd431c62b990aa00",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-en-light.text.json"
+    },
+    {
+      "name": "alert-install-place-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-ja-light.png",
+      "size": [
+        520,
+        470
+      ],
+      "sha256": "33b0723e363c3e5835b67d5ada1a8aae223bd039ec1f4c52dc58eb94abd86376",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-ja-light.text.json"
+    },
+    {
+      "name": "alert-install-place-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-ko-dark.png",
+      "size": [
+        520,
+        436
+      ],
+      "sha256": "1878f1bd664d0f91fbac29facafe73a92ed9cb189b01964340465c8f86946ff4",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-ko-dark.text.json"
+    },
+    {
+      "name": "alert-install-place-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-ko-light.png",
+      "size": [
+        520,
+        436
+      ],
+      "sha256": "0803ac233214ce8cdd37b474843808599250f38e47be25a6120047670d6ddfea",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-ko-light.text.json"
+    },
+    {
+      "name": "alert-install-place-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-zh-Hans-light.png",
+      "size": [
+        520,
+        436
+      ],
+      "sha256": "3d0028e48e141a81e6dbb8b3cc77fb1bcecc4a6cc2a0427bded5275f0d954164",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-zh-Hans-light.text.json"
+    },
+    {
+      "name": "alert-install-place-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-zh-Hant-light.png",
+      "size": [
+        520,
+        436
+      ],
+      "sha256": "3bf7b1bd47a2238ec90753ef0877e9fa9459c09840f845acc5ce9c80f9d629c6",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-install-place-zh-Hant-light.text.json"
+    },
+    {
+      "name": "alert-legacy-aether-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-en-dark.png",
+      "size": [
+        520,
+        772
+      ],
+      "sha256": "442286beb5255860e108b3fdabfb654757d994a4056e3539cd021c75ecc3797f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-en-dark.text.json"
+    },
+    {
+      "name": "alert-legacy-aether-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-en-light.png",
+      "size": [
+        520,
+        772
+      ],
+      "sha256": "83a4cc5d04ef261e7da1a675eaae60eec3253c59b4b25af56eaf9fe3a621a60c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-en-light.text.json"
+    },
+    {
+      "name": "alert-legacy-aether-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-ja-light.png",
+      "size": [
+        520,
+        806
+      ],
+      "sha256": "c727ef088b3b3895476334967fd5b589c14297dc6c015c782c9aa2272e4410f4",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-ja-light.text.json"
+    },
+    {
+      "name": "alert-legacy-aether-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-ko-dark.png",
+      "size": [
+        520,
+        742
+      ],
+      "sha256": "1e58ef8da18afc625c2ccaae22f7d7f01e1912dbc4ba624c40ac7239c9608aea",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-ko-dark.text.json"
+    },
+    {
+      "name": "alert-legacy-aether-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-ko-light.png",
+      "size": [
+        520,
+        742
+      ],
+      "sha256": "17c784b2bf75dd421de26bcb853a94f3e664727daf2040b5bacf593852ccfcaf",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-ko-light.text.json"
+    },
+    {
+      "name": "alert-legacy-aether-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-zh-Hans-light.png",
+      "size": [
+        520,
+        710
+      ],
+      "sha256": "6ef8fbd00e28b42fa786b7a2996dda48739593c15d243c8bc430229288082f21",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-zh-Hans-light.text.json"
+    },
+    {
+      "name": "alert-legacy-aether-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-zh-Hant-light.png",
+      "size": [
+        520,
+        742
+      ],
+      "sha256": "b36bdde6e2fdab79453697f3e8875bd532f8d03888e003385ecc07037be70c41",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/alert-legacy-aether-zh-Hant-light.text.json"
+    },
+    {
+      "name": "developer-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-en-dark.png",
+      "size": [
+        2000,
+        3010
+      ],
+      "sha256": "33bc9a0ce7dc738e7da0dd8beff25f095e566e9bff7cdadc10b33bfa0698d7bd",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-en-dark.text.json"
+    },
+    {
+      "name": "developer-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-en-light.png",
+      "size": [
+        2000,
+        3010
+      ],
+      "sha256": "b2dbfc788ab0c9e0d5f8889529c2555a7dbc2c295354e7b303597f79ccafcb79",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-en-light.text.json"
+    },
+    {
+      "name": "developer-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-ja-light.png",
+      "size": [
+        2000,
+        3010
+      ],
+      "sha256": "97194739f91efcb4afd0fee807dddc00504d9cf932f8701532412bd2696ed6a0",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-ja-light.text.json"
+    },
+    {
+      "name": "developer-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-ko-dark.png",
+      "size": [
+        2000,
+        3010
+      ],
+      "sha256": "b3d4af19b87af1ea356c44888db821f15a5d09eb2282031c540ddabbac208aac",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-ko-dark.text.json"
+    },
+    {
+      "name": "developer-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-ko-light.png",
+      "size": [
+        2000,
+        3010
+      ],
+      "sha256": "bf0a5a36ffa586aea5445587fcf4b1e9f5f48780945f5e973bbd870784ce917b",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-ko-light.text.json"
+    },
+    {
+      "name": "developer-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-zh-Hans-light.png",
+      "size": [
+        2000,
+        3010
+      ],
+      "sha256": "5aad1826a8a5bb16a14cf2f3668f47d4ec0ed8fc9b30f6819b2af7517376aec4",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-zh-Hans-light.text.json"
+    },
+    {
+      "name": "developer-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-zh-Hant-light.png",
+      "size": [
+        2000,
+        3010
+      ],
+      "sha256": "2277991baeba40c945059c3455ed21769b7b2c4193a8f38b745ed79d4ffd15c5",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/developer-zh-Hant-light.text.json"
+    },
+    {
+      "name": "explore-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-en-dark.png",
+      "size": [
+        1520,
+        1376
+      ],
+      "sha256": "36c9a76fa76fa9cc9890aa10559992c9e87ccaabfee41a7b47165c9345671a0d",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-en-dark.text.json"
+    },
+    {
+      "name": "explore-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-en-light.png",
+      "size": [
+        1520,
+        1376
+      ],
+      "sha256": "d6bd70911199074a62744d98b4b67fc5d4f9e32df47c481f6e93b8ee453e7394",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-en-light.text.json"
+    },
+    {
+      "name": "explore-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-ja-light.png",
+      "size": [
+        1520,
+        1376
+      ],
+      "sha256": "cf5bcf86afcf017c48c14799124668b864db6773b99adab21a7ef3d2da8a4e75",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-ja-light.text.json"
+    },
+    {
+      "name": "explore-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-ko-dark.png",
+      "size": [
+        1520,
+        1376
+      ],
+      "sha256": "738d931413a907e34d865a2c00d153891a96f29a672921e6b2ecddbd0bcd28fd",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-ko-dark.text.json"
+    },
+    {
+      "name": "explore-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-ko-light.png",
+      "size": [
+        1520,
+        1376
+      ],
+      "sha256": "8727744f3c1ff1db42b9c44434a0bee5edd4d7e53c4ff652ff43c7b353b006cc",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-ko-light.text.json"
+    },
+    {
+      "name": "explore-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-zh-Hans-light.png",
+      "size": [
+        1520,
+        1376
+      ],
+      "sha256": "fdd3189f2f431d4b0759a32902ec006c14a077d50bfbc60e23a0b6d17c892e22",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-zh-Hans-light.text.json"
+    },
+    {
+      "name": "explore-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-zh-Hant-light.png",
+      "size": [
+        1520,
+        1376
+      ],
+      "sha256": "702ddf590266476aad414b69f5f13399e154f833a41c6f1853913b76b0710292",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/explore-zh-Hant-light.text.json"
+    },
+    {
+      "name": "home-alerts-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-en-dark.png",
+      "size": [
+        1520,
+        2422
+      ],
+      "sha256": "a14d9000d4f29126eb11349314934cca52e8346d4269a14ffebe9f01deeb2ef7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-en-dark.text.json"
+    },
+    {
+      "name": "home-alerts-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-en-light.png",
+      "size": [
+        1520,
+        2422
+      ],
+      "sha256": "7e2164bda3419404ad1bb5b939d87760b309a8f0ccc7031c60873c5a87c0a2f2",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-en-light.text.json"
+    },
+    {
+      "name": "home-alerts-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-ja-light.png",
+      "size": [
+        1520,
+        2422
+      ],
+      "sha256": "b2b073daa2b1bce462459db4982840d0895c084ed925599211f0b125822cdd8c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-ja-light.text.json"
+    },
+    {
+      "name": "home-alerts-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-ko-dark.png",
+      "size": [
+        1520,
+        2422
+      ],
+      "sha256": "75737108d23548c7a27c98b3d289144c52ef5f423586148676f524d6abd17243",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-ko-dark.text.json"
+    },
+    {
+      "name": "home-alerts-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-ko-light.png",
+      "size": [
+        1520,
+        2422
+      ],
+      "sha256": "396eb91e3693bd742794e6412c4e6aef19d47a17527badeb5092caac0b71cea7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-ko-light.text.json"
+    },
+    {
+      "name": "home-alerts-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-zh-Hans-light.png",
+      "size": [
+        1520,
+        2422
+      ],
+      "sha256": "2e2225baf1d62c98774828b72f5dd555f89b92863482a7b8fc6f967648f44714",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-zh-Hans-light.text.json"
+    },
+    {
+      "name": "home-alerts-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-zh-Hant-light.png",
+      "size": [
+        1520,
+        2422
+      ],
+      "sha256": "de856026a004b065fddfe2d1dcf09469072d1c0afdaec1e6a01f6276ec7f6555",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-alerts-zh-Hant-light.text.json"
+    },
+    {
+      "name": "home-empty-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-en-dark.png",
+      "size": [
+        1520,
+        1102
+      ],
+      "sha256": "5882bce4b2e64e7bed954fb48dc56c93fa0933a57bcf36277f7846ee70454ab7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-en-dark.text.json"
+    },
+    {
+      "name": "home-empty-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-en-light.png",
+      "size": [
+        1520,
+        1102
+      ],
+      "sha256": "f8e2ab41e132b21e85794dacd8376d0dfc07f5611b4e0726cc03507cbed74325",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-en-light.text.json"
+    },
+    {
+      "name": "home-empty-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-ja-light.png",
+      "size": [
+        1520,
+        1102
+      ],
+      "sha256": "21b37605fad44a9842c87cedd8615154274a2e64e39df391ee997397aeb50cf9",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-ja-light.text.json"
+    },
+    {
+      "name": "home-empty-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-ko-dark.png",
+      "size": [
+        1520,
+        1102
+      ],
+      "sha256": "d92ef328a590e9f508b1e4504267cb9948362cb781591618c67d1a02b9353fd6",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-ko-dark.text.json"
+    },
+    {
+      "name": "home-empty-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-ko-light.png",
+      "size": [
+        1520,
+        1102
+      ],
+      "sha256": "98cd1f969196728d67053ae6f76288d17ffde41a2042df107b72749c1acb12bf",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-ko-light.text.json"
+    },
+    {
+      "name": "home-empty-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-zh-Hans-light.png",
+      "size": [
+        1520,
+        1102
+      ],
+      "sha256": "07b5e046581a4e0d14abd95d79cfa38bd8b8bd496083ecbf14dc60698852a308",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-zh-Hans-light.text.json"
+    },
+    {
+      "name": "home-empty-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-zh-Hant-light.png",
+      "size": [
+        1520,
+        1102
+      ],
+      "sha256": "30aa38a1949b8dd0ea63bff6d36a6f60e3f954412952fea40e2dc4b4f4ef1865",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-empty-zh-Hant-light.text.json"
+    },
+    {
+      "name": "home-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-en-dark.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "bcf875a56390afbf97c8a2b9f16d82a28b3cf06dc7a5c923f2f82ffc5111c1ff",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-en-dark.text.json"
+    },
+    {
+      "name": "home-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-en-light.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "873cbd259888fd136d85e7cccb381e560958ea5b239f0a13848bd632d41629cb",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-en-light.text.json"
+    },
+    {
+      "name": "home-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-ja-light.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "03d590b3c679dbbc0b54291d3246d956931652d1a23192597b99b758e1981877",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-ja-light.text.json"
+    },
+    {
+      "name": "home-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-ko-dark.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "b15738ed6df9c02f0546b4bb3345f643db65915831124b10d92187571f29e1c5",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-ko-dark.text.json"
+    },
+    {
+      "name": "home-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-ko-light.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "97e892d7dd127e7837c6eed818cd3be91f72da98353be140d031921a981bdb21",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-ko-light.text.json"
+    },
+    {
+      "name": "home-narrow-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-en-dark.png",
+      "size": [
+        760,
+        2176
+      ],
+      "sha256": "c408c1be0c373979b1a4c5e8d1eb836544f57c9f2e5f5d9f18edbc0d844b9c29",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-en-dark.text.json"
+    },
+    {
+      "name": "home-narrow-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-en-light.png",
+      "size": [
+        760,
+        2176
+      ],
+      "sha256": "811575dcad5d88ecc33d2db4a789fff34cc2722ac41440281fa4ddc29195cada",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-en-light.text.json"
+    },
+    {
+      "name": "home-narrow-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-ja-light.png",
+      "size": [
+        760,
+        2338
+      ],
+      "sha256": "ee41a7bed8a6c32bbc303dec4dcc9ee88e04b1accd1478d5aae85e4cc3861082",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-ja-light.text.json"
+    },
+    {
+      "name": "home-narrow-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-ko-dark.png",
+      "size": [
+        760,
+        2122
+      ],
+      "sha256": "eac4a983d09d3fff8f51a10433a5149589bc4a8b08323ffd75cb524cd7b5abf5",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-ko-dark.text.json"
+    },
+    {
+      "name": "home-narrow-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-ko-light.png",
+      "size": [
+        760,
+        2122
+      ],
+      "sha256": "23df6d7b07656d5867fe642c0424c95023fa5457057e6cf74f37cffa18e4eac7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-ko-light.text.json"
+    },
+    {
+      "name": "home-narrow-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-zh-Hans-light.png",
+      "size": [
+        760,
+        2120
+      ],
+      "sha256": "3e8f2aa6773341bcf56fc4221af51d1405593f9a4b58314c2aba49f316b7bb7f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-zh-Hans-light.text.json"
+    },
+    {
+      "name": "home-narrow-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-zh-Hant-light.png",
+      "size": [
+        760,
+        2116
+      ],
+      "sha256": "e6c8574a7211dec3e1dedd9872d89e390a2641983b9e820976749080421e7177",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-narrow-zh-Hant-light.text.json"
+    },
+    {
+      "name": "home-paused-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-en-dark.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "5662558c0f19ce44854fe185bddc6e6df5cd88fdb0e72bc61c58c5d3845079a5",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-en-dark.text.json"
+    },
+    {
+      "name": "home-paused-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-en-light.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "3b0a5ccd0b836dee3c8b5cd6294cfb9ced383b4c8539cd1741bc82db5df56c6d",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-en-light.text.json"
+    },
+    {
+      "name": "home-paused-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-ja-light.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "a8def54c190e81ac1d525e28c44ad24edc1597434767daaeb41112167bc5436c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-ja-light.text.json"
+    },
+    {
+      "name": "home-paused-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-ko-dark.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "13961f5e67279d25718d048d0b1652bf12dbe1aa27a64016b93c7241fe7b4aa8",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-ko-dark.text.json"
+    },
+    {
+      "name": "home-paused-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-ko-light.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "aefe824b0240b33bb976b7e9a6b43d66da380e814bc1946d19d94c2212b7ea03",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-ko-light.text.json"
+    },
+    {
+      "name": "home-paused-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-zh-Hans-light.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "affccf1780e2cba38029a57277800131b45f5acc9cca16d243754b9aa4d5e09f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-zh-Hans-light.text.json"
+    },
+    {
+      "name": "home-paused-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-zh-Hant-light.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "c78fb6bafad602cc1c7323ecd00a693afc12de97a916c0944a8734fadedc4ec9",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-paused-zh-Hant-light.text.json"
+    },
+    {
+      "name": "home-verifying-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-en-dark.png",
+      "size": [
+        1520,
+        1778
+      ],
+      "sha256": "11f7d9ab7f61c7a68faf5c14e7f7c1781292b452ccb0b64a591dc01beda67caa",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-en-dark.text.json"
+    },
+    {
+      "name": "home-verifying-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-en-light.png",
+      "size": [
+        1520,
+        1778
+      ],
+      "sha256": "f5f06c2d59e3a3fb449611d1b084fb3a78bb3bc32b48aa2e49b23d48ea21d4e0",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-en-light.text.json"
+    },
+    {
+      "name": "home-verifying-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-ja-light.png",
+      "size": [
+        1520,
+        1778
+      ],
+      "sha256": "54233e495aa6412e1670f2614088587c7ce2691adb928c0ae11592f5c1f81a7a",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-ja-light.text.json"
+    },
+    {
+      "name": "home-verifying-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-ko-dark.png",
+      "size": [
+        1520,
+        1778
+      ],
+      "sha256": "a3f79bd96b052803ba1361df39dcea289f7bf72852dfb982148ddbab214d9b4e",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-ko-dark.text.json"
+    },
+    {
+      "name": "home-verifying-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-ko-light.png",
+      "size": [
+        1520,
+        1778
+      ],
+      "sha256": "d608465f03eea23b3f4566225222cf8e192706d5c45215e1ebd77ad3d64b6803",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-ko-light.text.json"
+    },
+    {
+      "name": "home-verifying-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-zh-Hans-light.png",
+      "size": [
+        1520,
+        1778
+      ],
+      "sha256": "a18489bb22b4c979fefcebb0ff1342ef1bb80fad388b29ac873d4351dac97e9c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-zh-Hans-light.text.json"
+    },
+    {
+      "name": "home-verifying-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-zh-Hant-light.png",
+      "size": [
+        1520,
+        1778
+      ],
+      "sha256": "10d87af24f035239248adfa7463d08679b81bc72ca6798ff065e2c0b5dd41612",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-verifying-zh-Hant-light.text.json"
+    },
+    {
+      "name": "home-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-zh-Hans-light.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "24fc63aab934e9b5335984c761b7d3a6ea7c270862283a1ed584888bd2b5e9ac",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-zh-Hans-light.text.json"
+    },
+    {
+      "name": "home-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-zh-Hant-light.png",
+      "size": [
+        1520,
+        1994
+      ],
+      "sha256": "5e1aafab025519f0a8b8e6ee7526b21fa014fd705401ba006825eb8881f6d5f3",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/home-zh-Hant-light.text.json"
+    },
+    {
+      "name": "menubar-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-en-dark.png",
+      "size": [
+        600,
+        718
+      ],
+      "sha256": "27fa0d0f2333a01de6359ea22670da40ec1510e2165a0dbb0902671d457edaa5",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-en-dark.text.json"
+    },
+    {
+      "name": "menubar-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-en-light.png",
+      "size": [
+        600,
+        718
+      ],
+      "sha256": "7470da2c6237db02eefec44beefc776beb794464296095b23f014fa457608215",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-en-light.text.json"
+    },
+    {
+      "name": "menubar-health-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-en-dark.png",
+      "size": [
+        600,
+        710
+      ],
+      "sha256": "4a1fe7785fecfccf040b12f74d570905350ae2325f99247d803b60ea20da04e9",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-en-dark.text.json"
+    },
+    {
+      "name": "menubar-health-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-en-light.png",
+      "size": [
+        600,
+        710
+      ],
+      "sha256": "81721210525661193b32748c2b96e8c9195c41f03b4705a4d23080c1b292fc7f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-en-light.text.json"
+    },
+    {
+      "name": "menubar-health-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-ja-light.png",
+      "size": [
+        600,
+        710
+      ],
+      "sha256": "0a793c9e5e34d637da74f4a95b23bf5983100b6bd9e19301ab05c9a9572b3f96",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-ja-light.text.json"
+    },
+    {
+      "name": "menubar-health-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-ko-dark.png",
+      "size": [
+        600,
+        710
+      ],
+      "sha256": "2c7d216f3ef3557f27cd79a1ee07a164c174d86080788c71105bce57e6f6aebc",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-ko-dark.text.json"
+    },
+    {
+      "name": "menubar-health-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-ko-light.png",
+      "size": [
+        600,
+        710
+      ],
+      "sha256": "42a953748198a96a4f905f29db781f32cfc98061566813a51eef71e9506cf86c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-ko-light.text.json"
+    },
+    {
+      "name": "menubar-health-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-zh-Hans-light.png",
+      "size": [
+        600,
+        710
+      ],
+      "sha256": "f253671e83ea4191d16c613c4c293147f3eb905fe580ecb2a01326df9cddff34",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-zh-Hans-light.text.json"
+    },
+    {
+      "name": "menubar-health-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-zh-Hant-light.png",
+      "size": [
+        600,
+        710
+      ],
+      "sha256": "3cc04d6bf36526c0c39189ccabda9027359c5cd2e00774c2eaf173b8e10e101d",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-health-zh-Hant-light.text.json"
+    },
+    {
+      "name": "menubar-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-ja-light.png",
+      "size": [
+        600,
+        718
+      ],
+      "sha256": "6ad04af53df219974854a53bea9f778ccd865524dc42480b95dd5a463f4146da",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-ja-light.text.json"
+    },
+    {
+      "name": "menubar-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-ko-dark.png",
+      "size": [
+        600,
+        718
+      ],
+      "sha256": "baf2fb664bc65f105cd9805948f519bde7d8de123c8e789b62540bf8c8499eba",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-ko-dark.text.json"
+    },
+    {
+      "name": "menubar-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-ko-light.png",
+      "size": [
+        600,
+        718
+      ],
+      "sha256": "2fd163363c9ddd7c71cdc6b5963f0494223d4d3ab075bcfcc0c7e46838edb262",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-ko-light.text.json"
+    },
+    {
+      "name": "menubar-qr-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-en-dark.png",
+      "size": [
+        600,
+        746
+      ],
+      "sha256": "c9f46abc7c6457db49f086bcbdd6ace65db62670e7a7f91e7dadccdab3893124",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-en-dark.text.json"
+    },
+    {
+      "name": "menubar-qr-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-en-light.png",
+      "size": [
+        600,
+        746
+      ],
+      "sha256": "9934d2b72fc2c1b98db0ddc131d7bbf38bc8c8c2e1de182fb677f8f9dd8d4f3c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-en-light.text.json"
+    },
+    {
+      "name": "menubar-qr-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-ja-light.png",
+      "size": [
+        600,
+        746
+      ],
+      "sha256": "ca533dba424d79ccd7daafa1236d132addfc123c0a680b7bfc8583c3ce688b57",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-ja-light.text.json"
+    },
+    {
+      "name": "menubar-qr-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-ko-dark.png",
+      "size": [
+        600,
+        746
+      ],
+      "sha256": "1ab14bcf4997fcd827b73e1bc9326b36f5e459c9f991a100b9ee533c74383e0d",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-ko-dark.text.json"
+    },
+    {
+      "name": "menubar-qr-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-ko-light.png",
+      "size": [
+        600,
+        746
+      ],
+      "sha256": "6ab101db2926cfe34554ea76d1096a3276ce3a364d9ae4ac176416b5c404f333",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-ko-light.text.json"
+    },
+    {
+      "name": "menubar-qr-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-zh-Hans-light.png",
+      "size": [
+        600,
+        746
+      ],
+      "sha256": "d97baf0a6e7b28104217d247bde4b979f6b55b5430e9fd8a9b204652f5dd4212",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-zh-Hans-light.text.json"
+    },
+    {
+      "name": "menubar-qr-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-zh-Hant-light.png",
+      "size": [
+        600,
+        746
+      ],
+      "sha256": "9cf4d74360cd65c4a02c9a12ea6de185eaa01ba8406c442c7c4cd291b381e356",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-qr-zh-Hant-light.text.json"
+    },
+    {
+      "name": "menubar-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-zh-Hans-light.png",
+      "size": [
+        600,
+        718
+      ],
+      "sha256": "b2249c180b4d4e3aef6a5d415c9c389fe8abe2d08982c610800a4abe98ee5fbb",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-zh-Hans-light.text.json"
+    },
+    {
+      "name": "menubar-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-zh-Hant-light.png",
+      "size": [
+        600,
+        718
+      ],
+      "sha256": "41a54f87b98dcef362bd4278791398b832df13bc34e389957f2803638aa8edd6",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/menubar-zh-Hant-light.text.json"
+    },
+    {
+      "name": "network-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-en-dark.png",
+      "size": [
+        1520,
+        3636
+      ],
+      "sha256": "2e94c956e7fb2bbe487008a99a8499358143bcfaa6df275f985ce4bad11ef2ed",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-en-dark.text.json"
+    },
+    {
+      "name": "network-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-en-light.png",
+      "size": [
+        1520,
+        3636
+      ],
+      "sha256": "c8964060fbaa8f1243d8ed8f1a7219f10284110bfafac70fa861a2e11b21d9fa",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-en-light.text.json"
+    },
+    {
+      "name": "network-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-ja-light.png",
+      "size": [
+        1520,
+        3640
+      ],
+      "sha256": "2c85c7f72329adeca030a0e0d87ab236f441a41bb7faf652fb2d3fd87388cb86",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-ja-light.text.json"
+    },
+    {
+      "name": "network-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-ko-dark.png",
+      "size": [
+        1520,
+        3576
+      ],
+      "sha256": "0f9d14b931bc1c53da74990181cffd902f1bf95926f3836943eabf4de4fe8456",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-ko-dark.text.json"
+    },
+    {
+      "name": "network-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-ko-light.png",
+      "size": [
+        1520,
+        3576
+      ],
+      "sha256": "48b8b0d71e787a2bfba7f613636f5e24cb5891369e92040ead235b754c9fbedd",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-ko-light.text.json"
+    },
+    {
+      "name": "network-verifying-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-en-dark.png",
+      "size": [
+        1520,
+        3288
+      ],
+      "sha256": "1504e1cec26e046d379a50dace14df31b53ab9e41d06c4b5a54fa42b3dee5792",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-en-dark.text.json"
+    },
+    {
+      "name": "network-verifying-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-en-light.png",
+      "size": [
+        1520,
+        3288
+      ],
+      "sha256": "2b75fddb38f0b2be9e0bfce1802dbd0f4521b346930188d583bb2eef3bdfe107",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-en-light.text.json"
+    },
+    {
+      "name": "network-verifying-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-ja-light.png",
+      "size": [
+        1520,
+        3292
+      ],
+      "sha256": "34ba495b927b6501cc11fb37dcfd8e2d2115822b18b3d001c18333fd58d44a8b",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-ja-light.text.json"
+    },
+    {
+      "name": "network-verifying-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-ko-dark.png",
+      "size": [
+        1520,
+        3228
+      ],
+      "sha256": "34af05b4aa24c9fde4de5eb3cde87fe011f9baa09448169f7e3e1db5b889a8d7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-ko-dark.text.json"
+    },
+    {
+      "name": "network-verifying-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-ko-light.png",
+      "size": [
+        1520,
+        3228
+      ],
+      "sha256": "49abb54071cb6809030a98364a1278b281fbf2b35c24ab2b1f6a6eeba6855abb",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-ko-light.text.json"
+    },
+    {
+      "name": "network-verifying-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-zh-Hans-light.png",
+      "size": [
+        1520,
+        3228
+      ],
+      "sha256": "6ff15798c8acd8cf21642196a242f8b9285fb00e0fdc97e1dd29175bd475e6bd",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-zh-Hans-light.text.json"
+    },
+    {
+      "name": "network-verifying-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-zh-Hant-light.png",
+      "size": [
+        1520,
+        3262
+      ],
+      "sha256": "d67c2ec0d5066a8adc7c2dd0507e17a4ff055457e8d1cbb18d21a6db017fbed4",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-verifying-zh-Hant-light.text.json"
+    },
+    {
+      "name": "network-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-zh-Hans-light.png",
+      "size": [
+        1520,
+        3576
+      ],
+      "sha256": "4f222a6dc8ff9344459cab43a598a12235f3225f2c406829c83879a7e4861351",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-zh-Hans-light.text.json"
+    },
+    {
+      "name": "network-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-zh-Hant-light.png",
+      "size": [
+        1520,
+        3610
+      ],
+      "sha256": "55b8b2781339269b18094bad166628856d24b778a60d5b86e535bf85e80a9d57",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/network-zh-Hant-light.text.json"
+    },
+    {
+      "name": "node-status-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-en-dark.png",
+      "size": [
+        3040,
+        1848
+      ],
+      "sha256": "a53c80ff3f387dddccca43c76db6c19cca2528fb626aadd10f7c615f2263d462",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-en-dark.text.json"
+    },
+    {
+      "name": "node-status-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-en-light.png",
+      "size": [
+        3040,
+        1848
+      ],
+      "sha256": "632d8eeca47b92b8b911ad94e5fe37575170b0357236a85f45ea8f575bff4ecc",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-en-light.text.json"
+    },
+    {
+      "name": "node-status-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-ja-light.png",
+      "size": [
+        3040,
+        1850
+      ],
+      "sha256": "29b26ca195d7d56d5cf280e46c5eab37eb6798db66975b92398c1c30a486d937",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-ja-light.text.json"
+    },
+    {
+      "name": "node-status-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-ko-dark.png",
+      "size": [
+        3040,
+        1725
+      ],
+      "sha256": "e24c6be0b9d26d85df0618c7b2795544e5dfb05a6e53dd01884277f49890e6bd",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-ko-dark.text.json"
+    },
+    {
+      "name": "node-status-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-ko-light.png",
+      "size": [
+        3040,
+        1725
+      ],
+      "sha256": "652da04472d225000c328caf7af97fd91503c1d7081c36348ec7b3edb748bd8e",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-ko-light.text.json"
+    },
+    {
+      "name": "node-status-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-zh-Hans-light.png",
+      "size": [
+        3040,
+        1725
+      ],
+      "sha256": "4697583128962ff9b31de2e1341d382cde4f30c6654b757f8ed2886076108568",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-zh-Hans-light.text.json"
+    },
+    {
+      "name": "node-status-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-zh-Hant-light.png",
+      "size": [
+        3040,
+        1790
+      ],
+      "sha256": "4d9e659fc165a8687effbe0949648febc2053ee5489161799ee418ee15441388",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-status-zh-Hant-light.text.json"
+    },
+    {
+      "name": "node-stop-reasons-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-en-dark.png",
+      "size": [
+        1520,
+        4220
+      ],
+      "sha256": "3919a85d7490f4682ae083b05123048881392cca730a7df746fc8d8d65eedd59",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-en-dark.text.json"
+    },
+    {
+      "name": "node-stop-reasons-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-en-light.png",
+      "size": [
+        1520,
+        4220
+      ],
+      "sha256": "66ab0e3c6bc51c94aeac68f038164880492e6727390f151e803423e6a2d1a1b4",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-en-light.text.json"
+    },
+    {
+      "name": "node-stop-reasons-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-ja-light.png",
+      "size": [
+        1520,
+        4220
+      ],
+      "sha256": "087502e0fb5e9374642580dc5e8d77a28c470adaa6014aa8c91b6bc07f90110c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-ja-light.text.json"
+    },
+    {
+      "name": "node-stop-reasons-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-ko-dark.png",
+      "size": [
+        1520,
+        3980
+      ],
+      "sha256": "c87074bc588fdca44aceae2bc9d8b13815c53b763cd05269b7f1afa622417581",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-ko-dark.text.json"
+    },
+    {
+      "name": "node-stop-reasons-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-ko-light.png",
+      "size": [
+        1520,
+        3980
+      ],
+      "sha256": "15679497ca427544903c20dbfab2227a87592b9e8fc6dff5b0ca97daef75062f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-ko-light.text.json"
+    },
+    {
+      "name": "node-stop-reasons-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-zh-Hans-light.png",
+      "size": [
+        1520,
+        3980
+      ],
+      "sha256": "1c9d2d437904c9c0dc6ed037c54abff1c04136e96a86514864113b925fddcbc0",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-zh-Hans-light.text.json"
+    },
+    {
+      "name": "node-stop-reasons-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-zh-Hant-light.png",
+      "size": [
+        1520,
+        3980
+      ],
+      "sha256": "e1708354ed5ba80f322ed83da201abc74732cdcbb9ee8b49f3ff7742fbeaec87",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/node-stop-reasons-zh-Hant-light.text.json"
+    },
+    {
+      "name": "overlay-migration-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-en-dark.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "4d56157854e2c858482a493415d4134d064ca905202d59cd80ff266038297b3b",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-en-dark.text.json"
+    },
+    {
+      "name": "overlay-migration-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-en-light.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "61523b8f391487cca33901840080b3c4e9846aa013229122bf7eb67a8dc72a7f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-en-light.text.json"
+    },
+    {
+      "name": "overlay-migration-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-ja-light.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "058b8832d85c5dd1c71e9ea82db5986ec7385521d892288197268390dcbecaaa",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-ja-light.text.json"
+    },
+    {
+      "name": "overlay-migration-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-ko-dark.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "e792639d8ea034c1f4df6fca394862a638b2724159960d58fb938f8b9687510a",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-ko-dark.text.json"
+    },
+    {
+      "name": "overlay-migration-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-ko-light.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "62dfdd179d0273268a23ad76352ec5494e2da22f817350b368239a5709620ff5",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-ko-light.text.json"
+    },
+    {
+      "name": "overlay-migration-problem-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-en-dark.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "baa0a865cab49c41a7df17ae7d9e902213ad8b8b5affa1caf0b6c153b49773de",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-en-dark.text.json"
+    },
+    {
+      "name": "overlay-migration-problem-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-en-light.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "217b4df6db5ccb4fa62be0cefee889f9bb9e6edd0a0f03b6faead64cd478422c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-en-light.text.json"
+    },
+    {
+      "name": "overlay-migration-problem-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-ja-light.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "26709edb1495c2e61a1b723632c468b2d6b16078aa540c2a61beefc207ebdcc5",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-ja-light.text.json"
+    },
+    {
+      "name": "overlay-migration-problem-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-ko-dark.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "65180a59a8a78192752bebc26c376f3ae5a95d72a5ad72d7efd30b107b403b0f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-ko-dark.text.json"
+    },
+    {
+      "name": "overlay-migration-problem-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-ko-light.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "a91df4db68bc774c47cba5ca4307f021ae56145b35c60381f4153d7bab448452",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-ko-light.text.json"
+    },
+    {
+      "name": "overlay-migration-problem-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-zh-Hans-light.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "33add96e91c22435ab0f332ec48682a44c7ab72c254bcb29873a167ebca714ec",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-zh-Hans-light.text.json"
+    },
+    {
+      "name": "overlay-migration-problem-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-zh-Hant-light.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "6186b0ba569a05bdbe17938cf3c3a3827d01b2ba77c55523a9fbc26b08548139",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-problem-zh-Hant-light.text.json"
+    },
+    {
+      "name": "overlay-migration-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-zh-Hans-light.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "3c06b85d0dd3cbc11237661b9fe7b957153adba466653dc5adc3fceaefd9b1f1",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-zh-Hans-light.text.json"
+    },
+    {
+      "name": "overlay-migration-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-zh-Hant-light.png",
+      "size": [
+        1280,
+        816
+      ],
+      "sha256": "1182624984092ace9032faa4a0a52310883affb6d8b2f73a9769cd405580b413",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/overlay-migration-zh-Hant-light.text.json"
+    },
+    {
+      "name": "retire-blocked-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-en-dark.png",
+      "size": [
+        720,
+        542
+      ],
+      "sha256": "0682173250f292de29692490f917a178ba7a11443cf05e5a433996878ad2db9f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-en-dark.text.json"
+    },
+    {
+      "name": "retire-blocked-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-en-light.png",
+      "size": [
+        720,
+        542
+      ],
+      "sha256": "b91a8116e66cf895a6437fdbf163cff2c5634682deca8cbc9bcadedb2d2bcfcc",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-en-light.text.json"
+    },
+    {
+      "name": "retire-blocked-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-ja-light.png",
+      "size": [
+        720,
+        544
+      ],
+      "sha256": "982d745bbd775b9039985bc95c565d8675a74f704025c1e4fa39d6d85e655e84",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-ja-light.text.json"
+    },
+    {
+      "name": "retire-blocked-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-ko-dark.png",
+      "size": [
+        720,
+        512
+      ],
+      "sha256": "2c1549e496500883dd60433740f503405fe14fa235bea49cffca487e367782c0",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-ko-dark.text.json"
+    },
+    {
+      "name": "retire-blocked-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-ko-light.png",
+      "size": [
+        720,
+        512
+      ],
+      "sha256": "59d2ea03cccf330395aa9cc67d8d8a2e842208d680deeff76a07c6eba8c9183e",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-ko-light.text.json"
+    },
+    {
+      "name": "retire-blocked-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-zh-Hans-light.png",
+      "size": [
+        720,
+        512
+      ],
+      "sha256": "56c9fca1669d7ce3f7f5f4c2a960226d3e5493acdf8a1ba496f0a8cda21e6927",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-zh-Hans-light.text.json"
+    },
+    {
+      "name": "retire-blocked-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-zh-Hant-light.png",
+      "size": [
+        720,
+        512
+      ],
+      "sha256": "41b0568527ea3e6892fc3618467a98956af7453b4a27c09e7362cd20811cef9e",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/retire-blocked-zh-Hant-light.text.json"
+    },
+    {
+      "name": "security-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-en-dark.png",
+      "size": [
+        1520,
+        3980
+      ],
+      "sha256": "041986936f6b6b56416dff8548f67438ead70ad51e569373e63a91be49b91742",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-en-dark.text.json"
+    },
+    {
+      "name": "security-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-en-light.png",
+      "size": [
+        1520,
+        3980
+      ],
+      "sha256": "0b971788042a163066a5eefe47088c324fb7d2305905546e2bd4f794d2868409",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-en-light.text.json"
+    },
+    {
+      "name": "security-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-ja-light.png",
+      "size": [
+        1520,
+        3922
+      ],
+      "sha256": "1d68113962a745f80ade9b725d55348e612317fd1171eaaf9643539bad3ed4ef",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-ja-light.text.json"
+    },
+    {
+      "name": "security-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-ko-dark.png",
+      "size": [
+        1520,
+        3838
+      ],
+      "sha256": "60a8fb5741a9065276f074a11c82261b02a1787df5b37c0ed7222d30698a5162",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-ko-dark.text.json"
+    },
+    {
+      "name": "security-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-ko-light.png",
+      "size": [
+        1520,
+        3838
+      ],
+      "sha256": "c12c1145ef13284b80d57b8bdfdd27c6539c8b2c205923c089b6ed4631445418",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-ko-light.text.json"
+    },
+    {
+      "name": "security-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-zh-Hans-light.png",
+      "size": [
+        1520,
+        3776
+      ],
+      "sha256": "cd56878f535ee6deedbe66e3b86cc4e46e1b1986fee68336f9922b5244da223c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-zh-Hans-light.text.json"
+    },
+    {
+      "name": "security-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-zh-Hant-light.png",
+      "size": [
+        1520,
+        3776
+      ],
+      "sha256": "754aa334a2c9be8bdb2bfb4d1567689e7a30104398171060081d448290279125",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/security-zh-Hant-light.text.json"
+    },
+    {
+      "name": "settings-developer-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-en-dark.png",
+      "size": [
+        920,
+        1914
+      ],
+      "sha256": "5015f8aafb4fcd95917416be490e3f52579bb3429ebda2370673f4a7c26a63dc",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-en-dark.text.json"
+    },
+    {
+      "name": "settings-developer-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-en-light.png",
+      "size": [
+        920,
+        1914
+      ],
+      "sha256": "a23be33252125e2a9fcc5a3e4ce42ed34bdc0bc85aa046831a89da8a37bf97b7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-en-light.text.json"
+    },
+    {
+      "name": "settings-developer-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-ja-light.png",
+      "size": [
+        920,
+        1940
+      ],
+      "sha256": "59ace9f8434fb839c41b003cde67974c4c8faffb78c683063f6879adeaf51948",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-ja-light.text.json"
+    },
+    {
+      "name": "settings-developer-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-ko-dark.png",
+      "size": [
+        920,
+        1654
+      ],
+      "sha256": "233efe434411661ba241d970795f9a48b97d034d0620ee0639aa73870c5060fe",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-ko-dark.text.json"
+    },
+    {
+      "name": "settings-developer-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-ko-light.png",
+      "size": [
+        920,
+        1654
+      ],
+      "sha256": "6f8d30d3d55e9da1d7643c6544aa685f8a41a8861953f16d568df98e2e9ce7c6",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-ko-light.text.json"
+    },
+    {
+      "name": "settings-developer-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-zh-Hans-light.png",
+      "size": [
+        920,
+        1576
+      ],
+      "sha256": "21f04ff4a3bf2ed945c18b742ac0fafeae51565f5f6cd0c409dcb1bc995b9a0f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-zh-Hans-light.text.json"
+    },
+    {
+      "name": "settings-developer-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-zh-Hant-light.png",
+      "size": [
+        920,
+        1602
+      ],
+      "sha256": "b8535d58098cd6ba39a7682c16303a65687b5c84f44041d6045f241aa2f267b7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-developer-zh-Hant-light.text.json"
+    },
+    {
+      "name": "settings-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-en-dark.png",
+      "size": [
+        920,
+        1624
+      ],
+      "sha256": "e8b0281308b2d7f38c5aee65d61669276d7cb7f6f05fde525488969ed23f23a0",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-en-dark.text.json"
+    },
+    {
+      "name": "settings-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-en-light.png",
+      "size": [
+        920,
+        1624
+      ],
+      "sha256": "f9c3d892f012a76e2ac4e290acc2ac815cc994f564134b0d824eb8f2d7e5a7be",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-en-light.text.json"
+    },
+    {
+      "name": "settings-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-ja-light.png",
+      "size": [
+        920,
+        1702
+      ],
+      "sha256": "08678f17483422b8bf817706187b82111b6cf26d9a742f881db6051fffb50803",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-ja-light.text.json"
+    },
+    {
+      "name": "settings-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-ko-dark.png",
+      "size": [
+        920,
+        1312
+      ],
+      "sha256": "6b3cad110e01d541c46c7c97d9bd751615e092ec62213d4dfe527871fd89205a",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-ko-dark.text.json"
+    },
+    {
+      "name": "settings-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-ko-light.png",
+      "size": [
+        920,
+        1312
+      ],
+      "sha256": "b69c426759f92ce8c194a51dc02e3f7b81ca1e30a4b006e681af69d149cf4358",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-ko-light.text.json"
+    },
+    {
+      "name": "settings-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-zh-Hans-light.png",
+      "size": [
+        920,
+        1260
+      ],
+      "sha256": "38aebfcab5d588c692e96d05c8d3d580ea7cc6bc1d9df983e312bb40eafe3d9b",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-zh-Hans-light.text.json"
+    },
+    {
+      "name": "settings-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-zh-Hant-light.png",
+      "size": [
+        920,
+        1260
+      ],
+      "sha256": "a2646fb946f79c317f8e6106c17e8aaee15de019282088175abcdb319075eedd",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/settings-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-archive-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-en-dark.png",
+      "size": [
+        920,
+        536
+      ],
+      "sha256": "8f5444f27bc21215f3f96fa6f124678e1328f8076b8850d49f2e01cc9dacaf2d",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-en-dark.text.json"
+    },
+    {
+      "name": "sheet-archive-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-en-light.png",
+      "size": [
+        920,
+        536
+      ],
+      "sha256": "30ab7027e64da58ce5d2f69b5e61eac2ef6217121ab6bbf5f7bf77e4e2f4bdd5",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-en-light.text.json"
+    },
+    {
+      "name": "sheet-archive-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-ja-light.png",
+      "size": [
+        920,
+        508
+      ],
+      "sha256": "74c8363510bfd797d19ef1b09002ff5fd6383e429c0aec44db48f683ae0643d7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-ja-light.text.json"
+    },
+    {
+      "name": "sheet-archive-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-ko-dark.png",
+      "size": [
+        920,
+        508
+      ],
+      "sha256": "25fb49af34387cbf57f140c9ac4fad4885cd2dedfcac7d4cc511004a3acea44c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-archive-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-ko-light.png",
+      "size": [
+        920,
+        508
+      ],
+      "sha256": "7161e90cdc6f09d1dd2eee1d76d0edf23c77976f111ea1022f0442553b1fe4f6",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-ko-light.text.json"
+    },
+    {
+      "name": "sheet-archive-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-zh-Hans-light.png",
+      "size": [
+        920,
+        474
+      ],
+      "sha256": "5d3753c3ce2f280783849edafbf08a69c05cbabf86a7a31a7c4cef5a5bd9bc04",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-archive-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-zh-Hant-light.png",
+      "size": [
+        920,
+        474
+      ],
+      "sha256": "ba06315e39e7adabb62c509f33277cb6aead1eff5aefe6f250f99cecd8a1cfb1",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-archive-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-assets-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-en-dark.png",
+      "size": [
+        920,
+        930
+      ],
+      "sha256": "57f99b42ac235c3da702a1a953daee82362a0415fe469d1e01a84817f2865337",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-en-dark.text.json"
+    },
+    {
+      "name": "sheet-assets-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-en-light.png",
+      "size": [
+        920,
+        930
+      ],
+      "sha256": "95b0ad7af9e291f91a67e88394fb68cfd33cdfeeb564b7213599e0b7c62c4969",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-en-light.text.json"
+    },
+    {
+      "name": "sheet-assets-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-ja-light.png",
+      "size": [
+        920,
+        930
+      ],
+      "sha256": "be2d788915417025885f54226bdad44a5f8e9feea0fdfc77a884e234e9e84889",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-ja-light.text.json"
+    },
+    {
+      "name": "sheet-assets-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-ko-dark.png",
+      "size": [
+        920,
+        930
+      ],
+      "sha256": "5677e6de58776df24581cec71402fc718117983c580ec39ef187330d8493c52f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-assets-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-ko-light.png",
+      "size": [
+        920,
+        930
+      ],
+      "sha256": "ddbd4b48d945868194435ccdac8c845b44f39158eac4b5214e6e514bedf096eb",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-ko-light.text.json"
+    },
+    {
+      "name": "sheet-assets-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-zh-Hans-light.png",
+      "size": [
+        920,
+        930
+      ],
+      "sha256": "e2f695ffce47ae6c42a80082879d962224057182f5f3e59e59ea89394d6c35f6",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-assets-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-zh-Hant-light.png",
+      "size": [
+        920,
+        930
+      ],
+      "sha256": "51aa5daeb7b0520c6e4a7ec9af404d2f31cb4db0f66e8ebc47c076850b275dda",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-assets-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-call-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-en-dark.png",
+      "size": [
+        960,
+        672
+      ],
+      "sha256": "b6e7fb6ea129622a09c2799004f2177304f30c51c9d7194c43c0f4b8ea943eb6",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-en-dark.text.json"
+    },
+    {
+      "name": "sheet-call-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-en-light.png",
+      "size": [
+        960,
+        672
+      ],
+      "sha256": "1fe118456e9ed9d8aaf87fa475957317f96fca08806547a985c7e9c8ddf395a9",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-en-light.text.json"
+    },
+    {
+      "name": "sheet-call-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-ja-light.png",
+      "size": [
+        960,
+        706
+      ],
+      "sha256": "16bd346cc3c38a342eb9971dc497631e05b14003107976f02bc0348122c31065",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-ja-light.text.json"
+    },
+    {
+      "name": "sheet-call-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-ko-dark.png",
+      "size": [
+        960,
+        672
+      ],
+      "sha256": "b9961be6880074ece488ef7eac5d5f2741b2b7c6d75ba444eee7b35d6f64be10",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-call-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-ko-light.png",
+      "size": [
+        960,
+        672
+      ],
+      "sha256": "0935d6ce3b391036d2fec4f1a2f8911c44b8fdf469275a63d19073334f2d8160",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-ko-light.text.json"
+    },
+    {
+      "name": "sheet-call-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-zh-Hans-light.png",
+      "size": [
+        960,
+        640
+      ],
+      "sha256": "961758160f3fd6efc04f08ecf392cd336ee9d0fbc628f400caff3e16ed3cc94b",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-call-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-zh-Hant-light.png",
+      "size": [
+        960,
+        640
+      ],
+      "sha256": "3baf7bba3211c8ccedc1c1773405971b1828a3b809a9faec352a1cef883b3916",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-call-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-connect-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-en-dark.png",
+      "size": [
+        880,
+        316
+      ],
+      "sha256": "3b462bd38cd3af7ae0468c60ea6f364b65f5c49afa52fc9f4281e21069a67f89",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-en-dark.text.json"
+    },
+    {
+      "name": "sheet-connect-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-en-light.png",
+      "size": [
+        880,
+        316
+      ],
+      "sha256": "c15d16d01ec751b2a2c779b11060ec41b07542264027be47e0f42e31e24ee156",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-en-light.text.json"
+    },
+    {
+      "name": "sheet-connect-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-ja-light.png",
+      "size": [
+        880,
+        350
+      ],
+      "sha256": "4f8f033dd7cb26761a7d7d156398321db5f8693d4caedd5499040b6d4f54ecb4",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-ja-light.text.json"
+    },
+    {
+      "name": "sheet-connect-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-ko-dark.png",
+      "size": [
+        880,
+        350
+      ],
+      "sha256": "22cd703b455dce7ea44e9d94ef65ac195f6367f89d52531d8f441696513e1bb9",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-connect-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-ko-light.png",
+      "size": [
+        880,
+        350
+      ],
+      "sha256": "e1750df28a6fc04948c0de08743d5924e97d4b1b196a6fd6b2d22dc60593b40d",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-ko-light.text.json"
+    },
+    {
+      "name": "sheet-connect-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-zh-Hans-light.png",
+      "size": [
+        880,
+        318
+      ],
+      "sha256": "8b0565e3b9c2a0fe168e7249a76cdf48c9ebfa579560820f8bdbdcbef69c3dad",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-connect-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-zh-Hant-light.png",
+      "size": [
+        880,
+        318
+      ],
+      "sha256": "11a27d7bea38ddf445b8d22994cf20f29b7316a9788497dd5d8c458603c54952",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-connect-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-receive-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-en-dark.png",
+      "size": [
+        800,
+        808
+      ],
+      "sha256": "87f8c03d1fa8c30acd8776d9fe30009b2bbc06bc325ee84d445e517c64664fb6",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-en-dark.text.json"
+    },
+    {
+      "name": "sheet-receive-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-en-light.png",
+      "size": [
+        800,
+        808
+      ],
+      "sha256": "2ed99b59a332a428e9cd82442a9c04ea9d34f8edffef3e1ad76e21145f2a3aea",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-en-light.text.json"
+    },
+    {
+      "name": "sheet-receive-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-ja-light.png",
+      "size": [
+        800,
+        808
+      ],
+      "sha256": "a78a2e31ac2cab6b71ecd5cece50fe317864048119d76af712016d474c6d5fed",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-ja-light.text.json"
+    },
+    {
+      "name": "sheet-receive-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-ko-dark.png",
+      "size": [
+        800,
+        808
+      ],
+      "sha256": "367299b20f4799c0b2172b7f47d7636c59710f3d8fef84afafc23a8c0ce0336f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-receive-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-ko-light.png",
+      "size": [
+        800,
+        808
+      ],
+      "sha256": "32d36e98096ae9d132c809a02b638ca71651956d7fa7944cecf4d856613338cc",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-ko-light.text.json"
+    },
+    {
+      "name": "sheet-receive-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-zh-Hans-light.png",
+      "size": [
+        800,
+        808
+      ],
+      "sha256": "c890820f02f1d6e4a9c5465751ac40ead65d3c60354af9a74e77179ea37a7c08",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-receive-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-zh-Hant-light.png",
+      "size": [
+        800,
+        808
+      ],
+      "sha256": "3a3be0d5539d11ceabdf6c1bf9bc0253231591226603deaa2dc65fde65ff490f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-receive-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-send-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-en-dark.png",
+      "size": [
+        920,
+        720
+      ],
+      "sha256": "204a9b056839e6d5a297c46cc781fa38ea72d03754f1a721afd8a67a65db5d8a",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-en-dark.text.json"
+    },
+    {
+      "name": "sheet-send-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-en-light.png",
+      "size": [
+        920,
+        720
+      ],
+      "sha256": "0099cddaa6d365ce8f7be84f9b631f75affb47a80be8ac262d6735653b8e6a6b",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-en-light.text.json"
+    },
+    {
+      "name": "sheet-send-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-ja-light.png",
+      "size": [
+        920,
+        720
+      ],
+      "sha256": "fce33e0c9149b7d9d8c8dc427b0098f2dd993b9639f60e17e16936cbe6fc7038",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-ja-light.text.json"
+    },
+    {
+      "name": "sheet-send-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-ko-dark.png",
+      "size": [
+        920,
+        720
+      ],
+      "sha256": "4605fae1502b47876b986f59116575c4c4a15a15367d55d446761db5c34a369a",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-send-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-ko-light.png",
+      "size": [
+        920,
+        720
+      ],
+      "sha256": "b79cbbdb27547f1d1675b44e0cdf76a063761e1b380cb48f4bf2cea0e3e5ce94",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-ko-light.text.json"
+    },
+    {
+      "name": "sheet-send-link-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-en-dark.png",
+      "size": [
+        920,
+        778
+      ],
+      "sha256": "d9df3ad71be7da151c7b3b9df33579572b10561c873868315bbd536f4fa72bdc",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-en-dark.text.json"
+    },
+    {
+      "name": "sheet-send-link-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-en-light.png",
+      "size": [
+        920,
+        778
+      ],
+      "sha256": "32feaaef5451b9e9131bfa22e2d76bcc498287e1be94c6191396ecc5a759abb4",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-en-light.text.json"
+    },
+    {
+      "name": "sheet-send-link-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-ja-light.png",
+      "size": [
+        920,
+        810
+      ],
+      "sha256": "2f61451f516de713cfcd716ee84dec70f369310cd8b2eb3349d06e26c5550a1f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-ja-light.text.json"
+    },
+    {
+      "name": "sheet-send-link-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-ko-dark.png",
+      "size": [
+        920,
+        748
+      ],
+      "sha256": "36de452fdbf620e33fc4deb327b99f911d55a9b887e0700b1a3c920b64702ef2",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-send-link-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-ko-light.png",
+      "size": [
+        920,
+        748
+      ],
+      "sha256": "bd35648a7681bf7c325d90bfc5b1fa66fb860efd70eb823ef0ca5949ef2534bb",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-ko-light.text.json"
+    },
+    {
+      "name": "sheet-send-link-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-zh-Hans-light.png",
+      "size": [
+        920,
+        748
+      ],
+      "sha256": "cea18f3276adc38a37fdf5017bc0a1aab0abeb0a69309838245d0fa38e5aca3c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-send-link-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-zh-Hant-light.png",
+      "size": [
+        920,
+        748
+      ],
+      "sha256": "95cc2e9331e2f9e452e2113cb26bcf2edf7ff934e2c2561043c178005b406350",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-link-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-send-token-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-en-dark.png",
+      "size": [
+        920,
+        870
+      ],
+      "sha256": "483595551080647038e98cc71f44cf1d188164a785238c3353fffcd82619b207",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-en-dark.text.json"
+    },
+    {
+      "name": "sheet-send-token-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-en-light.png",
+      "size": [
+        920,
+        870
+      ],
+      "sha256": "ff5f695f3d0bfa55d26446ae1b127032b2280f0e6aa8040887a718112f56791f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-en-light.text.json"
+    },
+    {
+      "name": "sheet-send-token-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-ja-light.png",
+      "size": [
+        920,
+        902
+      ],
+      "sha256": "bca6b6e865eb4a035be0e335aa66e150eb6feae2590dafd4d0b9e8f2f05e9c90",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-ja-light.text.json"
+    },
+    {
+      "name": "sheet-send-token-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-ko-dark.png",
+      "size": [
+        920,
+        902
+      ],
+      "sha256": "2a1753f65d4cee15431e6d22da2e755863e307393a93a9ad1ce434bfb764fe1f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-send-token-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-ko-light.png",
+      "size": [
+        920,
+        902
+      ],
+      "sha256": "983ec09c2c64b0109f54abb19d158afe2a16e2ac6ccb4d562270972679240071",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-ko-light.text.json"
+    },
+    {
+      "name": "sheet-send-token-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-zh-Hans-light.png",
+      "size": [
+        920,
+        870
+      ],
+      "sha256": "91cb7955d9b390e939343c3061aa8c8b5fec16137e06658648155fd1c6cadf65",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-send-token-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-zh-Hant-light.png",
+      "size": [
+        920,
+        870
+      ],
+      "sha256": "c180e40338301d1230facf8997ee97f3e705b9a4d90741b09770b0141120cb62",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-token-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-send-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-zh-Hans-light.png",
+      "size": [
+        920,
+        720
+      ],
+      "sha256": "a7e7f15c27e4b60a4aa408a374af82ac1217b10d4b42a7875c6eb72fbd2847cd",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-send-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-zh-Hant-light.png",
+      "size": [
+        920,
+        720
+      ],
+      "sha256": "b988cdf384cb673ffd355b965dcb61ba04f146c72047c596725635afb241e330",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-send-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-site-connect-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-en-dark.png",
+      "size": [
+        960,
+        390
+      ],
+      "sha256": "36cfbaa56c0ce46f36e81b426efdf7a287209fd0ae208bf39837bf3878a17df8",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-en-dark.text.json"
+    },
+    {
+      "name": "sheet-site-connect-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-en-light.png",
+      "size": [
+        960,
+        390
+      ],
+      "sha256": "afcf7d4ffd3a9da75f521ddf8e6082ed7e3d66a1a1583d3e02427be79f8534e7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-en-light.text.json"
+    },
+    {
+      "name": "sheet-site-connect-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-ja-light.png",
+      "size": [
+        960,
+        392
+      ],
+      "sha256": "633fa6844e477cd70e18b112f1f2a958f1065dcca28ad8f478c7ca5c0c57861c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-ja-light.text.json"
+    },
+    {
+      "name": "sheet-site-connect-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-ko-dark.png",
+      "size": [
+        960,
+        360
+      ],
+      "sha256": "b5268a1f502c548db5dbc08330d7a95f7990daf5d44e16fccefbd747b8e60273",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-site-connect-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-ko-light.png",
+      "size": [
+        960,
+        360
+      ],
+      "sha256": "38e34d39265f793e107aab55a80cb49699e92c0d5e262bafc16f95ce1f0279e5",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-ko-light.text.json"
+    },
+    {
+      "name": "sheet-site-connect-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-zh-Hans-light.png",
+      "size": [
+        960,
+        360
+      ],
+      "sha256": "0da90fad6711de3f9b6af73bb49dc1d698d9df81e839fe19e378295c8c5002ce",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-site-connect-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-zh-Hant-light.png",
+      "size": [
+        960,
+        360
+      ],
+      "sha256": "c6cfc52ecb832df29addb37ca5b5210bf5c94f25f8b602a68447f50a35fb57e6",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-connect-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-site-send-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-en-dark.png",
+      "size": [
+        960,
+        628
+      ],
+      "sha256": "33a21d52aec61cea04fa46aca4af0f4c29ab9028909a376f4335643b10391867",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-en-dark.text.json"
+    },
+    {
+      "name": "sheet-site-send-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-en-light.png",
+      "size": [
+        960,
+        628
+      ],
+      "sha256": "9ff90d4a4cfbe7a844a3f36f9a277cb425f799f00bbe2c84d108015b9b338804",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-en-light.text.json"
+    },
+    {
+      "name": "sheet-site-send-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-ja-light.png",
+      "size": [
+        960,
+        630
+      ],
+      "sha256": "0523e97f0c2b404baa71fcb3d408cec41fc8ea7df5f39a058500c70fa030d606",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-ja-light.text.json"
+    },
+    {
+      "name": "sheet-site-send-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-ko-dark.png",
+      "size": [
+        960,
+        600
+      ],
+      "sha256": "ad8469a59e6f78e662f53c2264053aa1aa5ff14538743ed709629bf2e9eb1844",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-site-send-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-ko-light.png",
+      "size": [
+        960,
+        600
+      ],
+      "sha256": "d42878144f1d729dd6fa0305d0560848474ea8c7f1371d62293fa1cb004bd950",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-ko-light.text.json"
+    },
+    {
+      "name": "sheet-site-send-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-zh-Hans-light.png",
+      "size": [
+        960,
+        600
+      ],
+      "sha256": "52aeada09ddb11a59a86435be462d034c83b132fdbc57498ae9d70adea1b4327",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-site-send-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-zh-Hant-light.png",
+      "size": [
+        960,
+        600
+      ],
+      "sha256": "905e524921f39563250d046b7b00545921b99bf15eee11eb382e4ce6d4c46317",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-send-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-site-warning-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-en-dark.png",
+      "size": [
+        920,
+        572
+      ],
+      "sha256": "f1d51e0ab3f8219196dc5e7d1d26a2892d9799aa39f5c5aa9f734afdc8896ba9",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-en-dark.text.json"
+    },
+    {
+      "name": "sheet-site-warning-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-en-light.png",
+      "size": [
+        920,
+        572
+      ],
+      "sha256": "73a23deca46c145bc9209da87549ff5890d08e5fb13d7ac0c44943b291401c49",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-en-light.text.json"
+    },
+    {
+      "name": "sheet-site-warning-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-ja-light.png",
+      "size": [
+        920,
+        574
+      ],
+      "sha256": "262e8496ae22531ce70784114b6cea7d06bc904f018dd8005dfda35d18d5fc21",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-ja-light.text.json"
+    },
+    {
+      "name": "sheet-site-warning-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-ko-dark.png",
+      "size": [
+        920,
+        542
+      ],
+      "sha256": "4b2fc11044d5628d026292d32b3e3ad15e8d1e20f4bd8c88f495b2869e058607",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-site-warning-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-ko-light.png",
+      "size": [
+        920,
+        542
+      ],
+      "sha256": "e0a5dff05c8859f363c959eb82a7217dfad84c888a6feb8dda237b0a376fe00e",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-ko-light.text.json"
+    },
+    {
+      "name": "sheet-site-warning-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-zh-Hans-light.png",
+      "size": [
+        920,
+        510
+      ],
+      "sha256": "752198aff0e390669a0ecc733992456ce213b340412ce03b55bc24fbbe6c22d9",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-site-warning-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-zh-Hant-light.png",
+      "size": [
+        920,
+        510
+      ],
+      "sha256": "34e655d649f1a6e600a690bc5ea99f3a1d45ab73d602e94eb0c29059607dcf3d",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-site-warning-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-terms-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-en-dark.png",
+      "size": [
+        920,
+        1800
+      ],
+      "sha256": "5e438bffcc1d04a09e8527b6a267ad2359689e16b945e64028b812397e4b13af",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-en-dark.text.json"
+    },
+    {
+      "name": "sheet-terms-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-en-light.png",
+      "size": [
+        920,
+        1800
+      ],
+      "sha256": "e6c27f21f632d03ba2bff66cfd490d7b7a177f73f094ee70113448c9e872f985",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-en-light.text.json"
+    },
+    {
+      "name": "sheet-terms-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-ja-light.png",
+      "size": [
+        920,
+        1800
+      ],
+      "sha256": "742efb5073e6fd3848350110e71c479cc8a0a9147dacdf0b8b23ae40455c0c61",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-ja-light.text.json"
+    },
+    {
+      "name": "sheet-terms-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-ko-dark.png",
+      "size": [
+        920,
+        1800
+      ],
+      "sha256": "3b7ea0ebcb1eed962ede9af93cbad0f6b08498cb536abb1106d6119ae8a90141",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-terms-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-ko-light.png",
+      "size": [
+        920,
+        1800
+      ],
+      "sha256": "6c2027d9cef4c628b9919c52245932dcef4493f0276dc2fe8c6cb483ac8eaaa9",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-ko-light.text.json"
+    },
+    {
+      "name": "sheet-terms-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-zh-Hans-light.png",
+      "size": [
+        920,
+        1800
+      ],
+      "sha256": "f61a8420bdd0e7e05f5b540065644abc86420414211dfcd78a99f8b47f89e591",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-terms-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-zh-Hant-light.png",
+      "size": [
+        920,
+        1800
+      ],
+      "sha256": "6f0bd1ab23cf9210ec55d17311c2dcad1597aaddd2d180f994cf09bce91c5ee6",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-terms-zh-Hant-light.text.json"
+    },
+    {
+      "name": "sheet-voting-invite-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-en-dark.png",
+      "size": [
+        880,
+        1124
+      ],
+      "sha256": "18d262dcadb0990115a97f3f368a4b87912179deba4f2a27e9113082fa846eab",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-en-dark.text.json"
+    },
+    {
+      "name": "sheet-voting-invite-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-en-light.png",
+      "size": [
+        880,
+        1124
+      ],
+      "sha256": "aedde3ed1e64c7f13884eb1c3f45e34659be5b8ec3711f63d538df711d74a565",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-en-light.text.json"
+    },
+    {
+      "name": "sheet-voting-invite-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-ja-light.png",
+      "size": [
+        880,
+        1064
+      ],
+      "sha256": "c54d21f6e03da3a7b8ea6d31aff98c21664eb07f476f2df9676fb9297079c1c7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-ja-light.text.json"
+    },
+    {
+      "name": "sheet-voting-invite-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-ko-dark.png",
+      "size": [
+        880,
+        1004
+      ],
+      "sha256": "cbc740cff4984d466ab7a4e552a5f91ee325f91d8997bfa638e1372ba31421f4",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-ko-dark.text.json"
+    },
+    {
+      "name": "sheet-voting-invite-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-ko-light.png",
+      "size": [
+        880,
+        1004
+      ],
+      "sha256": "d6ebf17f199e56d0050f51626f7104f00bfaaae1e04e9a77b147974e215eb7de",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-ko-light.text.json"
+    },
+    {
+      "name": "sheet-voting-invite-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-zh-Hans-light.png",
+      "size": [
+        880,
+        944
+      ],
+      "sha256": "c3f87be825fb2afaab5eef2d14a32740f85d6de82a0fa7f3f55a84f64afe288b",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-zh-Hans-light.text.json"
+    },
+    {
+      "name": "sheet-voting-invite-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-zh-Hant-light.png",
+      "size": [
+        880,
+        974
+      ],
+      "sha256": "fcf7c8dd8b075cf9c3b5787b24e48f2e7c27d3c6b4370189a7fd215a252df768",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/sheet-voting-invite-zh-Hant-light.text.json"
+    },
+    {
+      "name": "switcher-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-en-dark.png",
+      "size": [
+        680,
+        548
+      ],
+      "sha256": "deb3f28f15b50d429bc4c9ab35c8985b87b3dbe0b60b9dd6c0f89ea3c718ca9c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-en-dark.text.json"
+    },
+    {
+      "name": "switcher-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-en-light.png",
+      "size": [
+        680,
+        548
+      ],
+      "sha256": "7324d875942b378f12f76b830309b5d0e017ff69e859ee2783779fabbe4bcb83",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-en-light.text.json"
+    },
+    {
+      "name": "switcher-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-ja-light.png",
+      "size": [
+        680,
+        548
+      ],
+      "sha256": "a0ea158d17ca19531c82df6e1fe69bfa8574247280b420d6afc818bc983fe8f8",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-ja-light.text.json"
+    },
+    {
+      "name": "switcher-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-ko-dark.png",
+      "size": [
+        680,
+        548
+      ],
+      "sha256": "8d274cd3581ae080bfea04568a77911c02844128766f1375fb6bacf33036f7b7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-ko-dark.text.json"
+    },
+    {
+      "name": "switcher-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-ko-light.png",
+      "size": [
+        680,
+        548
+      ],
+      "sha256": "81a047e2b82a45f9006015d6da44dcf9459b4c89a2d6fe1a519d4ea58a1c3299",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-ko-light.text.json"
+    },
+    {
+      "name": "switcher-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-zh-Hans-light.png",
+      "size": [
+        680,
+        548
+      ],
+      "sha256": "7ece381279f193b8c139aa11983d1ecda301f83dcabe6f6e2e8427b1dfac6d44",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-zh-Hans-light.text.json"
+    },
+    {
+      "name": "switcher-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-zh-Hant-light.png",
+      "size": [
+        680,
+        548
+      ],
+      "sha256": "ebf87b4ea7e61b445000006e9d2c188c5c9f124ceedc05411c93799c62aef67a",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/switcher-zh-Hant-light.text.json"
+    },
+    {
+      "name": "two-accounts-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-en-dark.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "a80dd2907ed2893dd58b4462d558dba1b982e524b01328929078b5f19f1f6349",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-en-dark.text.json"
+    },
+    {
+      "name": "two-accounts-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-en-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "b5646728609914cb7c51e8a3356530df0a638d27d1cc797bec2ed8b8e317dd42",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-en-light.text.json"
+    },
+    {
+      "name": "two-accounts-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-ja-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "7e4b644be5471510cda9f62841751bc24d8d8cb11012f7db71410e1a95da5064",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-ja-light.text.json"
+    },
+    {
+      "name": "two-accounts-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-ko-dark.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "4ac5f6dd1e1ff17edaa5af1ce82b87cc404b1553410ed9e2e7b269f3121128bb",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-ko-dark.text.json"
+    },
+    {
+      "name": "two-accounts-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-ko-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "4098166cd2818af4c4d7efe6b4c3f31a00c34ba661c2d5a79c511e33f544e968",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-ko-light.text.json"
+    },
+    {
+      "name": "two-accounts-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-zh-Hans-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "8c5d2e9abdc3364edac6515676569f110378c028a29cd519e582018f4058dccd",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-zh-Hans-light.text.json"
+    },
+    {
+      "name": "two-accounts-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-zh-Hant-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "ce349555c2420507f63566a7482387368348052ba7afe74b7354f7cdd75f4643",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/two-accounts-zh-Hant-light.text.json"
+    },
+    {
+      "name": "validator-candidate-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-en-dark.png",
+      "size": [
+        1520,
+        254
+      ],
+      "sha256": "3a3580d02bc6d1102d540bbf315b065d8ed4f3ec9f9f62ebb6a5d65b1a423e92",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-en-dark.text.json"
+    },
+    {
+      "name": "validator-candidate-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-en-light.png",
+      "size": [
+        1520,
+        254
+      ],
+      "sha256": "bb9e2ea2172fac3cdf5a9a03c1e40bcee2fe2e2312f276d98b2da81a5a5c618e",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-en-light.text.json"
+    },
+    {
+      "name": "validator-candidate-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-ja-light.png",
+      "size": [
+        1520,
+        256
+      ],
+      "sha256": "24a8271c2d2927c5bdbc5415c9f78ce9682f11d1771c95837de4b324e303b4e7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-ja-light.text.json"
+    },
+    {
+      "name": "validator-candidate-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-ko-dark.png",
+      "size": [
+        1520,
+        256
+      ],
+      "sha256": "5d61fa05d435144360d1e2848cc3869e096b4bad08c4f6cecf871d17d67e631e",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-ko-dark.text.json"
+    },
+    {
+      "name": "validator-candidate-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-ko-light.png",
+      "size": [
+        1520,
+        256
+      ],
+      "sha256": "ebd3ceaa326e3d5d8e846a2cf69d2fb8b99a4399bffb8f73b4bc52b87f812ac9",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-ko-light.text.json"
+    },
+    {
+      "name": "validator-candidate-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-zh-Hans-light.png",
+      "size": [
+        1520,
+        256
+      ],
+      "sha256": "8515fe90c28f58f3bbfe92042237b24676516c50e7a3e15087dfe519d1f0e07e",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-zh-Hans-light.text.json"
+    },
+    {
+      "name": "validator-candidate-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-zh-Hant-light.png",
+      "size": [
+        1520,
+        256
+      ],
+      "sha256": "529d2a0a1207a13c818cf87505a343ba0f2c2add732ad43e828b0ccf13cfb2c6",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/validator-candidate-zh-Hant-light.text.json"
+    },
+    {
+      "name": "window-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-en-dark.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "8103e7f860864f83224dfedadcdf01f4fb8673645fa6a5c0b3331117d65cb43f",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-en-dark.text.json"
+    },
+    {
+      "name": "window-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-en-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "774f5169f8d0f63a76dd36598af531a46d260bd237947b8a86c04818bb967bb9",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-en-light.text.json"
+    },
+    {
+      "name": "window-explore-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-en-dark.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "85dcbcf0a206e3f02b6f0db85f23c2113136528aacadc6b4694552c992d1a83a",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-en-dark.text.json"
+    },
+    {
+      "name": "window-explore-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-en-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "2430ec3bb5ca9bf1a703e3bc415fb41a38f6e445923cef16efef28b832905770",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-en-light.text.json"
+    },
+    {
+      "name": "window-explore-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-ja-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "79dada5df799570bf8dc90463081b86327e7556ca08d307f19cda073d645e06d",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-ja-light.text.json"
+    },
+    {
+      "name": "window-explore-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-ko-dark.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "0e6bb376e8e9d4744da694d0ad918935f67c73fadf21426f0abda9c6632b8f57",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-ko-dark.text.json"
+    },
+    {
+      "name": "window-explore-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-ko-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "ed9e44f898e3f9505e45424bb10b3a0dce67eea9ee0707a41c7e48997df39161",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-ko-light.text.json"
+    },
+    {
+      "name": "window-explore-narrow-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-en-dark.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "906d2e9898267ec527d328ad80953036d1d5a25b3dfa69f8fd7b9f0ef7f0b69d",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-en-dark.text.json"
+    },
+    {
+      "name": "window-explore-narrow-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-en-light.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "3ad4753a1de34c8d3ae235fdbe67d4a37682bbd76f02463c68d81b13ce626a34",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-en-light.text.json"
+    },
+    {
+      "name": "window-explore-narrow-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-ja-light.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "fa8f5ff8cbdda6b375fb064cd5faa1e5d9dc51d45c5cf780310df6f86ab3d18a",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-ja-light.text.json"
+    },
+    {
+      "name": "window-explore-narrow-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-ko-dark.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "95605345d9668d3d542a6056dc3a5bf0d68d5222a13e9fb040bcdd5b87fa04a5",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-ko-dark.text.json"
+    },
+    {
+      "name": "window-explore-narrow-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-ko-light.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "12461cd35a38b17fded4f2ed4344d0a0fccc6ba49b65f33417f5588c8b27af36",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-ko-light.text.json"
+    },
+    {
+      "name": "window-explore-narrow-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-zh-Hans-light.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "f9fd8c94c2721a4ff84b28b17b48c35d95110d5c22741590ceaf6a43a93d2516",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-zh-Hans-light.text.json"
+    },
+    {
+      "name": "window-explore-narrow-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-zh-Hant-light.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "c187ab1b60abf46d4c92a78f71a9504598372fc5d9167a9bd7d0ecec877a21d7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-narrow-zh-Hant-light.text.json"
+    },
+    {
+      "name": "window-explore-nosidebar-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-en-dark.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "ce2bc5e5b0ff857df8db5bec7da5368f148ee1e4b62e39e757e3c2edeb490755",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-en-dark.text.json"
+    },
+    {
+      "name": "window-explore-nosidebar-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-en-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "16b371943000cc98c79f8ce7ecd6c27bf57676b4c8ff71405a77517cc7a9b34e",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-en-light.text.json"
+    },
+    {
+      "name": "window-explore-nosidebar-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-ja-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "636040cb8f1cd022575ec4c6032768753f98135c1391d17bbf3e1c68891bc2a8",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-ja-light.text.json"
+    },
+    {
+      "name": "window-explore-nosidebar-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-ko-dark.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "daf6a817d524ae8b1991824b3cfc1337c0db9b4df79d93015b3d7e894d3373ec",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-ko-dark.text.json"
+    },
+    {
+      "name": "window-explore-nosidebar-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-ko-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "07abab8392bce0e47b6012d273659ad9bce9218caf5e9b287ec091c65817c3d4",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-ko-light.text.json"
+    },
+    {
+      "name": "window-explore-nosidebar-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-zh-Hans-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "05db855bc960e80b41228245c4a83ae9b98276d762904b861a2aee2286ec2f70",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-zh-Hans-light.text.json"
+    },
+    {
+      "name": "window-explore-nosidebar-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-zh-Hant-light.png",
+      "size": [
+        2004,
+        1664
+      ],
+      "sha256": "fc5e7b84e86d3f1e73de70add8f072de122b66cdd41498795fc5e2146dd0627a",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-nosidebar-zh-Hant-light.text.json"
+    },
+    {
+      "name": "window-explore-open-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-en-dark.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "7fd4db1cfeade9545440fab872d222190dad96513da7ccc253065ec9689d4283",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-en-dark.text.json"
+    },
+    {
+      "name": "window-explore-open-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-en-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "69342f56434c9f042c82e196fefeb4d0e079697d02d62238c12434534ca4259d",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-en-light.text.json"
+    },
+    {
+      "name": "window-explore-open-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-ja-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "b0a4318fd8a879eb078e1bb01786655cded5653ef5739bf53befb405c7dc6559",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-ja-light.text.json"
+    },
+    {
+      "name": "window-explore-open-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-ko-dark.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "7ddf9af529cc10b7beb33ce3ab876f9d381f9270ace25df934d91b60b6cf3326",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-ko-dark.text.json"
+    },
+    {
+      "name": "window-explore-open-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-ko-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "6fd9d600938e7b8ebf69fbce780d5b4ade69aafb7d7a9c0e4d7cb0e4cc94b481",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-ko-light.text.json"
+    },
+    {
+      "name": "window-explore-open-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-zh-Hans-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "5777781430ce57c4764ba09d1c77b6af4a65799c6035f1c05d52738343a9a424",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-zh-Hans-light.text.json"
+    },
+    {
+      "name": "window-explore-open-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-zh-Hant-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "9d10b122d89f8937c9d7777a4278c7e2fcdd03c50e0b9dfa9a7f32c906cd2b98",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-open-zh-Hant-light.text.json"
+    },
+    {
+      "name": "window-explore-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-zh-Hans-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "0584b39eb69379cf394f24b79487d8eb626e9345e60f12073e7469cc604d9945",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-zh-Hans-light.text.json"
+    },
+    {
+      "name": "window-explore-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-zh-Hant-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "3599ca43b6a1cc10358677752ad01e43d56239113b76d8de3a9b6e73f75ceb57",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-explore-zh-Hant-light.text.json"
+    },
+    {
+      "name": "window-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-ja-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "067e8a207fef0bbe513e1677efa3df837f28616ecb757129147aaba643c388d2",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-ja-light.text.json"
+    },
+    {
+      "name": "window-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-ko-dark.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "4cf2d2c86b2b7a8121b32c1fae84e0fe2e71ec045c094ef4d708960eed6b4ad8",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-ko-dark.text.json"
+    },
+    {
+      "name": "window-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-ko-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "46111f273a670b00d7c3ace6de58dc9dd31238c729bb52514d13effcc1a77471",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-ko-light.text.json"
+    },
+    {
+      "name": "window-narrow-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-en-dark.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "fd9338deda417456f19be908d24cc136b6b92ee3e273c126b1e3dd0fd67af498",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-en-dark.text.json"
+    },
+    {
+      "name": "window-narrow-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-en-light.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "65756a6b6b94d3f1202aa1ad6efc3a1338d29487037ef81e1499023b432484d7",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-en-light.text.json"
+    },
+    {
+      "name": "window-narrow-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-ja-light.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "628def878b8418ed536064edcbefb0b40e896bcf83c4c4efdaf6e4777dffd158",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-ja-light.text.json"
+    },
+    {
+      "name": "window-narrow-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-ko-dark.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "b422bd87821852acdbe46cc79549b423e8473d310ae5c925cc474bc80a19acbe",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-ko-dark.text.json"
+    },
+    {
+      "name": "window-narrow-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-ko-light.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "d1698268249f076d30b4640bfa2bf5946f60f8c93f815864fc626f9f6dfb7b38",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-ko-light.text.json"
+    },
+    {
+      "name": "window-narrow-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-zh-Hans-light.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "62ab230b2efcb2a7a0f5cab32143ab9f4ca8f662b5995616acac7093ff5ae954",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-zh-Hans-light.text.json"
+    },
+    {
+      "name": "window-narrow-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-zh-Hant-light.png",
+      "size": [
+        840,
+        1664
+      ],
+      "sha256": "b2c2a3a06e829cdc7c3176e5f33e6b86fdb60d9e79d9158a5b12487cae809707",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-narrow-zh-Hant-light.text.json"
+    },
+    {
+      "name": "window-network-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-en-dark.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "9386c318165c2d5fef79ae8075da5389066e4aacce7a5b59340652f4fafa47d3",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-en-dark.text.json"
+    },
+    {
+      "name": "window-network-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-en-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "208be057b48ffa2383b37340f6f100f81ed23f97b1a69449aa1357777fd5baae",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-en-light.text.json"
+    },
+    {
+      "name": "window-network-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-ja-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "2de12948a56bbcb9dbe2bd265794f7398d6e40f628b2cd9f8f7ee8853dbbe824",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-ja-light.text.json"
+    },
+    {
+      "name": "window-network-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-ko-dark.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "a7681d133b44a8e8622f76aa2be87587d32a0dc7c68d960e263db2fdc34d10cb",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-ko-dark.text.json"
+    },
+    {
+      "name": "window-network-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-ko-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "1d1b6e05866982fbbb3156250d38270833215deda6a565cab1bd0c4e2d9a8e76",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-ko-light.text.json"
+    },
+    {
+      "name": "window-network-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-zh-Hans-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "715e237e9b7d0f4b6cebcda1b1b7502897f19c8d2e5e9970e8b149f56c161c34",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-zh-Hans-light.text.json"
+    },
+    {
+      "name": "window-network-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-zh-Hant-light.png",
+      "size": [
+        2004,
+        1668
+      ],
+      "sha256": "2dacf4c089e417d1f3c40918cddb8541d89a0f1a274e06804a5d9f4567144ba1",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-network-zh-Hant-light.text.json"
+    },
+    {
+      "name": "window-wrong-place-en-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-en-dark.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "4a44e7b230f6eba43e299de0a9630ce6eb2818c9a9bad12c54c8035d5cf3d77a",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-en-dark.text.json"
+    },
+    {
+      "name": "window-wrong-place-en-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-en-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "af45d468906a3fc85be4c9118195472cd553b5c54d907df511055b510869e56c",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-en-light.text.json"
+    },
+    {
+      "name": "window-wrong-place-ja-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-ja-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "f12c58eb43c7da606efe288387486151dbc012fdfad4ae741134fa0eef7ea4e4",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-ja-light.text.json"
+    },
+    {
+      "name": "window-wrong-place-ko-dark",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-ko-dark.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "f186b6aa8b02f87ddd1c64e396ca4f4d5d60d15f702634833e39449c914d9de3",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-ko-dark.text.json"
+    },
+    {
+      "name": "window-wrong-place-ko-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-ko-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "060ec01c5070c26db17e4508239c7f5bbcb186f8b83b2fab576a9b8620bbf973",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-ko-light.text.json"
+    },
+    {
+      "name": "window-wrong-place-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-zh-Hans-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "b12590a7a35403d268844f667aaa670abf0c444ab49cae252e3f352d942c7062",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-zh-Hans-light.text.json"
+    },
+    {
+      "name": "window-wrong-place-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-zh-Hant-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "10c80b9576404aa264a1dbcb7b8c09fc0a83a60762588d23ac1c082e7d826e8a",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-wrong-place-zh-Hant-light.text.json"
+    },
+    {
+      "name": "window-zh-Hans-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-zh-Hans-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "a86dc02f6760088e3b071281cd3a2c114b6a012813a6ee9eeb877e0116fc3372",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-zh-Hans-light.text.json"
+    },
+    {
+      "name": "window-zh-Hant-light",
+      "source_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-zh-Hant-light.png",
+      "size": [
+        2000,
+        1664
+      ],
+      "sha256": "2722943fe36ba4eb03d2aac9a3a4e2c161437b328cd7ca08b11586be418d4e37",
+      "ocr_file": "/Volumes/workspace/aether-node/.claude/worktrees/integrate-073/tmp/screens/window-zh-Hant-light.text.json"
+    }
+  ]
+}

@@ -33,7 +33,7 @@ export function dot(kind, label) {
 
 /** `label → value` rows, the field list at the top of every detail page. */
 export function kv(pairs) {
-  return h('div', { class: 'kv' }, ...pairs.flatMap(([k, v]) => [h('span', {}, k), wrap(v)]));
+  return h('dl', { class: 'kv' }, ...pairs.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, wrap(v))]));
 }
 
 function wrap(v) {
@@ -76,5 +76,5 @@ export function sourceLine(node, extra) {
 
 /** Placeholder while a page fetches. */
 export function loading(text = 'Loading…') {
-  return h('div', { class: 'loading' }, h('span', { class: 'spin', 'aria-hidden': 'true' }), h('span', {}, text));
+  return h('div', { class: 'loading', role: 'status' }, h('span', { class: 'spin', 'aria-hidden': 'true' }), h('span', {}, text));
 }

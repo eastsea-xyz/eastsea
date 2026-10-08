@@ -1,138 +1,22 @@
 import SwiftUI
 import WebKit
 
-/// The Explore tab (docs/design/09-wallet.md "인앱 브라우저"): a curated home,
-/// an address bar that opens external https after one warning per site, and
-/// the block explorer bundled with the app. Pages' `window.aether` is
-/// answered by the wallet itself through BrowserController.
+/// Explore owns native browser chrome. Each session tab answers the page's
+/// `window.aether` bridge through its own origin-checked BrowserController.
 struct ExplorePage: View {
-    @EnvironmentObject var model: WalletModel
-    @EnvironmentObject var browser: BrowserController
+    @EnvironmentObject var session: BrowserSession
     /// Back to Home, always in the address bar: a page in the full-bleed
     /// web view must never be a dead end (founder report on 0.7.0).
     var goHome: (() -> Void)?
 
     var body: some View {
-        VStack(spacing: 0) {
-            addressBar
-            if let n = browser.notice {
-                Text(n).font(.aeFootnote).foregroundStyle(Color.warn)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, DesignTokens.Space.s4).padding(.vertical, DesignTokens.Space.s2)
-                    .background(DesignTokens.Palette.surfaceSunken.color)
-            }
-            Rectangle().fill(DesignTokens.Palette.line.color).frame(height: 1)
-            if browser.webView == nil {
-                home.padding(DesignTokens.Space.s5)
-            } else if let web = browser.webView {
-                WebViewHolder(webView: web)
-                    .id(browser.webViewGeneration)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .eastSeaPage()
-        .sheet(item: $browser.warning) { w in
-            SiteWarningSheet(warning: w, browser: browser)
-                .frame(width: 460)
-        }
-        .sheet(item: $browser.ask) { ask in
-            ProviderAskSheet(ask: ask, browser: browser)
-                .frame(width: 480)
-        }
-    }
-
-    private var addressBar: some View {
-        HStack(spacing: DesignTokens.Space.s2) {
-            if let goHome {
-                Button(action: goHome) { Label("Home", systemImage: "house.fill") }
-                    .buttonStyle(EastSeaQuietButtonStyle()).fixedSize()
-                    .help("Back to Home")
-            }
-            #if os(macOS)
-            if browser.canGoBack {
-                Button { browser.goBack() } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.borderless).help("Back")
-            }
-            #endif
-            Image(systemName: "lock.fill").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
-            TextField("Enter a web address (https)", text: $browser.addressField)
-                .textFieldStyle(EastSeaTextFieldStyle()).font(.aeBody)
-                .onSubmit { browser.open(browser.addressField) }
-            Button("Go") { browser.open(browser.addressField) }
-                .buttonStyle(EastSeaPrimaryButtonStyle()).disabled(browser.addressField.trimmingCharacters(in: .whitespaces).isEmpty)
-        }
-        .padding(.horizontal, DesignTokens.Space.s4).padding(.vertical, DesignTokens.Space.s3)
-        .background(DesignTokens.Palette.surface.color)
-    }
-
-    /// The curated home: what the tab is for, before any address is typed.
-    private var home: some View {
-        VStack(spacing: DesignTokens.Space.s4) {
-            VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
-                HStack(spacing: DesignTokens.Space.s3) {
-                    EastSeaDawnMark().frame(width: 40, height: 40)
-                    Text("Explore the chain").font(DesignTokens.TypeScale.title2.font)
-                }
-                Text("The block explorer below is part of the app and reads this Mac's own node. Pages you open can connect to your wallet — every request asks first, and Security lists the sites you allowed.")
-                    .font(.aeBody).foregroundStyle(DesignTokens.Palette.plateSoft.color)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(DesignTokens.Space.s6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .foregroundStyle(DesignTokens.Palette.plateInk.color)
-            .eastSeaNavyPlate(cornerRadius: DesignTokens.Radius.lg)
-            Card {
-                VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
-                    Button {
-                        browser.openExplorer()
-                    } label: {
-                        HStack(spacing: DesignTokens.Space.s3) {
-                            Image(systemName: "square.stack.3d.up").font(.aeTitle).foregroundStyle(Color.aether)
-                                .frame(width: 32)
-                            VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
-                                Text("Block explorer").font(.aeHeadline)
-                                Text("Bundled with the app — reads your own node, signs nothing.")
-                                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
-                            }
-                            Spacer(minLength: DesignTokens.Space.s2)
-                            Image(systemName: "chevron.right").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, DesignTokens.Space.s2)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    Rectangle().fill(DesignTokens.Palette.line.color).frame(height: 1)
-                    ForEach(Array(BrowserOriginPolicy.curatedDomains).sorted(), id: \.self) { domain in
-                        Button {
-                            browser.load(URL(string: "https://\(domain)")!)
-                        } label: {
-                            HStack(spacing: DesignTokens.Space.s3) {
-                                Image(systemName: "globe").font(.aeTitle).foregroundStyle(Color.aether)
-                                    .frame(width: 32)
-                                VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
-                                    Text(domain).font(.aeHeadline)
-                                    Text("The \(Brand.name) website.").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
-                                }
-                                Spacer(minLength: DesignTokens.Space.s2)
-                                Image(systemName: "arrow.up.right").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, DesignTokens.Space.s2)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            Spacer()
-        }
-        .frame(maxWidth: 620)
+        BrowserWorkspace(session: session, browser: session.controller, goHome: goHome)
+            .id(session.activeTabID)
     }
 }
 
 /// Puts a WKWebView in the SwiftUI tree on both platforms.
-private struct WebViewHolder: View {
+struct WebViewHolder: View {
     let webView: WKWebView
 
     var body: some View {
@@ -193,9 +77,9 @@ struct SiteWarningSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { browser.refuseWarning() }
+                Button("Cancel", role: .cancel) { browser.refuseWarning(id: warning.id) }
                     .buttonStyle(EastSeaQuietButtonStyle()).keyboardShortcut(.cancelAction)
-                Button("Open Site") { browser.approveWarning() }
+                Button("Open Site") { browser.approveWarning(id: warning.id) }
                     .buttonStyle(EastSeaPrimaryButtonStyle()).keyboardShortcut(.defaultAction)
             }
         }
@@ -217,12 +101,16 @@ struct ProviderAskSheet: View {
             switch ask.kind {
             case .connect(let origin, let host):
                 Text("Connect to \(host.isEmpty ? origin : host)?").font(.aeTitle)
+                Text(verbatim: origin).font(.aeBody.monospaced()).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text("This site is asking which address this wallet controls. Saying yes shows it **\(Short.address(model.address))** — the address itself, not your key, and not your balances.")
                     .font(.aeBody).fixedSize(horizontal: false, vertical: true)
                 Text("You can take this back any time in Security → Connected sites.")
                     .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
             case .send(let origin, let host, let tx, let feeWei):
                 Text("\(host.isEmpty ? origin : host) asks to send").font(.aeTitle)
+                Text(verbatim: origin).font(.aeBody.monospaced()).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
                 Grid(alignment: .topLeading, horizontalSpacing: DesignTokens.Space.s4, verticalSpacing: DesignTokens.Space.s3) {
                     row("Action", CallDescribe.action(to: tx.to, data: tx.data), mono: false)
                     if !tx.to.isEmpty { row("To", tx.to, mono: true) }
@@ -248,9 +136,9 @@ struct ProviderAskSheet: View {
             }
             HStack {
                 Spacer()
-                Button("Refuse", role: .cancel) { browser.refuseAsk() }
+                Button("Refuse", role: .cancel) { browser.refuseAsk(id: ask.id) }
                     .buttonStyle(EastSeaQuietButtonStyle()).keyboardShortcut(.cancelAction)
-                Button(ask.kind.isConnect ? String(localized: "Connect") : String(localized: "Send")) { browser.approveAsk() }
+                Button(ask.kind.isConnect ? String(localized: "Connect") : String(localized: "Send")) { browser.approveAsk(id: ask.id) }
                     .keyboardShortcut(.defaultAction).buttonStyle(EastSeaPrimaryButtonStyle())
             }
         }

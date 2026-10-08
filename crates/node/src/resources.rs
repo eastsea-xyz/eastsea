@@ -193,6 +193,16 @@ pub fn clear_test_readings() {
     *TEST_READINGS.write().expect("test readings") = None;
 }
 
+#[cfg(any(test, feature = "test-seam"))]
+static TEST_FREE_DISK: RwLock<Option<u64>> = RwLock::new(None);
+
+/// Pin free disk space for isolated disk-floor regression tests. Shipped
+/// binaries compile this seam out, like the memory readings above.
+#[cfg(any(test, feature = "test-seam"))]
+pub fn set_test_free_disk(bytes: Option<u64>) {
+    *TEST_FREE_DISK.write().expect("test free disk") = bytes;
+}
+
 fn test_readings() -> Option<(Option<u8>, Option<u64>)> {
     #[cfg(any(test, feature = "test-seam"))]
     { *TEST_READINGS.read().expect("test readings") }
@@ -434,6 +444,10 @@ pub fn on_battery() -> bool {
 /// Free space (bytes) on the volume holding `dir`, as this process may write it.
 #[cfg(unix)]
 pub fn free_disk(dir: &Path) -> Option<u64> {
+    #[cfg(any(test, feature = "test-seam"))]
+    if let Some(bytes) = *TEST_FREE_DISK.read().expect("test free disk") {
+        return Some(bytes);
+    }
     use std::os::unix::ffi::OsStrExt;
     // The data directory may not exist yet when the initial sample runs.
     // Its nearest existing ancestor is on the volume the directory will use.
@@ -756,6 +770,14 @@ pub fn install(limits: Limits, dir: impl Into<PathBuf>) -> Arc<Monitor> {
 /// The running monitor, if this process installed one.
 pub fn monitor() -> Option<Arc<Monitor>> {
     MONITOR.read().expect("resource monitor").clone()
+}
+
+/// Exercise pause/resume decisions in an isolated test process without the
+/// watchdog terminating that process at the disk floor.
+#[cfg(any(test, feature = "test-seam"))]
+pub fn install_test_monitor(limits: Limits, dir: impl Into<PathBuf>) {
+    let m = Arc::new(Monitor { limits, dir: dir.into(), state: Mutex::new(State::default()) });
+    *MONITOR.write().expect("resource monitor") = Some(m);
 }
 
 /// Whether new writes on the data volume may begin (no monitor: always).

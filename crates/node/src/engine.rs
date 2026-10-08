@@ -6,7 +6,7 @@ use crate::application::Application;
 use crate::block::{Block, PublicKey};
 use crate::epochs::{RotatingProvider, ScheduleEpocher};
 use crate::voting::DurableVote;
-use aether_light::Scheme;
+use crate::key_binding::signing::{Elector, Scheme, ELECTOR};
 use commonware_broadcast::buffered;
 pub use commonware_consensus::marshal::core::Mailbox as MarshalMailboxOf;
 use commonware_consensus::{
@@ -115,7 +115,9 @@ pub struct Config<B: Blocker<PublicKey = PublicKey>, P: Provider<PublicKey = Pub
     /// have signed and must not start a fresh journal with the same key.
     pub journal_dir: Option<std::path::PathBuf>,
     pub me: PublicKey,
-    pub scheme: Scheme,
+    pub scheme: aether_light::Scheme,
+    /// The binding of a persisted validator key; simulations and devnet have none.
+    pub key_binding: Option<crate::key_binding::Guard>,
     /// Committee identity (verifies certificates of every epoch).
     pub identity: aether_light::Identity,
     /// The chain's consensus group (0 today): certificates verify under its
@@ -156,7 +158,7 @@ where
     marshaled: Marshaled<E>,
     /// Handle for reading finalized blocks and certificates (served over RPC).
     pub mailbox: MarshalMailbox<Scheme, Standard<Block>>,
-    consensus: Consensus<E, Scheme, aether_light::Elector, B, Digest, Voter<E>, Voter<E>, MarshalMailbox<Scheme, Standard<Block>>, Sequential>,
+    consensus: Consensus<E, Scheme, Elector, B, Digest, Voter<E>, Voter<E>, MarshalMailbox<Scheme, Standard<Block>>, Sequential>,
 }
 
 fn archive_cfg<C>(prefix: &str, name: &str, page_cache: CacheRef, codec_config: C) -> immutable::Config<C> {
@@ -308,6 +310,8 @@ where
     P: Provider<PublicKey = PublicKey>,
 {
     pub async fn new(context: E, cfg: Config<B, P>) -> Self {
+        let scheme = Scheme::new(cfg.scheme, cfg.key_binding);
+        scheme.check_binding();
         let mailbox_size = NonZeroUsize::new(cfg.mailbox_size).expect("mailbox size must be non-zero");
         let (buffer, buffer_mailbox) = buffered::Engine::new(
             context.child("buffer"),
@@ -417,7 +421,6 @@ where
             None => None,
         };
 
-        let scheme = cfg.scheme;
         let epocher = cfg.epocher;
         let epoch = epocher.current();
         let floor_digest = cfg.epoch_floor.unwrap_or_else(|| cfg.genesis.digest());
@@ -523,6 +526,7 @@ where
 
         let marshaled = Marshaled::<E>::new(context.child("marshaled"), cfg.application, marshal_mailbox.clone(), epocher);
         let voter = DurableVote::new(context.child("voter"), marshaled.clone(), marshal_mailbox.clone());
+        scheme.check_binding();
         let consensus = Consensus::new(
             context.child("consensus"),
             simplex::Config {
@@ -550,7 +554,7 @@ where
                 write_buffer: VOTE_WRITE_BUFFER,
                 blocker: cfg.blocker,
                 page_cache,
-                elector: aether_light::ELECTOR,
+                elector: ELECTOR,
                 strategy: Sequential,
             },
         );

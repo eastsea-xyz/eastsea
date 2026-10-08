@@ -111,10 +111,9 @@ extension NodeController {
 
     /// Why a picked folder cannot hold the block data, or nil.
     func problem(with picked: URL) -> String? {
-        let ko = HealthCheck.korean
         let dest = BlockDataLocation.chainDir(picked: picked)
         if !BlockDataLocation.disjoint(dest, chainRoot) {
-            return BlockDataLocation.sentence(.inUse, ko: ko)
+            return BlockDataLocation.sentence(.inUse)
         }
         guard BlockDataLocation.destinationAvailable(dest, preservingInternalKeys: false) else {
             return String(localized: "This folder already holds block data. Pick an empty folder; existing data will be kept.")
@@ -124,17 +123,17 @@ extension NodeController {
         }
         // Design 36 N3: never under an iCloud-synced folder (a second copy).
         if let why = KeySafety.iCloudRefusal(path: picked.path, home: FileManager.default.homeDirectoryForCurrentUser.path,
-                                             ubiquitous: KeySafety.isUbiquitous(picked), ko: ko) {
+                                             ubiquitous: KeySafety.isUbiquitous(picked)) {
             return why
         }
         // Design 36 N2: a folder that already holds node keys is refused —
         // keys stay on this Mac's internal disk only.
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: picked.path)) ?? [])
             + ((try? FileManager.default.contentsOfDirectory(atPath: dest.path)) ?? [])
-        if let why = KeySafety.keysRefusal(found: KeySafety.keysFound(in: names), ko: ko) { return why }
+        if let why = KeySafety.keysRefusal(found: KeySafety.keysFound(in: names)) { return why }
         let problem = BlockDataLocation.validate(v, dataBytes: blockDataBytes)
         storageMoveOffersDiskUtility = problem?.fixInDiskUtility == true
-        return problem.map { BlockDataLocation.sentence($0, ko: ko) }
+        return problem.map { BlockDataLocation.sentence($0) }
     }
 
     /// Disk Utility, where an exFAT/FAT disk is erased as APFS.

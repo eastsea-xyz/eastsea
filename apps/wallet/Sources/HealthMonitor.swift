@@ -124,14 +124,13 @@ final class HealthMonitor: ObservableObject {
     }
 
     private func handle(_ events: [HealthCheck.Event]) {
-        let ko = HealthCheck.korean
-        let title = ko ? Brand.projectKo : Brand.project
+        let title = Brand.name
         for event in events {
             switch event {
             case .raised(let issue):
-                LocalNotice.post(title: title, body: check.sentence(issue, ko: ko))
+                LocalNotice.post(title: title, body: check.sentence(issue))
             case .resolved(let issue):
-                LocalNotice.post(title: title, body: HealthCheck.resolvedSentence(issue, ko: ko))
+                LocalNotice.post(title: title, body: HealthCheck.resolvedSentence(issue))
             case .rediscover:
                 model?.rediscover()
                 node?.refreshWalletRoute()
@@ -139,7 +138,7 @@ final class HealthMonitor: ObservableObject {
                 node?.restartUnresponsive()
             }
         }
-        let banner = check.alert(ko: ko)
+        let banner = check.alert()
         if alert != banner { alert = banner }
         if healthyBadgeAllowed != check.healthyBadgeAllowed { healthyBadgeAllowed = check.healthyBadgeAllowed }
     }
@@ -149,12 +148,12 @@ final class HealthMonitor: ObservableObject {
     /// The "not healthy" badge's words (dashboard, menu): the node's own
     /// stop reason, else the disk pause.
     var pausedBadgeTitle: String {
-        node?.stopReason.map { $0.copy(ko: HealthCheck.korean).title }
+        node?.stopReason.map { $0.copy().title }
             ?? (String(localized: "Storage low · node resting"))
     }
 
     /// The stop reason's own button label (L10's banner shows it).
-    var nodeActionLabel: String? { node?.stopReason?.copy(ko: HealthCheck.korean).actionLabel }
+    var nodeActionLabel: String? { node?.stopReason?.copy().actionLabel }
 
     func perform(_ action: HealthCheck.Action) {
         switch action {
@@ -169,7 +168,7 @@ final class HealthMonitor: ObservableObject {
         case .copyDiagnostics:
             copyDiagnostics()
         case .fixNode:
-            if let action = node?.stopReason?.copy(ko: HealthCheck.korean).action { node?.perform(action) }
+            if let action = node?.stopReason?.copy().action { node?.perform(action) }
         }
     }
 
@@ -207,7 +206,7 @@ final class HealthMonitor: ObservableObject {
 
 extension HealthCheck.Action {
     /// The banner button's words, in the app's language.
-    func label(ko: Bool = HealthCheck.korean) -> String {
+    func label() -> String {
         switch self {
         case .checkForUpdates: return String(localized: "Check for Updates")
         case .retryConnection: return String(localized: "Try Again")

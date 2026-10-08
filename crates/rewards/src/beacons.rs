@@ -290,7 +290,7 @@ pub fn note(state: &mut WorldState, index: u64, epoch: u64, answered: u64, full:
     } else {
         let last_of = |w: U256| ((w >> 4usize) & U256::from(0xFu64)).to::<u64>();
         // The old word's count is epoch − 1's only if it was written for that epoch.
-        (((old >> 8usize).to::<u64>() - 1) + 1 == epoch).then(|| last_of(old)).unwrap_or(NO_COUNT)
+        if ((old >> 8usize).to::<u64>() - 1) + 1 == epoch { last_of(old) } else { NO_COUNT }
     };
     let next = (U256::from(epoch + 1) << 8usize) | (U256::from(answered.min(NO_COUNT)) << 4usize) | U256::from(prev);
     if old != next {

@@ -42,6 +42,10 @@ enum NodeStopReason: Equatable {
     case upgradeNeeded
     /// This Mac's node key cannot be read.
     case identityLost
+    /// The node is alive and retrying an unavailable Mac-identity read.
+    case waitingForMacConfirmation
+    /// A successful identity read proved these keys are bound to another Mac.
+    case keyElsewhere
     /// The process could not even be launched (an OS error).
     case launchFailed(String)
     /// The block data is moving to another disk (0…100).
@@ -65,6 +69,8 @@ enum NodeStopReason: Equatable {
         case .needsAttention: return "needs_attention"
         case .upgradeNeeded: return "upgrade_needed"
         case .identityLost: return "identity_lost"
+        case .waitingForMacConfirmation: return "waiting_for_mac_confirmation"
+        case .keyElsewhere: return "key_elsewhere"
         case .launchFailed: return "launch_failed"
         case .movingStorage: return "moving_storage"
         }
@@ -76,7 +82,7 @@ enum NodeStopReason: Equatable {
     /// not raised as incidents.
     var isIncident: Bool {
         switch self {
-        case .switchedOff, .onBattery, .migrating, .restarting, .movingStorage: return false
+        case .switchedOff, .onBattery, .migrating, .restarting, .movingStorage, .waitingForMacConfirmation: return false
         default: return true
         }
     }
@@ -93,6 +99,7 @@ enum NodeStopAction: Equatable {
     case chooseDisk
     case openPrivacySettings
     case copyDiagnostics
+    case rebindKeys
 }
 
 /// What a reason says, in the app's language.
@@ -126,116 +133,217 @@ extension NodeStopReason {
     }
 
     /// Seconds as "N초"/"N s", minutes above 90 s.
-    static func wait(_ seconds: Int, ko: Bool) -> String {
+    static func wait(_ seconds: Int, locale: Locale = .current, bundle: Bundle = .main) -> String {
         if seconds >= 90 {
             let m = (seconds + 59) / 60
-            return ko ? "\(m)분" : "\(m) min"
+            return String(localized: "\(String(m)) min", bundle: bundle, locale: locale)
         }
-        return ko ? "\(max(seconds, 1))초" : "\(max(seconds, 1)) s"
+        return String(localized: "\(String(max(seconds, 1))) s", bundle: bundle, locale: locale)
     }
 
-    func copy(ko: Bool) -> NodeStopCopy {
+    func copy(locale: Locale = .current, bundle: Bundle = .main) -> NodeStopCopy {
         switch self {
         case .switchedOff:
-            return NodeStopCopy(title: ko ? "꺼져 있음" : "Off",
-                                detail: ko ? "켜면 이 Mac이 블록을 직접 확인해요." : "Turn it on and this Mac checks every block itself.",
-                                resume: "", action: .turnOn, actionLabel: ko ? "켜기" : "Turn On")
+            return NodeStopCopy(title: String(localized: "Off — node status", defaultValue: "Off", bundle: bundle, locale: locale),
+                                detail: String(localized: "Turn it on and this Mac checks every block itself.", bundle: bundle, locale: locale),
+                                resume: "", action: .turnOn, actionLabel: String(localized: "Turn On", bundle: bundle, locale: locale))
         case .onBattery:
-            return NodeStopCopy(title: ko ? "배터리 사용 중 · 쉬는 중" : "On battery · resting",
-                                detail: ko ? "전원 어댑터에서만 돌도록 설정되어 있어요." : "It is set to run only on the power adapter.",
-                                resume: ko ? "전원을 연결하면 30초 안에 저절로 다시 시작해요." : "Plug in and it restarts by itself within 30 s.",
-                                action: .runOnBattery, actionLabel: ko ? "배터리에서도 실행" : "Run on Battery Too")
+            return NodeStopCopy(title: String(localized: "On battery · resting", bundle: bundle, locale: locale),
+                                detail: String(localized: "It is set to run only on the power adapter.", bundle: bundle, locale: locale),
+                                resume: String(localized: "Plug in and it restarts by itself within 30 s.", bundle: bundle, locale: locale),
+                                action: .runOnBattery, actionLabel: String(localized: "Run on Battery Too", bundle: bundle, locale: locale))
         case .wrongLocation:
-            return NodeStopCopy(title: ko ? "응용 프로그램 폴더 밖에서 실행 중" : "Not in Applications",
-                                detail: ko ? "디스크 이미지나 다운로드 폴더에서는 노드를 돌릴 수 없어요. 응용 프로그램 폴더로 옮긴 뒤 다시 열어 주세요."
-                                    : "The node cannot run from a disk image or the Downloads folder. Move the app to Applications and open it again.",
-                                resume: "", action: .showInFinder, actionLabel: ko ? "Finder에서 보기" : "Show in Finder")
+            return NodeStopCopy(title: String(localized: "Not in Applications", bundle: bundle, locale: locale),
+                                detail: String(localized: "The node cannot run from a disk image or the Downloads folder. Move the app to Applications and open it again.", bundle: bundle, locale: locale),
+                                resume: "", action: .showInFinder, actionLabel: String(localized: "Show in Finder", bundle: bundle, locale: locale))
         case .noHelper:
-            return NodeStopCopy(title: ko ? "노드 프로그램이 없음" : "Node missing",
-                                detail: ko ? "이 앱 안에 노드 프로그램이 빠져 있어요. 앱을 업데이트하거나 다시 설치해 주세요."
-                                    : "This copy of the app is missing its node. Update or reinstall the app.",
-                                resume: "", action: .checkForUpdates, actionLabel: ko ? "업데이트 확인" : "Check for Updates")
+            return NodeStopCopy(title: String(localized: "Node missing", bundle: bundle, locale: locale),
+                                detail: String(localized: "This copy of the app is missing its node. Update or reinstall the app.", bundle: bundle, locale: locale),
+                                resume: "", action: .checkForUpdates, actionLabel: String(localized: "Check for Updates", bundle: bundle, locale: locale))
         case .migrating:
-            return NodeStopCopy(title: ko ? "이전 데이터 옮기는 중" : "Moving your old data",
-                                detail: ko ? "Aether의 지갑과 노드 데이터를 옮기고 있어요." : "Your Aether wallet and node data are moving over.",
-                                resume: ko ? "끝나면 저절로 시작해요." : "The node starts by itself when it is done.",
+            return NodeStopCopy(title: String(localized: "Moving your old data", bundle: bundle, locale: locale),
+                                detail: String(localized: "Your Aether wallet and node data are moving over.", bundle: bundle, locale: locale),
+                                resume: String(localized: "The node starts by itself when it is done.", bundle: bundle, locale: locale),
                                 action: nil, actionLabel: nil)
         case .migrationBlocked(let why):
-            return NodeStopCopy(title: ko ? "이전 데이터 이동이 끝나지 않음" : "Old data not moved yet",
+            return NodeStopCopy(title: String(localized: "Old data not moved yet", bundle: bundle, locale: locale),
                                 detail: why,
-                                resume: ko ? "30초마다 다시 확인해요." : "Checked again every 30 s.",
-                                action: .retryNow, actionLabel: ko ? "지금 다시 시도" : "Try Now")
+                                resume: String(localized: "Checked again every 30 s.", bundle: bundle, locale: locale),
+                                action: .retryNow, actionLabel: String(localized: "Try Now", bundle: bundle, locale: locale))
         case .otherNodeRunning:
-            return NodeStopCopy(title: ko ? "다른 프로그램이 노드 데이터를 사용 중" : "Another program has the node data",
-                                detail: ko ? "다른 노드 프로그램(이전 Aether 앱 등)이 같은 데이터를 쓰고 있어요. 그 프로그램을 종료해 주세요."
-                                    : "Another node program (such as the old Aether app) is using the same data. Quit it.",
-                                resume: ko ? "그 프로그램이 끝나면 30초 안에 저절로 시작해요." : "The node starts by itself within 30 s of it quitting.",
-                                action: .retryNow, actionLabel: ko ? "지금 다시 시도" : "Try Now")
+            return NodeStopCopy(title: String(localized: "Another program has the node data", bundle: bundle, locale: locale),
+                                detail: String(localized: "Another node program (such as the old Aether app) is using the same data. Quit it.", bundle: bundle, locale: locale),
+                                resume: String(localized: "The node starts by itself within 30 s of it quitting.", bundle: bundle, locale: locale),
+                                action: .retryNow, actionLabel: String(localized: "Try Now", bundle: bundle, locale: locale))
         case .diskFull(let free, let resume, let volume):
-            let on = volume.map { ko ? "‘\($0)’ " : "“\($0)”: " } ?? ""
-            return NodeStopCopy(title: ko ? "저장 공간 부족 · 노드 쉬는 중" : "Storage low · node resting",
-                                detail: ko ? "\(on)저장 공간 \(Self.gb(free)) 남음. 약 \(Self.need(free: free, resume: resume))만 더 비워 주세요."
-                                    : "\(on)\(Self.gb(free)) free. Free about \(Self.need(free: free, resume: resume)) more.",
-                                resume: ko ? "\(Self.gb(resume))가 되면 저절로 다시 시작해요." : "It restarts by itself at \(Self.gb(resume)).",
-                                action: .openStorage, actionLabel: ko ? "저장 공간 관리" : "Manage Storage")
+            let on = volume.map { String(localized: "“\($0)”: ", bundle: bundle, locale: locale) } ?? ""
+            return NodeStopCopy(title: String(localized: "Storage low · node resting", bundle: bundle, locale: locale),
+                                detail: String(localized: "\(on)\(Self.gb(free)) free. Free about \(Self.need(free: free, resume: resume)) more.", bundle: bundle, locale: locale),
+                                resume: String(localized: "It restarts by itself at \(Self.gb(resume)).", bundle: bundle, locale: locale),
+                                action: .openStorage, actionLabel: String(localized: "Manage Storage", bundle: bundle, locale: locale))
         case .diskMissing(let volume):
-            return NodeStopCopy(title: ko ? "‘\(volume)’ 디스크가 연결되지 않음" : "Disk “\(volume)” not connected",
-                                detail: ko ? "블록 데이터가 이 디스크에 있어요. 내장 디스크로 몰래 다시 받지 않아요."
-                                    : "The block data lives on this disk. Nothing is re-downloaded to the internal disk behind your back.",
-                                resume: ko ? "디스크를 연결하면 저절로 다시 시작해요." : "Connect it and the node restarts by itself.",
-                                action: .chooseDisk, actionLabel: ko ? "다른 위치 선택" : "Choose Another Location")
+            return NodeStopCopy(title: String(localized: "Disk “\(volume)” not connected", bundle: bundle, locale: locale),
+                                detail: String(localized: "The block data lives on this disk. Nothing is re-downloaded to the internal disk behind your back.", bundle: bundle, locale: locale),
+                                resume: String(localized: "Connect it and the node restarts by itself.", bundle: bundle, locale: locale),
+                                action: .chooseDisk, actionLabel: String(localized: "Choose Another Location", bundle: bundle, locale: locale))
         case .diskNoAccess(let volume):
-            return NodeStopCopy(title: ko ? "‘\(volume)’에 접근할 수 없음" : "No access to “\(volume)”",
-                                detail: ko ? "시스템 설정 › 개인정보 보호 및 보안 › 파일 및 폴더에서 \(Brand.projectKo)의 ‘이동식 볼륨’을 켜 주세요."
-                                    : "Turn on “Removable Volumes” for \(Brand.project) in System Settings › Privacy & Security › Files and Folders.",
-                                resume: ko ? "켜면 30초 안에 저절로 시작해요." : "The node starts by itself within 30 s.",
-                                action: .openPrivacySettings, actionLabel: ko ? "시스템 설정 열기" : "Open System Settings")
+            return NodeStopCopy(title: String(localized: "No access to “\(volume)”", bundle: bundle, locale: locale),
+                                detail: String(localized: "Turn on “Removable Volumes” for EastSea in System Settings › Privacy & Security › Files and Folders.", bundle: bundle, locale: locale),
+                                resume: String(localized: "The node starts by itself within 30 s.", bundle: bundle, locale: locale),
+                                action: .openPrivacySettings, actionLabel: String(localized: "Open System Settings", bundle: bundle, locale: locale))
         case .restarting(let s):
-            return NodeStopCopy(title: ko ? "노드 다시 시작하는 중" : "Restarting the node",
-                                detail: ko ? "노드가 멈춰서 다시 시작해요." : "The node stopped, so it is restarting.",
-                                resume: ko ? "\(Self.wait(s, ko: ko)) 뒤에 시작해요." : "Starting in \(Self.wait(s, ko: ko)).",
+            return NodeStopCopy(title: String(localized: "Restarting the node", bundle: bundle, locale: locale),
+                                detail: String(localized: "The node stopped, so it is restarting.", bundle: bundle, locale: locale),
+                                resume: String(localized: "Starting in \(Self.wait(s, locale: locale, bundle: bundle)).", bundle: bundle, locale: locale),
                                 action: nil, actionLabel: nil)
         case .crashLoop(let failure, let s):
-            return NodeStopCopy(title: ko ? "노드가 계속 멈춤" : "The node keeps stopping",
-                                detail: Self.crashDetail(failure, ko: ko),
-                                resume: ko ? "\(Self.wait(s, ko: ko)) 뒤 저절로 다시 시도해요." : "It tries again by itself in \(Self.wait(s, ko: ko)).",
-                                action: .retryNow, actionLabel: ko ? "지금 다시 시도" : "Try Now")
+            return NodeStopCopy(title: String(localized: "The node keeps stopping", bundle: bundle, locale: locale),
+                                detail: Self.crashDetail(failure, locale: locale, bundle: bundle),
+                                resume: String(localized: "It tries again by itself in \(Self.wait(s, locale: locale, bundle: bundle)).", bundle: bundle, locale: locale),
+                                action: .retryNow, actionLabel: String(localized: "Try Now", bundle: bundle, locale: locale))
         case .needsAttention(let failure):
-            return NodeStopCopy(title: ko ? "노드 데이터에 문제가 있음" : "The node's data needs attention",
-                                detail: failure.sentence,
-                                resume: ko ? "고친 뒤 ‘다시 시도’를 눌러 주세요." : "After fixing it, press Try Again.",
-                                action: .retryNow, actionLabel: ko ? "다시 시도" : "Try Again")
+            return NodeStopCopy(title: String(localized: "The node's data needs attention", bundle: bundle, locale: locale),
+                                detail: failure.sentence(locale: locale, bundle: bundle),
+                                resume: String(localized: "After fixing it, press Try Again.", bundle: bundle, locale: locale),
+                                action: .retryNow, actionLabel: String(localized: "Try Again", bundle: bundle, locale: locale))
         case .upgradeNeeded:
-            return NodeStopCopy(title: ko ? "업데이트 필요" : "Update needed",
-                                detail: ko ? "네트워크 규칙이 바뀌어 이 버전의 노드로는 따라갈 수 없어요." : "The network's rules changed and this version's node cannot follow them.",
-                                resume: ko ? "업데이트가 설치되면 저절로 시작해요." : "It starts by itself once the update is installed.",
-                                action: .checkForUpdates, actionLabel: ko ? "업데이트 확인" : "Check for Updates")
+            return NodeStopCopy(title: String(localized: "Update needed", bundle: bundle, locale: locale),
+                                detail: String(localized: "The network's rules changed and this version's node cannot follow them.", bundle: bundle, locale: locale),
+                                resume: String(localized: "It starts by itself once the update is installed.", bundle: bundle, locale: locale),
+                                action: .checkForUpdates, actionLabel: String(localized: "Check for Updates", bundle: bundle, locale: locale))
         case .identityLost:
-            return NodeStopCopy(title: ko ? "노드 키를 읽을 수 없음" : "Node key unreadable",
-                                detail: NodeWatchdog.Failure.identityLost.sentence,
-                                resume: "", action: .copyDiagnostics, actionLabel: ko ? "진단 정보 복사" : "Copy Diagnostics")
-        case .launchFailed(let why):
-            return NodeStopCopy(title: ko ? "노드를 시작하지 못함" : "The node could not start",
-                                detail: (ko ? "macOS가 노드 실행을 거부했어요: " : "macOS refused to launch the node: ") + why,
-                                resume: ko ? "30초마다 다시 시도해요." : "Tried again every 30 s.",
-                                action: .retryNow, actionLabel: ko ? "지금 다시 시도" : "Try Now")
+            return NodeStopCopy(title: String(localized: "Node key unreadable", bundle: bundle, locale: locale),
+                                detail: NodeWatchdog.Failure.identityLost.sentence(locale: locale, bundle: bundle),
+                                resume: "", action: .copyDiagnostics, actionLabel: String(localized: "Copy Diagnostics", bundle: bundle, locale: locale))
+        case .waitingForMacConfirmation:
+            return NodeStopCopy(title: String(localized: "Waiting to confirm this Mac", bundle: bundle, locale: locale),
+                                detail: String(localized: "This Mac's node keys cannot be confirmed right now. The node keeps running and waits before signing.", bundle: bundle, locale: locale),
+                                resume: String(localized: "It checks again by itself. No action is needed.", bundle: bundle, locale: locale),
+                                action: nil, actionLabel: nil)
+        case .keyElsewhere:
+            return NodeStopCopy(title: String(localized: "Node keys from another Mac", bundle: bundle, locale: locale),
+                                detail: String(localized: "This node's keys came from another Mac. Restore them on the original Mac, or rebind them here if you intentionally moved this node.", bundle: bundle, locale: locale),
+                                resume: "", action: .rebindKeys, actionLabel: String(localized: "Rebind Node Keys…", bundle: bundle, locale: locale))
+        case .launchFailed:
+            return NodeStopCopy(title: String(localized: "The node could not start", bundle: bundle, locale: locale),
+                                detail: String(localized: "macOS refused to launch the node.", bundle: bundle, locale: locale),
+                                resume: String(localized: "Tried again every 30 s.", bundle: bundle, locale: locale),
+                                action: .retryNow, actionLabel: String(localized: "Try Now", bundle: bundle, locale: locale))
         case .movingStorage(let p):
-            return NodeStopCopy(title: ko ? "블록 데이터 옮기는 중 · \(p)%" : "Moving block data · \(p)%",
-                                detail: ko ? "블록 데이터를 새 위치로 복사하고 확인하는 중이에요. 지갑은 그동안에도 써요."
-                                    : "The block data is being copied and checked at its new place. The wallet keeps working.",
-                                resume: ko ? "다 옮기면 저절로 시작해요." : "The node starts by itself when it is done.",
+            return NodeStopCopy(title: String(localized: "Moving block data · \(String(p))%", bundle: bundle, locale: locale),
+                                detail: String(localized: "The block data is being copied and checked at its new place. The wallet keeps working.", bundle: bundle, locale: locale),
+                                resume: String(localized: "The node starts after the block data move.", defaultValue: "The node starts by itself when it is done.", bundle: bundle, locale: locale),
                                 action: nil, actionLabel: nil)
         }
     }
 
     /// The crash loop's cause in one plain clause (the watchdog's own
     /// sentence for the specific kinds).
-    private static func crashDetail(_ f: NodeWatchdog.Failure, ko: Bool) -> String {
+    private static func crashDetail(_ f: NodeWatchdog.Failure, locale: Locale = .current, bundle: Bundle = .main) -> String {
         switch f {
-        case .memory: return f.sentence
-        case .network: return ko ? "네트워크에 닿지 못해 노드가 멈췄어요. 인터넷 연결을 확인해 주세요." : "The node could not reach the network. Check the internet connection."
-        default: return ko ? "노드가 시작 직후 여러 번 멈췄어요. 잔액은 다른 노드로 계속 확인해요." : "The node stopped several times right after starting. Your balance is still checked through other nodes."
+        case .memory: return f.sentence(locale: locale, bundle: bundle)
+        case .network: return String(localized: "The node could not reach the network. Check the internet connection.", bundle: bundle, locale: locale)
+        default: return String(localized: "The node stopped several times right after starting. Your balance is still checked through other nodes.", bundle: bundle, locale: locale)
         }
+    }
+}
+
+/// The node reports an unavailable read while staying alive. These markers
+/// are state transitions, not exit reasons; unrelated output retains the
+/// previous state until a successful retry confirms this Mac.
+enum NodeMacConfirmation {
+    static func waiting(in log: String, previously: Bool = false) -> Bool {
+        var waiting = previously
+        for line in log.split(separator: "\n") {
+            if line.contains("waiting to confirm this Mac") { waiting = true }
+            if line.contains("Mac key binding confirmed") { waiting = false }
+        }
+        return waiting
+    }
+}
+
+/// Written by the node only after a successful hardware read proves a
+/// mismatch. It survives daemon/app exits and is removed only by owner rebind.
+enum NodeBindingRefusal {
+    static let fileName = "key-binding-refused"
+
+    static func exists(in dataDirectory: URL) -> Bool {
+        FileManager.default.fileExists(atPath: dataDirectory.appendingPathComponent(fileName).path)
+    }
+}
+
+/// Rebinding is an owner action for a proven mismatch. A successful owner
+/// authentication creates the only approval the terminal runner accepts.
+/// The approval is local: its message cannot be submitted as a transaction.
+enum NodeKeyRebind {
+    struct Approval: Sendable {
+        let validatorAddress: String
+        let dataDirectory: String
+        let confirmationLine: String
+        fileprivate init(validatorAddress: String, dataDirectory: String, confirmationLine: String) {
+            self.validatorAddress = validatorAddress
+            self.dataDirectory = dataDirectory
+            self.confirmationLine = confirmationLine
+        }
+    }
+
+    enum Refusal: LocalizedError {
+        case invalidValidatorAddress
+        case confirmationDidNotMatch
+        case ownerKeyUnavailable
+        case nodeRunning
+
+        var errorDescription: String? { sentence() }
+
+        func sentence(locale: Locale = .current, bundle: Bundle = .main) -> String {
+            switch self {
+            case .invalidValidatorAddress:
+                return String(localized: "The validator address cannot be read. Restore the keys and try again.", bundle: bundle, locale: locale)
+            case .confirmationDidNotMatch:
+                return String(localized: "The typed validator address did not match. The keys were not changed.", bundle: bundle, locale: locale)
+            case .ownerKeyUnavailable:
+                return String(localized: "Owner authentication is unavailable. Try again when the wallet key is ready.", bundle: bundle, locale: locale)
+            case .nodeRunning:
+                return String(localized: "The node is running. Wait for it to stop completely and try again.", bundle: bundle, locale: locale)
+            }
+        }
+    }
+
+    static func canOffer(reason: NodeStopReason?, processRunning: Bool, attached: Bool, lockHeld: Bool) -> Bool {
+        reason == .keyElsewhere && !processRunning && !attached && !lockHeld
+    }
+
+    static func warning(locale: Locale = .current, bundle: Bundle = .main) -> String {
+        String(localized: "Only do this if you moved this Mac's node on purpose; running the same keys on two Macs gets the validator slashed.", bundle: bundle, locale: locale)
+    }
+
+    /// The validator address is its 32-byte Ed25519 public key, not the
+    /// wallet account. Read only the public entry; never open private keys.
+    static func validatorAddress(in data: Data) throws -> String {
+        struct PublicEntry: Decodable { let key: String }
+        guard data.count <= 4_096,
+              let entry = try? JSONDecoder().decode(PublicEntry.self, from: data),
+              let address = normalized(entry.key) else { throw Refusal.invalidValidatorAddress }
+        return address
+    }
+
+    static func normalized(_ address: String) -> String? {
+        var text = address.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if text.hasPrefix("0x") { text.removeFirst(2) }
+        guard text.utf8.count == 64,
+              text.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
+        return text
+    }
+
+    static func authorize(validatorAddress: String, typedAddress: String, dataDirectory: String,
+                          authenticate: (Data) throws -> Void) throws -> Approval {
+        guard let address = normalized(validatorAddress) else { throw Refusal.invalidValidatorAddress }
+        guard normalized(typedAddress) == address else { throw Refusal.confirmationDidNotMatch }
+        let message = Data(("Aether local node key rebind approval v1\n"
+                            + "validator: \(address)\ndata: \(dataDirectory)\nchallenge: \(UUID().uuidString)\n").utf8)
+        try authenticate(message)
+        return Approval(validatorAddress: address, dataDirectory: dataDirectory,
+                        confirmationLine: typedAddress.trimmingCharacters(in: .whitespacesAndNewlines) + "\n")
     }
 }
 
@@ -259,6 +367,8 @@ struct NodeResumeFacts: Equatable {
     var movingStoragePercent: Int?
     /// Our own child process is alive.
     var processRunning = false
+    /// The alive node has paused signing while it retries Mac verification.
+    var confirmingMac = false
     /// Attached to a node someone else started (the unattended daemon's).
     var attached = false
     /// `run.lock` is held by a process that is not our child: an exclusive
@@ -274,6 +384,9 @@ struct NodeResumeFacts: Equatable {
     var isValidator = false
     /// The watchdog's terminal decision, and how long ago it was made.
     var blocked: NodeWatchdog.Failure?
+    /// A proven mismatch persisted by the node, including exits the wallet
+    /// did not observe because it was attached to the unattended daemon.
+    var keyBindingRefused = false
     var blockedForSeconds: Int = 0
     /// Free space on the volume that holds the block data, and its name
     /// (nil: the internal disk).
@@ -309,6 +422,9 @@ enum NodeResume {
 
     static func decide(_ f: NodeResumeFacts) -> NodeResumeDecision {
         guard f.enabled else { return .wait(.switchedOff) }
+        // This must precede attached takeover, retry timers and crash-loop
+        // recovery. A terminal refusal does not expire when the app relaunches.
+        if f.keyBindingRefused || f.blocked == .keyElsewhere { return .wait(.keyElsewhere) }
         if f.wrongLocation { return .wait(.wrongLocation) }
         // Attached to a node someone else started: it is alive exactly while
         // it holds run.lock. Once nobody does, it is gone — take the data
@@ -337,6 +453,7 @@ enum NodeResume {
                     : .wait(.diskFull(freeBytes: free, resumeBytes: resumeBytes, volume: f.volumeName))
             case .upgradeNeeded: return .wait(.upgradeNeeded)
             case .identityLost: return .wait(.identityLost)
+            case .keyElsewhere: return .wait(.keyElsewhere)
             case .database, .handoff, .storage: return .wait(.needsAttention(failure))
             case .alreadyRunning:
                 return f.lockHeldByOther ? .wait(.otherNodeRunning) : .start(detach: false)
@@ -374,9 +491,10 @@ enum NodeStatusLog {
             let storage: String
             switch f.storage {
             case .standard: storage = "internal"
-            case .chosen(let v, let m, let w): storage = "\(v)(mounted=\(m),writable=\(w))"
+            case .chosen(let v, let m, let w): storage = "\(v)(mounted=\(String(m)),writable=\(w))"
             }
-            s += " | enabled=\(f.enabled) proc=\(f.processRunning) attached=\(f.attached) lockOther=\(f.lockHeldByOther)"
+            s += " | enabled=\(f.enabled) proc=\(f.processRunning) confirmingMac=\(f.confirmingMac) attached=\(f.attached) lockOther=\(f.lockHeldByOther)"
+                + " keyBindingRefused=\(f.keyBindingRefused)"
                 + " battery=\(f.onBattery) onlyOnPower=\(f.onlyOnPower) blocked=\(f.blocked.map { "\($0)" } ?? "-")"
                 + " blockedFor=\(f.blockedForSeconds)s restartIn=\(f.restartInSeconds.map(String.init) ?? "-")"
                 + " free=\(free) storage=\(storage) migrating=\(f.migrating) gate=\(f.migrationGate == nil ? "open" : "shut")"

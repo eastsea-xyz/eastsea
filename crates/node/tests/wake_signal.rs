@@ -4,6 +4,7 @@
 //! the supervisor silently, and the node stopped with no line in node.log.
 //! The supervisor now survives the signal and forwards it to its child.
 
+use aether_test_support::Port;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -23,9 +24,11 @@ fn the_supervisor_survives_the_apps_wake_signal() {
     let dir = std::env::temp_dir().join(format!("aether-wake-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    let rpc_port = Port::reserve().expect("reserve supervisor RPC port");
+    let p2p_port = Port::reserve().expect("reserve supervisor P2P port");
     let mut child = Command::new(env!("CARGO_BIN_EXE_aether"))
         .args(["run", "--data"]).arg(&dir)
-        .args(["--rpc-port", "1", "--port", "2", "--min-free-disk=900000G"])
+        .args(["--rpc-port", &rpc_port.to_string(), "--port", &p2p_port.to_string(), "--min-free-disk=900000G"])
         .stdout(Stdio::null()).stderr(Stdio::null())
         .spawn().expect("spawn aether");
     // Let it reach the disk wait (the handler is installed first thing).

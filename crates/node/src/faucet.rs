@@ -69,6 +69,7 @@ struct State {
 
 pub struct Faucet {
     signer: P256Signer,
+    binding: Option<crate::key_binding::Guard>,
     pub address: Address,
     state: Mutex<State>,
 }
@@ -79,6 +80,7 @@ impl Faucet {
         let address = address_of(&signer.public_key()).map_err(|e| e.to_string())?;
         Ok(Faucet {
             signer,
+            binding: None,
             address,
             state: Mutex::new(State {
                 last: HashMap::new(),
@@ -98,7 +100,12 @@ impl Faucet {
         let seed: [u8; 32] = bytes
             .try_into()
             .map_err(|_| format!("{}: expected a 32-byte hex seed", path.display()))?;
-        Self::from_seed(&seed)
+        let mut account = Self::from_seed(&seed)?;
+        if path.file_name().is_some_and(|name| name == crate::candidate::ACCOUNT_FILE) {
+            let keys = crate::roster::LocalKeys::load(path.parent().unwrap_or_else(|| Path::new(".")))?;
+            account.binding = keys.binding;
+        }
+        Ok(account)
     }
 
     /// Create a new random faucet key at `path` (owner-only permissions); returns its address.
@@ -158,6 +165,7 @@ impl Faucet {
 
     /// Sign arbitrary bytes (a registrar attestation): raw r‖s.
     pub fn sign_bytes(&self, msg: &[u8]) -> Result<([u8; 32], [u8; 32]), String> {
+        self.check_binding();
         let sig = self.signer.sign(msg).map_err(|e| format!("{e:?}"))?;
         Ok((
             sig[..32].try_into().expect("32"),
@@ -174,6 +182,7 @@ impl Faucet {
         call: &EvmCall,
         base: FeeVector,
     ) -> Result<TxEnvelope, String> {
+        self.check_binding();
         let caps = FeeVector {
             exec: base.exec.saturating_mul(2),
             state: base.state.saturating_mul(2),
@@ -192,6 +201,7 @@ impl Faucet {
         to: Address,
         now: Instant,
     ) -> Result<TxEnvelope, FaucetError> {
+        self.check_binding();
         let (cfg, onchain_nonce, base) = {
             let g = chain.lock();
             let base = Chain::next_base_fee(&g.cfg, &g.finalized);
@@ -252,6 +262,10 @@ impl Faucet {
         }
         st.last.insert(to, now);
         Ok(tx)
+    }
+
+    fn check_binding(&self) {
+        if let Some(guard) = &self.binding { guard.check_or_exit(); }
     }
 }
 

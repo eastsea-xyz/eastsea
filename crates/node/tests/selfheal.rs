@@ -16,6 +16,7 @@ use aether_node::chain::{build_payload, dev_accounts, dev_seed, Chain, ChainConf
 use aether_node::follow::{self, FinalityArchive, Upstream};
 use aether_node::rpc::{self, RpcState};
 use aether_node::store::{self, Store};
+use aether_test_support::{Port, TestChild};
 use aether_types::{GasVector, U256};
 use axum::{extract::State, routing::post, Json, Router};
 use commonware_codec::Encode;
@@ -200,9 +201,15 @@ fn serve(st: &RpcState, rt: &tokio::runtime::Runtime, delay: Duration) -> (Strin
     }
     let calls = Arc::new(Mutex::new(Vec::new()));
     let app = Router::new().route("/", post(served)).with_state(Served { st: st.clone(), calls: calls.clone(), delay });
-    let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).expect("bind");
+    let port_guard = Port::reserve().expect("reserve source RPC port");
+    let listener = port_guard.bind_tcp().expect("bind");
+    listener.set_nonblocking(true).unwrap();
+    let listener = rt.block_on(async { tokio::net::TcpListener::from_std(listener).unwrap() });
     let port = listener.local_addr().unwrap().port();
-    rt.spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    rt.spawn(async move {
+        let _port = port_guard;
+        axum::serve(listener, app).await.expect("serve")
+    });
     (format!("http://127.0.0.1:{port}"), calls)
 }
 
@@ -226,9 +233,15 @@ fn serve_cut(st: &RpcState, rt: &tokio::runtime::Runtime) -> (String, Arc<Atomic
     }
     let cut = Arc::new(AtomicBool::new(false));
     let app = Router::new().route("/", post(served)).with_state(Cut { st: st.clone(), cut: cut.clone() });
-    let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).expect("bind");
+    let port_guard = Port::reserve().expect("reserve partitionable-source RPC port");
+    let listener = port_guard.bind_tcp().expect("bind");
+    listener.set_nonblocking(true).unwrap();
+    let listener = rt.block_on(async { tokio::net::TcpListener::from_std(listener).unwrap() });
     let port = listener.local_addr().unwrap().port();
-    rt.spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    rt.spawn(async move {
+        let _port = port_guard;
+        axum::serve(listener, app).await.expect("serve")
+    });
     (format!("http://127.0.0.1:{port}"), cut)
 }
 
@@ -372,26 +385,23 @@ fn a_disk_that_never_heals_exits_with_the_storage_code() {
     let (url, _calls) = serve(&rpc_state(&src), &rt, Duration::ZERO);
 
     // A loopback port for the child's own RPC.
-    let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let rpc_port = probe.local_addr().unwrap().port();
-    drop(probe);
+    let rpc_port = Port::reserve().expect("reserve follower RPC port");
 
-    let log = std::fs::File::create(dir_fol.join("node.log")).unwrap();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_aether"))
-        .args([
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_aether"));
+    command.args([
             "follow",
             "--data", dir_fol.to_str().unwrap(),
             "--from-rpc", &url,
             "--rpc-port", &rpc_port.to_string(),
             "--dev-storage-fault", "1200",
         ])
-        .env("AETHER_STORE_RECOVERY", "5,8") // exhaust in ~1.3 s, not ~3 min
-        .stdout(log.try_clone().unwrap())
-        .stderr(log)
-        .spawn()
-        .expect("spawn aether");
+        .env("AETHER_STORE_RECOVERY", "5,8"); // exhaust in ~1.3 s, not ~3 min
+    let child = TestChild::spawn(command, dir_fol.join("node.log")).expect("spawn aether");
     let deadline = Instant::now() + Duration::from_secs(180); // a fresh 187 MB binary can sit in dyld for a while on a busy Mac
     let status = loop {
+        if std::net::TcpStream::connect(rpc_port.addr()).is_ok() {
+            child.mark_started();
+        }
         if let Some(s) = child.try_wait().unwrap() {
             break s;
         }
@@ -598,22 +608,18 @@ fn a_node_that_meets_a_too_new_database_exits_with_the_update_code() {
 
     // A loopback port for the child's own RPC; the upstream URL is never
     // reached — the store opens before any network.
-    let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let rpc_port = probe.local_addr().unwrap().port();
-    drop(probe);
+    let rpc_port = Port::reserve().expect("reserve follower RPC port");
+    let upstream = Port::reserve().expect("reserve unreachable upstream RPC port");
+    let upstream_url = format!("http://{}", upstream.addr());
 
-    let log = std::fs::File::create(dir.join("node.log")).unwrap();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_aether"))
-        .args([
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_aether"));
+    command.args([
             "follow",
             "--data", dir.to_str().unwrap(),
-            "--from-rpc", "http://127.0.0.1:1",
+            "--from-rpc", &upstream_url,
             "--rpc-port", &rpc_port.to_string(),
-        ])
-        .stdout(log.try_clone().unwrap())
-        .stderr(log)
-        .spawn()
-        .expect("spawn aether");
+        ]);
+    let child = TestChild::spawn(command, dir.join("node.log")).expect("spawn aether");
     let deadline = Instant::now() + Duration::from_secs(180); // dyld can be slow on a busy Mac
     let status = loop {
         if let Some(s) = child.try_wait().unwrap() {

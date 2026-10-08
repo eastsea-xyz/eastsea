@@ -153,7 +153,7 @@ impl<E: BufferPooler + Storage + Metrics + Clock> Blocks for FinalizedBlocks<E> 
 impl<E: BufferPooler + Storage + Metrics + Clock> Certificates for FinalizedCerts<E> {
     type BlockDigest = Digest;
     type Commitment = Digest;
-    type Scheme = aether_light::Scheme;
+    type Scheme = crate::key_binding::signing::Scheme;
     type Error = archive::Error;
 
     async fn put(self, height: Height, digest: Digest, finalization: Finalization) -> Result<Self, Self::Error> {

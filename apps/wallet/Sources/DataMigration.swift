@@ -44,8 +44,11 @@ enum DataMigration {
         case waitingForUnlock(String)
     }
 
-    static let unlockSentence = "Unlock this Mac to finish moving your wallet. Your node data has already moved; "
-        + "the wallet key file can only be read while the Mac is unlocked. Nothing was deleted."
+    static func unlockSentence(locale: Locale = .current, bundle: Bundle = .main) -> String {
+        String(localized: "Unlock this Mac to finish moving your wallet. Your node data has already moved; the wallet key file can only be read while the Mac is unlocked. Nothing was deleted.", bundle: bundle, locale: locale)
+    }
+
+    static var unlockSentence: String { unlockSentence() }
 
     static let oldAppID = "com.pipln.aether"
     static let doneKey = "renameMigrationDone"
@@ -113,7 +116,7 @@ enum DataMigration {
     /// volume; `meter` receives the bytes the verified-copy path works through.
     static func migrate(support: URL, defaults: UserDefaults, oldPreferencesDomain: String = oldAppID,
                         forceCopy: Bool = false, meter: ProgressMeter? = nil,
-                        oldPreferences: [String: Any]? = nil) -> Outcome {
+                        oldPreferences: [String: Any]? = nil, locale: Locale = .current, bundle: Bundle = .main) -> Outcome {
         let copyPreferences = {
             if let oldPreferences { copyPreferencesDict(oldPreferences, into: defaults) }
             else { copyOldPreferences(from: oldPreferencesDomain, into: defaults) }
@@ -128,7 +131,7 @@ enum DataMigration {
         if fm.fileExists(atPath: oldNode.path), !holdsIdentity(oldNode),
            (defaults.bool(forKey: nodeDoneKey) || fm.fileExists(atPath: oldNode.appending(path: markerName).path)),
            !fm.fileExists(atPath: newNode.path) {
-            return .failed("The migrated EastSea node data is unavailable. Reconnect its disk or restore the destination; the old recovery copy was left untouched.")
+            return .failed(String(localized: "The migrated EastSea node data is unavailable. Reconnect its disk or restore the destination; the old recovery copy was left untouched.", bundle: bundle, locale: locale))
         }
         let stale = unmigratedOldData(support: support)
         if defaults.bool(forKey: doneKey) {
@@ -148,7 +151,7 @@ enum DataMigration {
             defaults.set(true, forKey: doneKey)
             return .noOldData
         }
-        if let why = destinationProblem(support) { return .failed(why) }
+        if let why = destinationProblem(support, locale: locale, bundle: bundle) { return .failed(why) }
 
         // The old node must not be running while its data moves: hold its
         // own run.lock exclusively first (red team #12's lock, reused).
@@ -158,15 +161,10 @@ enum DataMigration {
             case .held(let fd):
                 lockFD = fd
             case .busy:
-                return .deferred(ko
-                    ? "먼저 이전 Aether 앱을 종료해 주세요. 지금 실행 중이라 데이터를 옮길 수 없어요. 아무것도 옮기지 않았고, 다음에 앱을 열 때 옮겨요."
-                    : "Quit the old Aether app first — it is running (it holds the old data's run.lock). "
-                    + "Nothing was moved; the move happens on the next launch.")
+                return .deferred(String(localized: "Quit the old Aether app first — it is running. Nothing was moved; the move happens on the next launch.", bundle: bundle, locale: locale))
             case .broken(let why):
-                return .failed(ko
-                    ? "이전 데이터 폴더를 열지 못했어요. 아무것도 바꾸지 않았고, 다음에 앱을 열 때 다시 시도해요."
-                    : "cannot lock the old data directory (\(why)); nothing was changed — "
-                    + "the next launch retries")
+                NSLog("cannot lock the old data directory (%@); nothing was changed; the next launch retries", why)
+                return .failed(String(localized: "The old data folder could not be opened. Nothing was changed; the next launch retries.", bundle: bundle, locale: locale))
             }
         }
         defer { if let fd = lockFD { close(fd) } }
@@ -190,9 +188,10 @@ enum DataMigration {
                 switch tryHoldLock(newNode.appending(path: lockName)) {
                 case .held(let fd): destinationLockFD = fd
                 case .busy:
-                    return .deferred("Quit the EastSea node before finishing this data move. The destination is running; neither node tree was changed.")
+                    return .deferred(String(localized: "Quit the EastSea node before finishing this data move. The destination is running; neither node tree was changed.", bundle: bundle, locale: locale))
                 case .broken(let why):
-                    return .failed("Cannot lock the destination node data (\(why)); neither node tree was changed.")
+                    NSLog("Cannot lock the destination node data (%@); neither node tree was changed.", why)
+                    return .failed(String(localized: "The destination node data could not be opened. Neither node tree was changed.", bundle: bundle, locale: locale))
                 }
                 // A tree already at its new home is the resume path of an
                 // interrupted run (or a cross-volume fallback): a verified
@@ -211,7 +210,7 @@ enum DataMigration {
                 case .moved: break
                 case .copied: oldTreeRemains = true
                 case .busy:
-                    return .deferred("Quit the EastSea node before finishing this data move. The destination is running; no source data was removed.")
+                    return .deferred(String(localized: "Quit the EastSea node before finishing this data move. The destination is running; no source data was removed.", bundle: bundle, locale: locale))
                 case .failed:
                     oldTreeRemains = fm.fileExists(atPath: oldNode.path)
                     problems.append("the node data (identity, share, journal, database) did not move or did not verify")
@@ -268,12 +267,10 @@ enum DataMigration {
         if !nodeProblem && !oldTreeRemains { copyPreferences() }
         guard problems.isEmpty else {
             if problems.count == unreadable.count {
-                return .waitingForUnlock(unlockSentence)
+                return .waitingForUnlock(unlockSentence(locale: locale, bundle: bundle))
             }
-            return .failed(ko
-                ? "데이터 옮기기를 끝내지 못했어요. 지운 것은 없고, 다음에 앱을 열 때 다시 시도해요."
-                : "migration incomplete: \(problems.joined(separator: "; ")). "
-                + "Nothing was deleted; the next launch retries.")
+            NSLog("migration incomplete: %@. Nothing was deleted; the next launch retries.", problems.joined(separator: "; "))
+            return .failed(String(localized: "The data move could not be completed. Nothing was deleted; the next launch retries.", bundle: bundle, locale: locale))
         }
         copyPreferences()
         defaults.set(true, forKey: doneKey)
@@ -344,8 +341,8 @@ enum DataMigration {
     /// Both creation and existing-handle restoration use this gate (R05).
     /// No done flag can open it: the authoritative handle must match.
     static func mayCreateFreshWalletKey(support: URL? = nil, defaults: UserDefaults = .standard,
-                                        runner: Runner? = nil) -> String? {
-        if (runner ?? (support == nil ? Runner.shared : nil))?.isRunning == true { return movingSentence }
+                                        runner: Runner? = nil, locale: Locale = .current, bundle: Bundle = .main) -> String? {
+        if (runner ?? (support == nil ? Runner.shared : nil))?.isRunning == true { return movingSentence(locale: locale, bundle: bundle) }
         let s = support ?? supportURL
         for name in walletHandleNames {
             let old = s.appending(path: "AetherWallet/\(name)")
@@ -353,11 +350,7 @@ enum DataMigration {
             if fm.fileExists(atPath: old.path) && !fileMatches(old, new) {
                 // An existing replacement handle is not settled merely
                 // because a file exists. The original handle is authoritative.
-                return ko
-                    ? "이전 Aether 지갑 키를 아직 옮기는 중이에요. 앱을 한 번 더 열어 옮기기를 끝내 주세요(이전 Aether 앱을 종료하라고 하면 먼저 종료해 주세요). 지금 새 키를 만들면 지갑 주소가 둘이 되어 처음 주소를 쓸 수 없게 돼요."
-                    : "Your old Aether wallet key has not moved over yet. Open the app once more to finish the move "
-                    + "(if it asks you to quit the old Aether app, quit it first). A new key now would give this Mac "
-                    + "a second wallet address and leave the first one behind."
+                return String(localized: "Your old Aether wallet key has not moved over yet. Open the app once more to finish the move (if it asks you to quit the old Aether app, quit it first). A new key now would give this Mac a second wallet address and leave the first one behind.", bundle: bundle, locale: locale)
             }
         }
         return nil
@@ -373,31 +366,21 @@ enum DataMigration {
     /// validator identity in the new home (the node, `candidate-info`, the
     /// unattended daemon's marker) asks this first.
     static func mayStartNode(support: URL? = nil, defaults: UserDefaults = .standard,
-                             runner: Runner? = nil) -> String? {
-        if (runner ?? (support == nil ? Runner.shared : nil))?.isRunning == true { return movingSentence }
+                             runner: Runner? = nil, locale: Locale = .current, bundle: Bundle = .main) -> String? {
+        if (runner ?? (support == nil ? Runner.shared : nil))?.isRunning == true { return movingSentence(locale: locale, bundle: bundle) }
         let s = support ?? supportURL
         if unmigratedOldData(support: s).contains(oldIdentityGuardItem) {
-            return ko
-                ? "이전 Aether 앱의 노드 정보가 아직 옮겨지지 않았어요. 앱을 한 번 더 열어 옮기기를 끝내 주세요. 지금 시작하면 노드가 둘이 돼요."
-                : "This Mac's node identity from the old Aether app has not moved over yet. "
-                + "Open the app once more to finish the move. Starting now would make a second node."
+            return String(localized: "This Mac's node identity from the old Aether app has not moved over yet. Open the app once more to finish the move. Starting now would make a second node.", bundle: bundle, locale: locale)
         }
         if nodeMigrationComplete(support: s, defaults: defaults) { return nil }
-        return ko
-            ? "이전 Aether 노드 데이터를 아직 다 옮기지 못했어요. 앱을 한 번 더 열어 옮기기를 끝내 주세요(이전 Aether 앱을 종료하라고 하면 종료해 주세요). 지금 시작하면 같은 노드가 둘 돌 수 있어요."
-            : "Your old Aether node data has not finished moving over. Open the app once more to finish the move "
-            + "(quit the old Aether app if it asks). Starting now could run the same node twice."
+        return String(localized: "Your old Aether node data has not finished moving over. Open the app once more to finish the move (quit the old Aether app if it asks). Starting now could run the same node twice.", bundle: bundle, locale: locale)
     }
 
-    static var movingSentence: String {
-        ko ? "동해가 Aether의 데이터를 옮기고 있어요. 잠시면 끝나고, 끝나는 대로 지갑과 노드가 시작돼요."
-            : "EastSea is moving your data over from Aether. This takes a moment; "
-            + "the wallet and the node start as soon as it is done."
+    static func movingSentence(locale: Locale = .current, bundle: Bundle = .main) -> String {
+        String(localized: "EastSea is moving your data over from Aether. This takes a moment; the wallet and the node start as soon as it is done.", bundle: bundle, locale: locale)
     }
 
-    /// The app's language (its bundle localization), for the sentences a
-    /// person reads; the technical details stay in English logs.
-    private static var ko: Bool { Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false }
+    static var movingSentence: String { movingSentence() }
 
     // MARK: verification
 
@@ -806,17 +789,24 @@ enum DataMigration {
 
     /// Refuse a symlinked old or new home (the move must not write through a
     /// link somebody pointed somewhere else) and any old/new overlap.
-    private static func destinationProblem(_ support: URL) -> String? {
+    private static func destinationProblem(_ support: URL, locale: Locale, bundle: Bundle) -> String? {
         for part in ["Aether", "Aether/node", "AetherWallet", "EastSea", "EastSea/node", "EastSeaWallet"] {
             let p = support.appending(path: part)
             if (try? fm.destinationOfSymbolicLink(atPath: p.path)) != nil {
-                return "\(part) is a symbolic link — refusing to migrate through it. Remove the link and relaunch."
+                NSLog("%@ is a symbolic link; refusing to migrate through it", part)
+                return String(localized: "A data folder points to another location. Remove the link and reopen the app.", bundle: bundle, locale: locale)
             }
         }
         let oldR = support.appending(path: "Aether/node").standardizedFileURL.path
         let newR = support.appending(path: "EastSea/node").standardizedFileURL.path
-        if oldR == newR { return "the old and new data paths resolve to the same place (\(oldR))" }
-        if newR.hasPrefix(oldR + "/") || oldR.hasPrefix(newR + "/") { return "one data path sits inside the other" }
+        if oldR == newR {
+            NSLog("the old and new data paths resolve to the same place (%@)", oldR)
+            return String(localized: "The old and new data folders are in the same place. Choose a separate folder and reopen the app.", bundle: bundle, locale: locale)
+        }
+        if newR.hasPrefix(oldR + "/") || oldR.hasPrefix(newR + "/") {
+            NSLog("one data path sits inside the other: %@; %@", oldR, newR)
+            return String(localized: "One data folder is inside the other. Choose a separate folder and reopen the app.", bundle: bundle, locale: locale)
+        }
         return nil
     }
 
@@ -905,6 +895,8 @@ enum DataMigration {
         let defaults: UserDefaults
         let oldPreferencesDomain: String
         let forceCopy: Bool
+        let locale: Locale
+        let bundle: Bundle
         /// The verified copy's progress, 0…1.
         var onProgress: ((Double) -> Void)?
         /// A background run started (the app shows its progress).
@@ -926,13 +918,16 @@ enum DataMigration {
 
         init(support: URL, defaults: UserDefaults, oldPreferencesDomain: String = DataMigration.oldAppID,
              forceCopy: Bool = false, retryInterval: TimeInterval = 30,
-             now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+             now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+             locale: Locale = .current, bundle: Bundle = .main) {
             self.support = support
             self.defaults = defaults
             self.oldPreferencesDomain = oldPreferencesDomain
             self.forceCopy = forceCopy
             self.retryInterval = max(1, retryInterval)
             self.now = now
+            self.locale = locale
+            self.bundle = bundle
         }
 
         /// A migration is working right now (the gates stay shut).
@@ -953,7 +948,7 @@ enum DataMigration {
             let meter = ProgressMeter { [weak self] in self?.onProgress?($0) }
             let outcome = DataMigration.migrate(support: support, defaults: defaults,
                                                 oldPreferencesDomain: oldPreferencesDomain,
-                                                forceCopy: forceCopy, meter: meter)
+                                                forceCopy: forceCopy, meter: meter, locale: locale, bundle: bundle)
             let finishedAt = now()
             stateLock.lock()
             lastOutcome = outcome
@@ -982,7 +977,7 @@ enum DataMigration {
             if let cached = cachedOutcome() { return cached }
             if !expectsLongRun() {
                 // Fast path; but if a background run holds the lock, do not wait.
-                guard runLock.try() else { return .running(DataMigration.movingSentence) }
+                guard runLock.try() else { return .running(DataMigration.movingSentence(locale: locale, bundle: bundle)) }
                 let outcome = runHoldingLock()
                 runLock.unlock()
                 // Every inline outcome reaches the app (the founder's MacBook
@@ -1017,7 +1012,7 @@ enum DataMigration {
             }
             if running {
                 stateLock.unlock()
-                return .running(DataMigration.movingSentence)
+                return .running(DataMigration.movingSentence(locale: locale, bundle: bundle))
             }
             if !retrying, let cached = lastOutcome, instant < retryAt {
                 stateLock.unlock()
@@ -1032,7 +1027,7 @@ enum DataMigration {
                 runLock.unlock()
                 onFinish?(outcome)
             }
-            return .running(DataMigration.movingSentence)
+            return .running(DataMigration.movingSentence(locale: locale, bundle: bundle))
         }
 
         private func cachedOutcome() -> Outcome? {

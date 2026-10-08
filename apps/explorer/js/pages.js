@@ -1,13 +1,14 @@
 // The five views. Each is one async function: it fetches what the node serves,
 // then builds DOM through `h` (never HTML strings). Everything the RPC gives is
-// finalized — the node serves no other kind — and none of it is verified here,
-// which is why every page carries its "read from the node" line.
+// finalized except live presence, which is the node's current observation.
+// None is verified here, which is why every page carries its source line.
 
 import { card, copyButton, dot, kv, message, pill, sourceLine, table, h } from './dom.js';
 import { coinTicker, displayTokenName, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, droppedText, notIncludedText, shortHex, timeAgo, toBigInt, txRate } from './format.js';
 import { TRANSFER_TOPIC, decodeApproval, decodeTransfer, revertReason, wordAddress } from './abi.js';
 import { looksLikeOfficial, officialTokens, originBadge, tokenInfo, tokenOrigin, totalSupply } from './erc20.js';
 import { NOT_COMMITTED } from './verify.js';
+import { PRESENCE_REGIONS, PRESENCE_ROLES, readPresence } from './presence.js';
 
 // ---- little shared builders ----
 
@@ -82,11 +83,12 @@ function sortableLogs(logs) {
 // ---- home ----
 
 export async function homeView(ctx) {
-  const [status, blocks, candidates, prover] = await Promise.all([
+  const [status, blocks, candidates, prover, presence] = await Promise.all([
     ctx.node.call('aether_status'),
     ctx.node.call('aether_recentBlocks', [30]),
     ctx.node.call('aether_candidates').catch(() => null),
     ctx.node.call('aether_proverStatus').catch(() => null),
+    readPresence(ctx.node),
   ]);
   const rate = txRate(blocks);
   const outdated = status.node_protocol < status.newest_scheduled;
@@ -124,7 +126,26 @@ export async function homeView(ctx) {
 
   return h('div', { class: 'stack' },
     sourceLine(ctx.node, `chain ${status.chain_id} · finalized height ${formatInt(status.height)}`),
-    tiles, list, chain);
+    tiles, liveNetwork(presence), list, chain);
+}
+
+function liveNetwork(presence) {
+  const scope = h('p', { class: 'small muted source' }, 'what this node can see · refreshes every 10 seconds');
+  if (!presence) return card('Live network',
+    h('p', { class: 'live-total' }, 'Unavailable'), scope,
+    message('plain', 'Live presence is unavailable from this source. It will be checked again; choose another node in Settings to read its view.'));
+  const breakdown = (title, pairs) => h('div', { class: 'live-breakdown' },
+    h('h3', {}, title), pairs.length ? h('dl', { class: 'live-counts' }, ...pairs.flatMap(([label, count]) => [
+      h('dt', {}, label), h('dd', {}, formatInt(count)),
+    ])) : h('p', { class: 'small muted source' }, 'None observed'));
+  return card('Live network',
+    h('p', { class: 'live-total' }, `${formatInt(presence.total)} Mac${presence.total === 1 ? '' : 's'} online now`),
+    scope,
+    h('div', { class: 'live-breakdowns' },
+      breakdown('By role', PRESENCE_ROLES.map((role) => [role[0].toUpperCase() + role.slice(1), presence.byRole[role]])),
+      breakdown('By version', Object.entries(presence.byVersion).sort(([a], [b]) => b.localeCompare(a, undefined, { numeric: true }))),
+      breakdown('By region', PRESENCE_REGIONS.map(([key, label]) => [label, presence.byRegion[key]]))),
+    h('p', { class: 'small muted source' }, `Regions follow home relays. Presence expires after ${formatInt(presence.ttlSeconds)} seconds and is separate from consensus.`));
 }
 
 function tile(label, value, sub, extra = '') {

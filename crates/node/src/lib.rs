@@ -21,6 +21,7 @@ pub mod handoff;
 pub mod mainnet;
 pub mod inclusion;
 pub mod p2p;
+pub mod presence;
 pub mod prover;
 pub mod prover_input;
 pub mod prune;

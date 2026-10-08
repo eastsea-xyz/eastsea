@@ -54,6 +54,8 @@ pub struct RpcState {
     /// write, node-local and heavy method is refused, and the caps below apply.
     /// The bind stays loopback either way — exposure goes through a tunnel.
     pub public_read_only: bool,
+    /// This endpoint's ephemeral signed presence and current iroh connections.
+    pub presence: Option<Arc<crate::presence::Presence>>,
 }
 
 /// What the public read-only gateway lets through `handle_value`: exactly the
@@ -62,6 +64,7 @@ pub struct RpcState {
 /// registration, snapshots, shards, era chunks — is refused, so a gateway can
 /// never relay a transaction or trigger node-side work.
 const PUBLIC_READ_METHODS: &[&str] = &[
+    "aether_presence",
     "aether_status",
     "aether_recentBlocks",
     "aether_candidates",
@@ -260,7 +263,8 @@ pub fn blake3_hex(b: &[u8]) -> String {
 
 pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
     // Loopback only; any origin may ask (web pages and dApps read through this
-    // node; every write still needs the user's signature in the wallet).
+    // node; chain writes still need a wallet signature). Privacy settings
+    // additionally refuse browser origins and public iroh streams.
     // The public read-only gateway is no exception: it binds loopback too and
     // reaches the internet only through a cloudflared tunnel
     // (docs/ops/read-gateway.md). Refusing a non-loopback bind here beats
@@ -272,6 +276,17 @@ pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
             format!("--public-read-only binds loopback only (asked for {addr}); expose it through a tunnel, docs/ops/read-gateway.md"),
         ));
     }
+    if !addr.ip().is_loopback() {
+        if let Some(p) = &state.presence { p.disable_country_settings(); }
+    }
+    let app = http_router(state);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await
+}
+
+/// Production HTTP routes, shared with header/privacy regression tests.
+pub fn http_router(state: RpcState) -> Router {
+    let public = state.public_read_only;
     let cors = tower_http::cors::CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
         .allow_methods([axum::http::Method::POST, axum::http::Method::GET, axum::http::Method::OPTIONS])
@@ -291,18 +306,20 @@ pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
     // The public gateway also caps what one request may make this node parse:
     // an oversized Content-Length is refused at the head, with a 413 the asker
     // can read; DefaultBodyLimit backstops a chunked or lying body.
-    let app = if public {
+    if public {
         app.layer(axum::extract::DefaultBodyLimit::max(PUBLIC_MAX_BODY))
             .layer(axum::middleware::from_fn(public_body_cap))
     } else {
         app
-    };
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await
+    }
 }
 
-async fn handle(State(st): State<RpcState>, Json(req): Json<Value>) -> Json<Value> {
-    Json(handle_value(&st, req).await)
+async fn handle(State(st): State<RpcState>, headers: axum::http::HeaderMap, Json(req): Json<Value>) -> Json<Value> {
+    // Native Settings uses URLSession without browser headers. The otherwise
+    // permissive read CORS policy must not let a website opt this Mac into
+    // country disclosure, including through aliases or a JSON-RPC batch.
+    let browser = headers.contains_key(axum::http::header::ORIGIN) || headers.contains_key("sec-fetch-site");
+    Json(if browser { handle_remote_value(&st, req).await } else { handle_value(&st, req).await })
 }
 
 /// The public gateway refuses an oversized request at the header stage, so the
@@ -450,6 +467,15 @@ fn normalize_method(method: &str) -> std::borrow::Cow<'_, str> {
 /// Transport-independent JSON-RPC handling (HTTP on loopback, iroh QUIC publicly).
 /// A request array is a batch, answered entry by entry; entries may not nest.
 pub async fn handle_value(st: &RpcState, req: Value) -> Value {
+    handle_from(st, req, true).await
+}
+
+/// Public iroh streams must never change this Mac's privacy preference.
+pub async fn handle_remote_value(st: &RpcState, req: Value) -> Value {
+    handle_from(st, req, false).await
+}
+
+async fn handle_from(st: &RpcState, req: Value, local_settings: bool) -> Value {
     if let Value::Array(entries) = &req {
         if entries.is_empty() {
             return json!({ "jsonrpc": "2.0", "id": Value::Null, "error": { "code": -32600, "message": "empty batch" } });
@@ -461,19 +487,22 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
         let mut answers = Vec::with_capacity(entries.len());
         for e in entries {
             answers.push(match e {
-                Value::Object(_) => single(st, e.clone()).await,
+                Value::Object(_) => single(st, e.clone(), local_settings).await,
                 _ => json!({ "jsonrpc": "2.0", "id": Value::Null, "error": { "code": -32600, "message": "batch entries must be objects" } }),
             });
         }
         return json!(answers);
     }
-    single(st, req).await
+    single(st, req, local_settings).await
 }
 
-async fn single(st: &RpcState, req: Value) -> Value {
+async fn single(st: &RpcState, req: Value, local_settings: bool) -> Value {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let method = normalize_method(req.get("method").and_then(Value::as_str).unwrap_or_default());
     let params = req.get("params").cloned().unwrap_or(Value::Array(vec![]));
+    if !local_settings && method == "aether_setPresenceCountry" {
+        return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"presence country settings are local-only"}});
+    }
     // Before any handler or upstream hop: on the public gateway only the
     // allowlisted reads (within their caps) reach the machinery in RpcState.
     if st.public_read_only {
@@ -847,6 +876,18 @@ fn param<T: serde::de::DeserializeOwned>(p: &Value, i: usize) -> Result<T, (i64,
 fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
     let chain = &st.chain;
     match method {
+        "aether_peers" => Ok(st.presence.as_ref().map(|p| p.peer_snapshot()).unwrap_or_else(|| json!([]))),
+        "aether_presence" => Ok(st.presence.as_ref().map(|p| p.snapshot()).unwrap_or_else(crate::presence::unavailable)),
+        "aether_setPresenceCountry" => {
+            let country = match p.as_array().map(Vec::as_slice) {
+                Some([Value::Null]) => None,
+                Some([Value::String(s)]) => Some(s.clone()),
+                _ => return Err((-32602, "params: [uppercase ISO country code or null]".into())),
+            };
+            let presence = st.presence.as_ref().ok_or_else(|| (-32000, "no iroh presence endpoint on this node".into()))?;
+            presence.set_country(country).map_err(|e| (-32602, e))?;
+            Ok(json!({"ok":true}))
+        }
         "aether_status" => {
             let resources = crate::resources::monitor().map(|m| m.status_value()).unwrap_or(Value::Null);
             let g = chain.lock();
@@ -1306,7 +1347,7 @@ fn bare_state() -> RpcState {
         snapshot: Default::default(),
         prover: None,
         shards: None,
-        public_read_only: false,
+        public_read_only: false, presence: None,
     }
 }
 
@@ -1675,7 +1716,7 @@ mod release_tests {
             snapshot: Default::default(),
             prover: None,
             shards: None,
-            public_read_only: false,
+            public_read_only: false, presence: None,
         };
         st.snapshot.0.building.store(true, Ordering::Release);
         assert!(cached_snapshot(&st).unwrap_err().1.contains("already running"));
@@ -2203,7 +2244,7 @@ mod public_read_tests {
                 gossip,
                 faucet: None, registrar: None, network: None, upstream: None,
                 handoff: None, snapshot: Default::default(), prover: None,
-                shards: None, public_read_only: public,
+                shards: None, public_read_only: public, presence: None,
             }
         };
         let free = || {
@@ -2272,7 +2313,7 @@ mod public_read_tests {
             gossip,
             faucet: None, registrar: None, network: None, upstream: None,
             handoff: None, snapshot: Default::default(), prover: None,
-            shards: None, public_read_only: false,
+            shards: None, public_read_only: false, presence: None,
         };
         let app = Router::new().route("/era/{name}", get(serve_era_file)).with_state(st);
         rt.block_on(async {
@@ -2337,7 +2378,7 @@ mod public_read_tests {
             gossip,
             faucet: None, registrar: None, network: None, upstream: None,
             handoff: None, snapshot: Default::default(), prover: None,
-            shards: None, public_read_only: false,
+            shards: None, public_read_only: false, presence: None,
         };
         let app = Router::new().route("/era/{name}", get(serve_era_file)).with_state(st);
         rt.block_on(async {
@@ -2468,7 +2509,7 @@ mod public_read_tests {
             gossip,
             faucet: None, registrar: None, network: None, upstream: None,
             handoff: None, snapshot: Default::default(), prover: None,
-            shards: None, public_read_only: true,
+            shards: None, public_read_only: true, presence: None,
         };
         st.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
         // The budget already exhausted by other strangers' reconstructions:
@@ -2522,7 +2563,7 @@ mod public_read_tests {
             gossip,
             faucet: None, registrar: None, network: None, upstream: None,
             handoff: None, snapshot: Default::default(), prover: None,
-            shards: None, public_read_only: false,
+            shards: None, public_read_only: false, presence: None,
         };
         rt.block_on(async {
             let a = tokio::spawn({

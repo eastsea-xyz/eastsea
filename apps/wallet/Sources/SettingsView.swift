@@ -27,6 +27,7 @@ struct SettingsView: View {
             UnattendedSection()
             HistoryStorageSection()
             ResourcesSection()
+            PresencePrivacySection()
             Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting \(Brand.name) stops it.")
                 .font(.caption).foregroundStyle(.secondary)
             // Honest power ranges (docs/research/mac-power-cost-2026.md): the node is
@@ -76,6 +77,31 @@ struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 420)
+    }
+}
+
+struct PresencePrivacySection: View {
+    @EnvironmentObject var node: NodeController
+
+    private var countryLocale: Locale {
+        Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en")
+    }
+
+    var body: some View {
+        Section("Live network privacy") {
+            Toggle("Share this Mac's country", isOn: $node.presenceShareCountry)
+            if node.presenceShareCountry {
+                Picker("Country", selection: $node.presenceCountryCode) {
+                    Text("Choose a country").tag("")
+                    ForEach(PresenceCountry.codes, id: \.self) { code in
+                        Text(verbatim: countryLocale.localizedString(forRegionCode: code) ?? code).tag(code)
+                    }
+                }
+            }
+            Text("Your relay's continent is shared automatically. Country sharing is off by default and uses only the country you choose. No IP address, city or coordinates are shared.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

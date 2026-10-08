@@ -120,11 +120,15 @@ pub async fn open_reshare(a: &P2pArgs, via_node: bool, local: SocketAddr) -> Opt
 /// Bind the public iroh endpoint (published to the DHT) and open links to every
 /// other validator. Returns None when offline.
 pub async fn open_public(a: &P2pArgs) -> Option<aether_net::Endpoint> {
+    open_public_tracked(a, aether_net::peers::PeerTracker::new()).await
+}
+
+pub async fn open_public_tracked(a: &P2pArgs, peers: aether_net::peers::PeerTracker) -> Option<aether_net::Endpoint> {
     if a.offline {
         return None;
     }
     let alpns = vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_P2P.to_vec(), aether_net::ALPN_RESHARE.to_vec()];
-    let ep = match aether_net::bind(Some(a.keys.node_secret.clone()), alpns).await {
+    let ep = match aether_net::bind_tracked(Some(a.keys.node_secret.clone()), alpns, peers).await {
         Ok(ep) => ep,
         Err(e) => {
             tracing::warn!(?e, "public endpoint unavailable");

@@ -4,32 +4,28 @@
 //! and restart recovery from the finalized archive. Also: FOCIL inclusion
 //! lists get a censored sender's tx into a block.
 
+use aether_test_support::{Port, TestChild};
 use serde_json::{json, Value};
-use std::net::TcpListener;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_aether");
 const COUNTER_INIT: &str = "600a600c600039600a6000f360005460010160005500";
 
 /// These tests each run 4-5 validator processes; run one at a time so they do
-/// not starve each other of CPU or race for the same free ports.
+/// not starve each other of CPU. Port leases coordinate other processes.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
-
 struct Net {
     dir: PathBuf,
-    p2p: Vec<u16>,
-    rpc: Vec<u16>,
-    procs: Vec<Option<Child>>,
+    p2p: Vec<Port>,
+    rpc: Vec<Port>,
+    procs: Vec<Option<TestChild>>,
     extra: Vec<Vec<String>>,
     /// Where node `i`'s stdout and stderr are captured, so a node that never
     /// answers can show why in the panic (a startup refusal prints to stderr).
@@ -46,8 +42,8 @@ impl Net {
         let n = extra.len();
         let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let p2p: Vec<u16> = (0..n).map(|_| free_port()).collect();
-        let rpc: Vec<u16> = (0..n).map(|_| free_port()).collect();
+        let p2p: Vec<Port> = (0..n).map(|_| Port::reserve().expect("reserve test port")).collect();
+        let rpc: Vec<Port> = (0..n).map(|_| Port::reserve().expect("reserve test port")).collect();
         let mut net = Net::prepared(dir, p2p, rpc, extra);
         for i in 0..n {
             net.spawn(i);
@@ -55,7 +51,7 @@ impl Net {
         net
     }
 
-    fn prepared(dir: PathBuf, p2p: Vec<u16>, rpc: Vec<u16>, extra: Vec<Vec<String>>) -> Net {
+    fn prepared(dir: PathBuf, p2p: Vec<Port>, rpc: Vec<Port>, extra: Vec<Vec<String>>) -> Net {
         let n = extra.len();
         let logs = (0..n).map(|i| dir.join((i + 1).to_string()).join("node.log")).collect();
         Net { dir, p2p, rpc, procs: (0..n).map(|_| None).collect(), extra, logs }
@@ -70,17 +66,10 @@ impl Net {
     /// Spawn a node with both output streams captured into its node.log: a
     /// refusal to start (e.g. the ceremony bind) prints on stderr, and the
     /// panic of a node that never answers shows its last lines.
-    fn capture(&self, i: usize, mut cmd: Command) -> Child {
+    fn capture(&self, i: usize, mut cmd: Command) -> TestChild {
         let log = self.logs.get(i).cloned().unwrap_or_else(|| self.data(i).join("node.log"));
-        if let Some(parent) = log.parent() {
-            std::fs::create_dir_all(parent).expect("create the node.log directory");
-        }
-        let file = std::fs::OpenOptions::new().create(true).append(true).open(&log).expect("open node.log");
-        cmd.env("RUST_LOG", "warn")
-            .stdout(file.try_clone().expect("clone node.log"))
-            .stderr(file)
-            .spawn()
-            .expect("spawn validator")
+        cmd.env("RUST_LOG", "warn");
+        TestChild::spawn(cmd, log).expect("spawn validator")
     }
 
     fn peers(&self, i: usize) -> String {
@@ -111,7 +100,7 @@ impl Net {
     }
 
     fn kill(&mut self, i: usize) {
-        if let Some(mut c) = self.procs[i].take() {
+        if let Some(c) = self.procs[i].take() {
             let _ = c.kill();
             let _ = c.wait();
         }
@@ -139,9 +128,24 @@ impl Net {
     }
 
     fn rpc(&self, i: usize, method: &str, params: Value) -> Option<Value> {
+        // Poll every startup, including nodes we have not queried yet. A
+        // listener actor can fail while the rest of the process stays alive.
+        for (node, child) in self.procs.iter().enumerate() {
+            if let Some(child) = child {
+                if let Some(status) = child.try_wait().unwrap_or_else(|e| panic!("node {node}: {e}{}", self.log_tail(node))) {
+                    panic!("node {node} exited {status}{}", self.log_tail(node));
+                }
+            }
+        }
         let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
         let v: Value = reqwest::blocking::Client::new().post(self.url(i)).json(&body).timeout(Duration::from_secs(3)).send().ok()?.json().ok()?;
-        v.get("result").cloned()
+        let result = v.get("result").cloned();
+        if result.is_some() {
+            if let Some(child) = &self.procs[i] {
+                child.mark_started();
+            }
+        }
+        result
     }
 
     fn height(&self, i: usize) -> u64 {
@@ -413,20 +417,16 @@ fn dkg_ceremony_then_consensus_under_its_identity() {
     let n = 4;
     let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-dkg", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let p2p: Vec<u16> = (0..n).map(|_| free_port()).collect();
-    let rpc: Vec<u16> = (0..n).map(|_| free_port()).collect();
+    let p2p: Vec<Port> = (0..n).map(|_| Port::reserve().expect("reserve test port")).collect();
+    let rpc: Vec<Port> = (0..n).map(|_| Port::reserve().expect("reserve test port")).collect();
     let mut net = Net::prepared(dir.clone(), p2p, rpc, vec![vec![]; n]);
 
-    let dkg: Vec<Child> = (0..n)
+    let dkg: Vec<TestChild> = (0..n)
         .map(|i| {
-            Command::new(BIN)
-                .args(["dkg", "--index", &(i + 1).to_string(), "--validators", &n.to_string(), "--port", &net.p2p[i].to_string()])
-                .args(["--data", dir.join((i + 1).to_string()).to_str().unwrap(), "--peers", &net.peers(i), "--offline"])
-                .env("RUST_LOG", "warn")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn dkg")
+            let mut cmd = Command::new(BIN);
+            cmd.args(["dkg", "--index", &(i + 1).to_string(), "--validators", &n.to_string(), "--port", &net.p2p[i].to_string()])
+                .args(["--data", dir.join((i + 1).to_string()).to_str().unwrap(), "--peers", &net.peers(i), "--offline"]);
+            net.capture(i, cmd)
         })
         .collect();
     let ids: Vec<String> = dkg
@@ -523,8 +523,8 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     let net_arg = network.to_str().unwrap().to_string();
 
     // 3. DKG on those keys (no --index: each process finds itself by its key).
-    let p2p: Vec<u16> = (0..n).map(|_| free_port()).collect();
-    let rpc: Vec<u16> = (0..n).map(|_| free_port()).collect();
+    let p2p: Vec<Port> = (0..n).map(|_| Port::reserve().expect("reserve test port")).collect();
+    let rpc: Vec<Port> = (0..n).map(|_| Port::reserve().expect("reserve test port")).collect();
     // Nodes run from the network.json each DKG wrote (it adds the identity).
     let extra = (0..n)
         .map(|i| {
@@ -536,16 +536,12 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
         })
         .collect();
     let mut net = Net::prepared(dir.clone(), p2p, rpc, extra);
-    let dkg: Vec<Child> = (0..n)
+    let dkg: Vec<TestChild> = (0..n)
         .map(|i| {
-            Command::new(BIN)
-                .args(["dkg", "--network", &net_arg, "--port", &net.p2p[i].to_string(), "--data", data(i).to_str().unwrap()])
-                .args(["--peers", &net.peers(i), "--offline"])
-                .env("RUST_LOG", "warn")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap()
+            let mut cmd = Command::new(BIN);
+            cmd.args(["dkg", "--network", &net_arg, "--port", &net.p2p[i].to_string(), "--data", data(i).to_str().unwrap()])
+                .args(["--peers", &net.peers(i), "--offline"]);
+            net.capture(i, cmd)
         })
         .collect();
     for c in dkg {
@@ -667,21 +663,20 @@ fn verify_local(final_net: &str, data: &str, record: &str) {
     );
 }
 
-fn spawn_quiet(args: &[String]) -> Child {
-    Command::new(BIN).args(args).env("RUST_LOG", "warn").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn")
+fn spawn_quiet(args: &[String]) -> TestChild {
+    static NEXT_LOG: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let index = NEXT_LOG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let log = std::env::temp_dir().join(format!("aether-devnet-child-{}-{index}.log", std::process::id()));
+    spawn_logged(log, args)
 }
 
-fn spawn_logged(log: std::fs::File, args: &[String]) -> Child {
-    Command::new(BIN)
-        .args(args)
-        .env("RUST_LOG", "warn")
-        .stdout(log.try_clone().expect("clone the log"))
-        .stderr(log)
-        .spawn()
-        .expect("spawn")
+fn spawn_logged(log: impl AsRef<std::path::Path>, args: &[String]) -> TestChild {
+    let mut cmd = Command::new(BIN);
+    cmd.args(args).env("RUST_LOG", "warn");
+    TestChild::spawn(cmd, log).expect("spawn")
 }
 
-fn tcp_peers(ports: &[u16], me: usize) -> String {
+fn tcp_peers(ports: &[Port], me: usize) -> String {
     (0..ports.len()).filter(|j| *j != me).map(|j| format!("{}@127.0.0.1:{}", j + 1, ports[j])).collect::<Vec<_>>().join(",")
 }
 
@@ -715,8 +710,8 @@ fn validator_rotation_continues_the_chain_under_the_same_identity() {
     std::fs::write(path("B.json"), net_b).unwrap();
 
     // DKG for A.
-    let ports: Vec<u16> = (0..4).map(|_| free_port()).collect();
-    let dkg: Vec<Child> = (0..4)
+    let ports: Vec<Port> = (0..4).map(|_| Port::reserve().expect("reserve test port")).collect();
+    let dkg: Vec<TestChild> = (0..4)
         .map(|k| {
             spawn_quiet(&[
                 "dkg".into(),
@@ -746,8 +741,8 @@ fn validator_rotation_continues_the_chain_under_the_same_identity() {
     }
 
     // Committee A runs; pay 0xaa.
-    let p2p: Vec<u16> = (0..4).map(|_| free_port()).collect();
-    let rpc: Vec<u16> = (0..4).map(|_| free_port()).collect();
+    let p2p: Vec<Port> = (0..4).map(|_| Port::reserve().expect("reserve test port")).collect();
+    let rpc: Vec<Port> = (0..4).map(|_| Port::reserve().expect("reserve test port")).collect();
     let extra = (1..=4)
         .map(|i| {
             let mut a = vec!["--network".to_string(), format!("{}/network.json", d(i))];
@@ -774,8 +769,8 @@ fn validator_rotation_continues_the_chain_under_the_same_identity() {
     let heads: Vec<String> = (1..=4).map(|i| run_ok(&["head", "--data", &d(i)]).trim().to_string()).collect();
     let end = heads.iter().max_by_key(|h| h.split(' ').next().unwrap().parse::<u64>().unwrap()).unwrap().clone();
     let (end_h, end_hash) = end.split_once(' ').unwrap();
-    let rports: Vec<u16> = (0..5).map(|_| free_port()).collect();
-    let rs: Vec<Child> = (0..5)
+    let rports: Vec<Port> = (0..5).map(|_| Port::reserve().expect("reserve test port")).collect();
+    let rs: Vec<TestChild> = (0..5)
         .map(|k| {
             spawn_quiet(&[
                 "reshare".into(),
@@ -797,20 +792,25 @@ fn validator_rotation_continues_the_chain_under_the_same_identity() {
             ])
         })
         .collect();
-    let outs: Vec<String> = rs.into_iter().map(|c| String::from_utf8(c.wait_with_output().unwrap().stdout).unwrap()).collect();
+    let outs: Vec<String> = rs.into_iter().map(|c| {
+        let out = c.wait_with_output().expect("reshare exits");
+        assert!(out.status.success(), "reshare failed: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap()
+    }).collect();
     assert!(outs[0].contains("has left"), "validator 1 leaves: {}", outs[0]);
     for o in &outs[1..] {
         assert!(o.contains(&identity), "identity unchanged: {o}");
     }
 
     // Committee B continues the chain (validator 5 starts empty and catches up).
-    let p2p: Vec<u16> = (0..4).map(|_| free_port()).collect();
-    let rpc: Vec<u16> = (0..4).map(|_| free_port()).collect();
+    let p2p: Vec<Port> = (0..4).map(|_| Port::reserve().expect("reserve test port")).collect();
+    let rpc: Vec<Port> = (0..4).map(|_| Port::reserve().expect("reserve test port")).collect();
     let mut b = Net::prepared(dir.clone(), p2p, rpc, vec![vec!["--network".into(), path("B.json")]; 4]);
+    b.logs = (0..4).map(|k| dir.join(format!("nodeB{k}.log"))).collect();
     // B's validator k is machine k + 2: point spawn at those data dirs.
     let mut procs = Vec::new();
     for k in 0..4 {
-        let log = std::fs::File::create(dir.join(format!("nodeB{k}.log"))).unwrap();
+        let log = dir.join(format!("nodeB{k}.log"));
         procs.push(spawn_logged(
             log,
             &[
@@ -866,10 +866,10 @@ fn a_follower_verifies_everything_and_serves_a_wallet() {
     assert!(out.contains("success=true"), "{out}");
 
     // A Mac that is not a validator follows from genesis, pulling from two validators.
-    let port = free_port();
+    let port = Port::reserve().expect("reserve test port");
     let data = net.dir.join("follower");
     let from = format!("{},{}", net.url(1), net.url(2));
-    let log = std::fs::File::create(net.dir.join("follower.log")).unwrap();
+    let log = net.dir.join("follower.log");
     let child =
         spawn_logged(log, &["follow".into(), "--from-rpc".into(), from, "--data".into(), data.to_str().unwrap().into(), "--rpc-port".into(), port.to_string()]);
     net.rpc.push(port);
@@ -920,9 +920,9 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     for i in 0..4 {
         net.wait_height(i, 3, 60);
     }
-    let port = free_port();
+    let port = Port::reserve().expect("reserve test port");
     let data = net.dir.join("candidate");
-    let log = std::fs::File::create(net.dir.join("candidate.log")).unwrap();
+    let log = net.dir.join("candidate.log");
     let args: Vec<String> = vec![
         "follow".into(),
         "--from-rpc".into(),
@@ -1001,8 +1001,8 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
     let mut args = vec!["network".to_string(), "--faucet".to_string(), faucet_addr.clone(), "--dev-registrar".into(), "--epoch-blocks".into(), "40".into(), "--min-streak".into(), "0".into(), "--draw-epochs".into(), "1".into()];
     args.extend(genesis_set.iter().map(|g| format!("{}/validator.pub.json", d(g))));
     std::fs::write(d("A.json"), run_ok(&args.iter().map(String::as_str).collect::<Vec<_>>())).unwrap();
-    let ports: Vec<u16> = (0..4).map(|_| free_port()).collect();
-    let dkg: Vec<Child> = (0..4)
+    let ports: Vec<Port> = (0..4).map(|_| Port::reserve().expect("reserve test port")).collect();
+    let dkg: Vec<TestChild> = (0..4)
         .map(|k| {
             spawn_quiet(&[
                 "dkg".into(),
@@ -1033,9 +1033,9 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
 
     // Eight Macs, each running only `aether run`.
     let names: Vec<&str> = genesis_set.iter().chain(candidates.iter()).copied().collect();
-    let p2p: Vec<u16> = (0..8).map(|_| free_port()).collect();
-    let rpc: Vec<u16> = (0..8).map(|_| free_port()).collect();
-    let reshare: Vec<u16> = (0..8).map(|_| free_port()).collect();
+    let p2p: Vec<Port> = (0..8).map(|_| Port::reserve().expect("reserve test port")).collect();
+    let rpc: Vec<Port> = (0..8).map(|_| Port::reserve().expect("reserve test port")).collect();
+    let reshare: Vec<Port> = (0..8).map(|_| Port::reserve().expect("reserve test port")).collect();
     let mut net = Net::prepared(dir.clone(), p2p.clone(), rpc.clone(), vec![vec![]; 8]);
     net.logs = names.iter().map(|name| dir.join(format!("{name}.log"))).collect();
     for (k, name) in names.iter().enumerate() {
@@ -1068,8 +1068,9 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
             a.push("--node-arg=--dev-registrar".into());
             a.push(format!("--node-arg=--faucet-key={}/faucet.key", d("g1")));
         }
-        let log = std::fs::File::create(dir.join(format!("{name}.log"))).unwrap();
-        let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn").stdout(log.try_clone().unwrap()).stderr(log).spawn().expect("spawn run");
+        let mut cmd = Command::new(BIN);
+        cmd.args(&a).env("RUST_LOG", "info,commonware=warn");
+        let child = TestChild::spawn(cmd, dir.join(format!("{name}.log"))).expect("spawn run");
         net.procs[k] = Some(child);
     }
     net.wait_height(0, 3, 90);
@@ -1182,8 +1183,8 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
     }
     args.extend(genesis_set.iter().map(|g| format!("{}/validator.pub.json", d(g))));
     std::fs::write(d("A.json"), run_ok(&args.iter().map(String::as_str).collect::<Vec<_>>())).unwrap();
-    let ports: Vec<u16> = (0..4).map(|_| free_port()).collect();
-    let dkg: Vec<Child> = (0..4)
+    let ports: Vec<Port> = (0..4).map(|_| Port::reserve().expect("reserve test port")).collect();
+    let dkg: Vec<TestChild> = (0..4)
         .map(|k| {
             spawn_quiet(&[
                 "dkg".into(),
@@ -1213,9 +1214,9 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
     // Seven processes on "one Mac", each only `aether run` (the reserve keys as in scripts/reserve-keys.sh).
     let names: Vec<&str> = genesis_set.iter().chain(reserve.iter()).copied().collect();
     let n = names.len();
-    let p2p: Vec<u16> = (0..n).map(|_| free_port()).collect();
-    let rpc: Vec<u16> = (0..n).map(|_| free_port()).collect();
-    let resh: Vec<u16> = (0..n).map(|_| free_port()).collect();
+    let p2p: Vec<Port> = (0..n).map(|_| Port::reserve().expect("reserve test port")).collect();
+    let rpc: Vec<Port> = (0..n).map(|_| Port::reserve().expect("reserve test port")).collect();
+    let resh: Vec<Port> = (0..n).map(|_| Port::reserve().expect("reserve test port")).collect();
     let mut net = Net::prepared(dir.clone(), p2p.clone(), rpc.clone(), vec![vec![]; n]);
     net.logs = names.iter().map(|name| dir.join(format!("{name}.log"))).collect();
     for (k, name) in names.iter().enumerate() {
@@ -1241,8 +1242,9 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
             "--reshare-timeout".into(),
             "120".into(),
         ];
-        let log = std::fs::File::create(dir.join(format!("{name}.log"))).unwrap();
-        let child = Command::new(BIN).args(&a).env("RUST_LOG", "info,commonware=warn").stdout(log.try_clone().unwrap()).stderr(log).spawn().expect("spawn run");
+        let mut cmd = Command::new(BIN);
+        cmd.args(&a).env("RUST_LOG", "info,commonware=warn");
+        let child = TestChild::spawn(cmd, dir.join(format!("{name}.log"))).expect("spawn run");
         net.procs[k] = Some(child);
     }
     net.wait_height(0, 3, 90);
@@ -1354,9 +1356,9 @@ fn a_late_mac_starts_from_a_certified_snapshot() {
     assert!(out.contains("success=true"), "{out}");
     let joined_at = net.height(0);
 
-    let port = free_port();
+    let port = Port::reserve().expect("reserve test port");
     let data = net.dir.join("late");
-    let log = std::fs::File::create(net.dir.join("late.log")).unwrap();
+    let log = net.dir.join("late.log");
     let from = format!("{},{}", net.url(1), net.url(2));
     let args: Vec<String> = vec![
         "follow".into(),

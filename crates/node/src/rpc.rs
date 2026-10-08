@@ -1578,6 +1578,22 @@ mod release_tests {
 #[cfg(test)]
 mod public_read_tests {
     use super::*;
+    use aether_test_support::Port;
+
+    async fn serve_test(port: Port, state: RpcState) {
+        let addr = port.addr();
+        let _port = port;
+        let first = serve(addr, state.clone()).await;
+        let result = match first {
+            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+                eprintln!("TEST RPC BIND RETRY: {addr}: {err}; retrying startup once");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                serve(addr, state).await
+            }
+            result => result,
+        };
+        result.expect("test RPC server failed");
+    }
 
     fn public_state() -> RpcState {
         let mut st = bare_state();
@@ -1820,11 +1836,13 @@ mod public_read_tests {
     fn public_reads_never_fetch_history_from_upstream() {
         let _history = claim_history_budget();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let upstream = Port::reserve().expect("reserve unreachable upstream RPC port");
+        let upstream_url = format!("http://{}", upstream.addr());
         let mut st = public_state();
         // A pruned height whose era this node does not hold, and an upstream
-        // that cannot answer (port 9 discards): if the fetch ran at all, the
+        // that cannot answer: if the fetch ran at all, the
         // call would fail with the upstream error instead of "pruned".
-        st.upstream = Some(Arc::new(crate::follow::Upstream::Http(vec!["http://127.0.0.1:9".into()])));
+        st.upstream = Some(Arc::new(crate::follow::Upstream::Http(vec![upstream_url.clone()])));
         st.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
         let answer = rt.block_on(call(&st, "aether_getBlock", json!([100])));
         // The code is the claim: -32001 is old_block's local refusal ("no
@@ -1834,7 +1852,7 @@ mod public_read_tests {
         // Privately the same ask still self-heals (the fetch runs; a dead
         // upstream surfaces its own error, never a fake "pruned" answer).
         let mut private = bare_state();
-        private.upstream = Some(Arc::new(crate::follow::Upstream::Http(vec!["http://127.0.0.1:9".into()])));
+        private.upstream = Some(Arc::new(crate::follow::Upstream::Http(vec![upstream_url])));
         private.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
         let answer = rt.block_on(call(&private, "aether_getBlock", json!([100])));
         assert_eq!(answer["error"]["code"], -32000, "privately the fetch runs and its failure is the upstream's, not a pruned refusal: {answer}");
@@ -1990,7 +2008,8 @@ mod public_read_tests {
             assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{addr}: {err}");
         }
         // Loopback is exactly what the flag serves.
-        let loopback = rt.spawn(serve("127.0.0.1:0".parse().unwrap(), st));
+        let port = Port::reserve().expect("reserve public loopback RPC port");
+        let loopback = rt.spawn(serve_test(port, st));
         rt.block_on(async { tokio::time::sleep(Duration::from_millis(50)).await });
         assert!(!loopback.is_finished(), "loopback bind must be allowed");
         loopback.abort();
@@ -2003,13 +2022,9 @@ mod public_read_tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let st = public_state();
-        let addr = {
-            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let a = probe.local_addr().unwrap();
-            drop(probe);
-            a
-        };
-        rt.spawn(serve(addr, st));
+        let port = Port::reserve().expect("reserve public body-limit RPC port");
+        let addr = port.addr();
+        rt.spawn(serve_test(port, st));
         rt.block_on(async {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let sock = tokio::net::TcpStream::connect(addr).await.expect("gateway is listening");
@@ -2080,15 +2095,11 @@ mod public_read_tests {
                 shards: None, public_read_only: public,
             }
         };
-        let free = || {
-            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let a = probe.local_addr().unwrap();
-            drop(probe);
-            a
-        };
-        let (pub_addr, priv_addr) = (free(), free());
-        rt.spawn(serve(pub_addr, state(true)));
-        rt.spawn(serve(priv_addr, state(false)));
+        let pub_port = Port::reserve().expect("reserve public era RPC port");
+        let priv_port = Port::reserve().expect("reserve private era RPC port");
+        let (pub_addr, priv_addr) = (pub_port.addr(), priv_port.addr());
+        rt.spawn(serve_test(pub_port, state(true)));
+        rt.spawn(serve_test(priv_port, state(false)));
         let ask = |addr: std::net::SocketAddr| async move {
             let mut sock = tokio::net::TcpStream::connect(addr).await.expect("listener is up");
             sock.write_all(b"GET /era/era-00000003.aera HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await.unwrap();

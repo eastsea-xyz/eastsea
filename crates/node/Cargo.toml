@@ -82,6 +82,7 @@ test-seam = []
 dev-drill = []
 
 [dev-dependencies]
+aether-test-support = { path = "../test-support" }
 rand_chacha = "0.10"
 # Tests drive a Router by hand (oneshot) to hold responses outstanding —
 # axum pulls tower in but does not re-export its ServiceExt.

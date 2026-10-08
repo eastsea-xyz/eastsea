@@ -46,7 +46,16 @@ never a write. Clear the gateway field in Settings to read your node only.
 | Transaction | receipt (status, gas, contract creation, output), events decoded as ERC-20 `Transfer`/`Approval` with symbol and amount, raw logs for anything else |
 | Account | balance/nonce/code with a committee-certificate badge (`verified by committee certificate` only when the wallet's own wasm check passed — `js/verify.js`), token detection, latest rewards (`aether_rewards`), ERC-20 transfers to/from the address in the node's log window |
 | Token | name/symbol/decimals/total supply, the origin badge and impersonation warning exactly as the wallet shows them, recent transfers |
-| Search | height, `0x`-address, or tx hash; a hash with no receipt is matched against the newest block hashes |
+| Search | apps and `.sea` names via `aether_search`; height, `0x`-address, or tx hash keeps its direct lookup, and a hash with no receipt is matched against the newest block hashes |
+
+Enter an app title, description, or `.sea` name in the header search bar, or open
+`#/search/harbor.sea`. The page reads `aether_search` and `aether_searchInfo` from
+the selected RPC source and preserves the node's neutral order. It shows
+lookalike warnings and incomplete index or usage coverage. A content-hash label
+means only that a nonzero hash was recorded, not safety or certificate verification.
+Search UI strings are in English, Korean, Japanese, Simplified Chinese, and Spanish.
+The node builds its index from chain records without a central search server or
+runtime manifest downloads; see [the search design](../../docs/design/app-search.md).
 
 ## Honest labels
 
@@ -88,7 +97,7 @@ bound to loopback. In practice:
 
 `aether_status`, `aether_recentBlocks`, `aether_getBlock`, `aether_getReceipt`,
 `aether_getAccount`, `aether_candidates`, `aether_proverStatus`,
-`aether_rewards`, `aether_history`, `eth_call`, `eth_getLogs`,
+`aether_rewards`, `aether_history`, `aether_search`, `aether_searchInfo`, `eth_call`, `eth_getLogs`,
 `eth_blockNumber`, and `aether_getFinalized` (the account page's certificate
 check, `js/verify.js`). Node-side notes are in `crates/node/src/rpc.rs`; the
 explorer adds no node RPCs.
@@ -130,6 +139,8 @@ js/format.js        amounts, numbers, times (BigInt-exact)
 js/abi.js           ABI words, selectors, ERC-20 event decoding, revert reasons
 js/erc20.js         token metadata, origin scan, badges, impersonation check
 js/search.js        search classification and hash resolution
+js/app-search.js    apps/names RPC results, warnings and index coverage
+js/search-catalog.js search UI strings in five languages
 js/pages.js         the five views
 js/app.js           router, header (source badge), settings, theme, polling
 test/*.test.mjs     units (npm test)

@@ -15,7 +15,7 @@ pub mod world;
 
 pub use account::{encode_execute, encode_set_guardian, AccountCall};
 pub use block::{
-    build_block, build_block_sequential, call, can_append, check_admission, check_admission_cost, execute_block, execute_block_sequential, AdmissionCost, BlockContext, BlockOutcome, CallResult, Event, ExecError,
+    build_block, build_block_sequential, call, can_append, check_admission, check_admission_cost, execute_block, execute_block_sequential, AdmissionCost, BlockContext, BlockOutcome, CallResult, CallTargets, Event, ExecError,
     ProveGasMeter, Receipt,
 };
 pub use fees::{FeePolicy, Settlement, FEE_COLLECTOR, PROVER_ESCROW};

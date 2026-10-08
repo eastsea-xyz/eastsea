@@ -76,6 +76,8 @@ const PUBLIC_READ_METHODS: &[&str] = &[
     "aether_eraProof",
     "aether_rewards",
     "aether_accountHistory",
+    "aether_search",
+    "aether_searchInfo",
     "eth_blockNumber",
     "eth_call",
     "eth_getLogs",
@@ -847,6 +849,35 @@ fn param<T: serde::de::DeserializeOwned>(p: &Value, i: usize) -> Result<T, (i64,
 fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
     let chain = &st.chain;
     match method {
+        "aether_search" => {
+            if !p.is_array() || p.as_array().is_some_and(|args| args.len() > 2) {
+                return Err((-32602, "expected [query, limit]".into()));
+            }
+            let query: String = param(p, 0)?;
+            if query.len() > 256 || query.chars().any(|c| c.is_control()) {
+                return Err((-32602, "query must be at most 256 UTF-8 bytes without control characters".into()));
+            }
+            let limit = p.get(1).map(|v| v.as_u64().ok_or((-32602, "limit must be a positive integer".into())))
+                .transpose()?.unwrap_or(20);
+            if !(1..=50).contains(&limit) { return Err((-32602, "limit must be 1..50".into())); }
+            let search = chain.lock().search.clone();
+            let index = search.try_lock().map_err(|_| (-32002, "search index busy; retry".into()))?;
+            Ok(json!(index.search(&query, limit as usize, index.checkpoint().clock)))
+        }
+        "aether_searchInfo" => {
+            if !p.is_array() || p.as_array().is_some_and(|args| !args.is_empty()) {
+                return Err((-32602, "expected []".into()));
+            }
+            let (search, sources) = {
+                let g = chain.lock();
+                (g.search.clone(), g.search_sources.clone())
+            };
+            let index = search.try_lock().map_err(|_| (-32002, "search index busy; retry".into()))?;
+            let mut info = json!(index.info());
+            info["sources_configured"] = json!(sources.configured());
+            info["sources"] = json!(sources);
+            Ok(info)
+        }
         "aether_status" => {
             let resources = crate::resources::monitor().map(|m| m.status_value()).unwrap_or(Value::Null);
             let g = chain.lock();

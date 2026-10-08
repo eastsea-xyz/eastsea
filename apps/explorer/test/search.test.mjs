@@ -3,7 +3,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifySearch, resolveSearch } from '../js/search.js';
+import { classifySearch, resolveSearch, searchRoute, decodeSearchQuery } from '../js/search.js';
 
 const H = '0x' + 'ab'.repeat(32);
 const TX = '0x20979c6bed92c79a5e4ce14ffd2dcabdf96ce0d6afddd09ab2a884234672b78b';
@@ -29,8 +29,8 @@ test('classifySearch reads heights, addresses and hashes', () => {
   assert.deepEqual(classifySearch(H.toUpperCase()), { kind: 'hash', hash: H });
   assert.equal(classifySearch(''), null);
   assert.equal(classifySearch('  '), null);
-  assert.equal(classifySearch('hello'), null);
-  assert.equal(classifySearch('0x1234'), null); // too short for both shapes
+  assert.deepEqual(classifySearch('hello'), { kind: 'search', query: 'hello' });
+  assert.deepEqual(classifySearch('0x1234'), { kind: 'search', query: '0x1234' });
   assert.equal(classifySearch('12345678901234567890123456789012345678901234567890123456789012345678'), null); // height beyond safe integers
 });
 
@@ -56,9 +56,26 @@ test('heights and addresses never hit the node', async () => {
   const broken = stubNode(); // every call throws
   assert.deepEqual(await resolveSearch('42', broken), { page: 'block', height: 42 });
   assert.deepEqual(await resolveSearch(ADDR, broken), { page: 'account', address: ADDR.toLowerCase() });
-  assert.equal(await resolveSearch('nonsense', broken), null);
+  assert.deepEqual(await resolveSearch('nonsense', broken), { page: 'search', query: 'nonsense' });
 });
 
 test('an unreadable node turns a hash into "not found", not a crash', async () => {
   assert.equal(await resolveSearch(H, stubNode()), null);
+});
+
+test('app titles, .sea names and subdomains route without blockchain lookups', async () => {
+  for (const query of ['  harbor.sea  ', 'shop.harbor.sea', 'EastSea games', '바다', 'sea://harbor.sea']) {
+    assert.deepEqual(await resolveSearch(query, stubNode()), { page: 'search', query: query.trim() });
+  }
+});
+
+test('search routes preserve special characters and reject malformed encoding', () => {
+  const query = 'a/b?c#d & 바다 <script>';
+  const route = searchRoute({ page: 'search', query });
+  assert.equal(route, `#/search/${encodeURIComponent(query)}`);
+  assert.equal(decodeSearchQuery(route.slice('#/search/'.length)), query);
+  assert.equal(decodeSearchQuery('%E0%A4%A'), null);
+  assert.equal(searchRoute({ page: 'block', height: 42 }), '#/block/42');
+  assert.equal(searchRoute({ page: 'account', address: ADDR.toLowerCase() }), `#/account/${ADDR.toLowerCase()}`);
+  assert.equal(searchRoute({ page: 'tx', hash: H }), `#/tx/${H}`);
 });

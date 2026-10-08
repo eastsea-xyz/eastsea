@@ -1213,6 +1213,7 @@ mod tests {
             max_committee: Some(crate::rotation::GROW_UNTIL as u64),
             genesis_validators: Some(validators),
             release: None,
+            search: None,
         }
     }
 

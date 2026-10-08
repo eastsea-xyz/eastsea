@@ -127,11 +127,41 @@ pub fn call(state: &WorldState, ctx: &BlockContext, from: Address, to: Option<Ad
     })
 }
 
+/// Non-consensus call targets observed during one transaction's EVM execution.
+/// Addresses are unique and sorted; `complete` is false if the capture cap was
+/// exceeded. A transaction that ultimately fails exposes no addresses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallTargets {
+    pub addresses: Vec<Address>,
+    pub complete: bool,
+}
+
+const MAX_CALL_TARGETS: usize = 4_096;
+
+impl Default for CallTargets {
+    fn default() -> Self { Self { addresses: Vec::new(), complete: true } }
+}
+
+impl CallTargets {
+    fn record(&mut self, address: Address) {
+        if let Err(index) = self.addresses.binary_search(&address) {
+            if self.addresses.len() < MAX_CALL_TARGETS {
+                self.addresses.insert(index, address);
+            } else {
+                self.complete = false;
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct BlockOutcome {
     pub state: WorldState,
     pub bal: BlockAccessList,
     pub receipts: Vec<Receipt>,
+    /// Local execution metadata, aligned with `receipts`; never serialized or
+    /// included in receipt bytes, state roots, gas, fees or commitments.
+    pub call_targets: Vec<CallTargets>,
     pub gas: GasVector,
     /// Metered signed transaction and receipt bytes. Zero on the legacy chain.
     pub persistent_bytes: u64,
@@ -158,6 +188,7 @@ pub struct ProveGasMeter {
     pub steps: u64,
     pub watch: Option<Address>,
     pub watched: bool,
+    pub call_targets: CallTargets,
 }
 
 const BALANCE: u8 = 0x31;
@@ -184,6 +215,8 @@ where
     }
 
     fn call(&mut self, _ctx: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+        self.call_targets.record(inputs.target_address);
+        self.call_targets.record(inputs.bytecode_address);
         if let Some(w) = self.watch {
             if inputs.target_address == w || inputs.bytecode_address == w || inputs.caller == w {
                 self.watched = true;
@@ -195,6 +228,7 @@ where
 
 pub(crate) struct TxRun {
     pub(crate) receipt: Receipt,
+    pub(crate) call_targets: CallTargets,
     pub(crate) changes: revm::state::EvmState,
     pub(crate) gas: GasVector,
     /// Execution observed the fee recipient beyond the fee credit.
@@ -379,6 +413,8 @@ pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvel
         ExecutionResult::Revert { gas, output, .. } => (false, gas.tx_gas_used(), 0, output.clone(), None, vec![]),
         ExecutionResult::Halt { gas, .. } => (false, gas.tx_gas_used(), 0, Bytes::new(), None, vec![]),
     };
+    let mut call_targets = std::mem::take(&mut evm.inspector.call_targets);
+    if !success { call_targets.addresses.clear(); }
     let mut changes = out.state;
     let beneficiary_price = ctx.fees.map_or(tx.header.max_fee.exec, |f| tx.header.tip.min(tx.header.max_fee.exec.saturating_sub(f.base.exec)));
     let beneficiary_credit = U256::from(gas_used) * U256::from(beneficiary_price);
@@ -414,6 +450,7 @@ pub(crate) fn run_validated(state: &WorldState, ctx: &BlockContext, tx: &TxEnvel
     receipt.state_fee = state_fee;
     Ok(TxRun {
         receipt,
+        call_targets,
         changes,
         gas: GasVector { exec: gas_used, state: state_gas, prove: prove_gas },
         touched_beneficiary,
@@ -531,6 +568,7 @@ fn record_bal(bal: &mut BalBuilder, pre: &WorldState, index: u32, changes: &revm
 struct Acc {
     bal: BalBuilder,
     receipts: Vec<Receipt>,
+    call_targets: Vec<CallTargets>,
     total: GasVector,
     prove_fees: U256,
     state_fees: U256,
@@ -548,6 +586,7 @@ impl Acc {
         self.new_slots += run.new_slots;
         self.persistent_bytes += run.persistent_bytes;
         self.receipts.push(run.receipt);
+        self.call_targets.push(run.call_targets);
         Ok(())
     }
 
@@ -571,7 +610,7 @@ impl Acc {
             None => Settlement::default(),
         };
         settlement.burned_state = self.state_fees;
-        BlockOutcome { state, bal: self.bal.build(), receipts: self.receipts, gas: self.total, persistent_bytes: self.persistent_bytes, new_slots: self.new_slots, settlement }
+        BlockOutcome { state, bal: self.bal.build(), receipts: self.receipts, call_targets: self.call_targets, gas: self.total, persistent_bytes: self.persistent_bytes, new_slots: self.new_slots, settlement }
     }
 }
 
@@ -715,6 +754,7 @@ pub fn append_block_preview(
     let mut acc = Acc {
         bal,
         receipts: previous.receipts.clone(),
+        call_targets: previous.call_targets.clone(),
         total: previous.gas,
         prove_fees: previous.settlement.prove_fees,
         state_fees: previous.settlement.burned_state,
@@ -797,10 +837,158 @@ mod tests {
         assert_eq!(actual.state.root(), expected.state.root());
         assert_eq!(actual.bal, expected.bal);
         assert_eq!(actual.receipts, expected.receipts);
+        assert_eq!(actual.call_targets, expected.call_targets);
         assert_eq!(actual.gas, expected.gas);
         assert_eq!(actual.new_slots, expected.new_slots);
         assert_eq!(actual.persistent_bytes, expected.persistent_bytes);
         assert_eq!(actual.settlement, expected.settlement);
+    }
+
+    fn trace_context() -> BlockContext {
+        BlockContext {
+            chain_id: 7_777,
+            number: 1,
+            timestamp: 1,
+            beneficiary: Address::repeat_byte(0xbe),
+            limits: GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            fees: None,
+        }
+    }
+
+    fn trace_tx(signer: &P256Signer, nonce: u64, target: Address) -> TxEnvelope {
+        crate::tx::sign_call(signer, trace_context().chain_id, nonce, 1, &EvmCall {
+            to: Some(target), value: U256::ZERO, input: Bytes::new(), gas_limit: 200_000, delegate: None,
+        }).unwrap()
+    }
+
+    fn silent_call_code(target: Address, opcode: u8, ending: &[u8]) -> Bytes {
+        let mut code = Vec::new();
+        // Empty input/output, plus zero value for CALL. DELEGATECALL has no
+        // value operand and runs target's code using the caller's storage.
+        for _ in 0..if opcode == 0xf1 { 5 } else { 4 } { code.extend_from_slice(&[0x60, 0x00]); }
+        code.push(0x73); // PUSH20 target.
+        code.extend_from_slice(target.as_slice());
+        code.extend_from_slice(&[0x5a, opcode, 0x50]); // GAS; CALL/DELEGATECALL; POP.
+        code.extend_from_slice(ending);
+        Bytes::from(code)
+    }
+
+    fn trace_fixture() -> (P256Signer, WorldState, Address, Address) {
+        let signer = P256Signer::from_seed(&[46; 32]).unwrap();
+        let sender = aether_crypto::address_of(&signer.public_key()).unwrap();
+        let (router, leaf) = (Address::repeat_byte(0x50), Address::repeat_byte(0x51));
+        let mut pre = WorldState::default();
+        pre.set_balance(sender, U256::from(10u128.pow(21))).unwrap();
+        pre.set_code(router, silent_call_code(leaf, 0xf1, &[0x00])).unwrap();
+        pre.set_code(leaf, Bytes::from_static(&[0x00])).unwrap();
+        (signer, pre, router, leaf)
+    }
+
+    #[test]
+    fn silent_internal_calls_are_captured_in_parallel_and_sequential_outcomes() {
+        let (signer, pre, router, leaf) = trace_fixture();
+        // Four candidates enable speculation; subsequent nonces require
+        // replay on the current state, retaining the trace of that execution.
+        let txs: Vec<_> = (0..4).map(|nonce| trace_tx(&signer, nonce, router)).collect();
+        let ctx = trace_context();
+        let parallel = execute_block(&pre, &ctx, &txs).unwrap();
+        assert_same_outcome(&parallel, &execute_block_sequential(&pre, &ctx, &txs).unwrap());
+        assert_eq!(parallel.call_targets.len(), parallel.receipts.len());
+        for (receipt, targets) in parallel.receipts.iter().zip(&parallel.call_targets) {
+            assert!(receipt.success);
+            assert!(receipt.events.is_empty());
+            assert_eq!(receipt.logs, 0);
+            assert_eq!(targets, &CallTargets { addresses: vec![router, leaf], complete: true });
+        }
+        assert_same_outcome(&parallel, &build_block(&pre, &ctx, txs.clone()).1);
+        assert_same_outcome(&parallel, &build_block_sequential(&pre, &ctx, txs).1);
+        assert_eq!(parallel.clone().call_targets, parallel.call_targets);
+    }
+
+    #[test]
+    fn delegatecall_captures_the_storage_target_and_executed_code_address() {
+        let (signer, mut pre, router, leaf) = trace_fixture();
+        pre.set_code(router, silent_call_code(leaf, 0xf4, &[0x00])).unwrap();
+        let out = execute_block(&pre, &trace_context(), &[trace_tx(&signer, 0, router)]).unwrap();
+        assert!(out.receipts[0].success);
+        assert_eq!(out.call_targets[0], CallTargets { addresses: vec![router, leaf], complete: true });
+    }
+
+    #[test]
+    fn delegated_owner_batches_capture_actual_internal_recipients() {
+        let (signer, mut pre, router, leaf) = trace_fixture();
+        let sender = aether_crypto::address_of(&signer.public_key()).unwrap();
+        pre.set_code(crate::AETHER_ACCOUNT, crate::aether_account_code()).unwrap();
+        let tx = crate::tx::sign_call(&signer, trace_context().chain_id, 0, 1, &EvmCall {
+            to: Some(sender), value: U256::ZERO,
+            input: crate::encode_execute(&[(router, U256::ZERO, Bytes::new()), (leaf, U256::ZERO, Bytes::new())]),
+            gas_limit: 300_000, delegate: Some(crate::AETHER_ACCOUNT),
+        }).unwrap();
+        let out = execute_block(&pre, &trace_context(), &[tx]).unwrap();
+        assert!(out.receipts[0].success);
+        let mut expected = vec![sender, router, leaf];
+        expected.sort_unstable();
+        assert_eq!(out.call_targets[0], CallTargets { addresses: expected, complete: true });
+    }
+
+    #[test]
+    fn reverting_and_halting_top_level_transactions_expose_no_targets() {
+        let (signer, mut pre, router, leaf) = trace_fixture();
+        for ending in [&[0x60, 0x00, 0x60, 0x00, 0xfd][..], &[0xfe][..]] {
+            // The leaf runs successfully before the outer frame fails.
+            pre.set_code(router, silent_call_code(leaf, 0xf1, ending)).unwrap();
+            let out = execute_block(&pre, &trace_context(), &[trace_tx(&signer, 0, router)]).unwrap();
+            assert!(!out.receipts[0].success);
+            assert_eq!(out.call_targets[0], CallTargets::default());
+        }
+    }
+
+    #[test]
+    fn target_capture_does_not_change_evm_results_state_or_prove_steps() {
+        let (signer, pre, router, leaf) = trace_fixture();
+        let ctx = trace_context();
+        let sender = aether_crypto::address_of(&signer.public_key()).unwrap();
+        let tx_env = TxEnv::builder().caller(sender).nonce(0).chain_id(Some(ctx.chain_id))
+            .gas_limit(200_000).gas_price(1).kind(TxKind::Call(router)).build().unwrap();
+        let make_context = || Context::mainnet().with_db(WrapDatabaseRef(&pre))
+            .modify_cfg_chained(|c| c.chain_id = ctx.chain_id)
+            .modify_block_chained(|b| {
+                b.number = U256::from(ctx.number);
+                b.timestamp = U256::from(ctx.timestamp);
+                b.beneficiary = ctx.beneficiary;
+                b.basefee = 0;
+                b.gas_limit = ctx.limits.exec;
+            });
+        let mut traced = make_context().build_mainnet_with_inspector(ProveGasMeter::default());
+        let mut plain = make_context().build_mainnet_with_inspector(revm::inspector::NoOpInspector);
+        let observed = traced.inspect_tx(tx_env.clone()).unwrap();
+        let unobserved = plain.inspect_tx(tx_env).unwrap();
+        assert_eq!(observed.result, unobserved.result);
+        assert_eq!(observed.state, unobserved.state);
+        assert_eq!(traced.inspector.steps, 11);
+        assert_eq!(traced.inspector.call_targets.addresses, vec![router, leaf]);
+        let run = run_tx(&pre, &ctx, &trace_tx(&signer, 0, router)).unwrap();
+        assert_eq!(run.receipt.prove_gas, traced.inspector.steps);
+        assert_eq!(run.receipt.gas_used, observed.result.gas().tx_gas_used());
+        assert_eq!(run.changes, observed.state);
+        assert_eq!(receipt_persistent_bytes(&run.receipt), RECEIPT_BASE_BYTES);
+    }
+
+    #[test]
+    fn unique_call_target_capture_is_sorted_bounded_and_repeats_do_not_truncate() {
+        let address = |n: usize| Address::from_word(B256::from(U256::from(n).to_be_bytes::<32>()));
+        let mut targets = CallTargets::default();
+        for n in (0..MAX_CALL_TARGETS).rev() { targets.record(address(n)); }
+        assert!(targets.complete);
+        assert!(targets.addresses.windows(2).all(|pair| pair[0] < pair[1]));
+        for _ in 0..100_000 { targets.record(address(17)); }
+        assert!(targets.complete, "repeated calls do not use extra capture capacity");
+        for n in MAX_CALL_TARGETS..100_000 { targets.record(address(n)); }
+        assert!(!targets.complete);
+        assert_eq!(targets.addresses.len(), MAX_CALL_TARGETS);
+        assert!(targets.addresses.capacity() <= MAX_CALL_TARGETS);
+        assert_eq!(targets.addresses.first(), Some(&address(0)));
+        assert_eq!(targets.addresses.last(), Some(&address(MAX_CALL_TARGETS - 1)));
     }
 
     #[test]

@@ -84,6 +84,8 @@ const METHODS: &[&str] = &[
     "aether_sendBeacon",
     "aether_sendRegistration",
     "aether_sendTransaction",
+    "aether_search",
+    "aether_searchInfo",
     "aether_shard",
     "aether_shardStats",
     "aether_signHandoff",

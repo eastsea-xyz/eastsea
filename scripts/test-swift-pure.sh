@@ -3,11 +3,15 @@
 # A new Tests/<name> directory must be added to the table below, or scripts/verify.sh will not run it.
 # The Aether 0.6.7 bridge (apps/bridge) has its own Sources/Tests: the `bridge` lines at the end.
 cd "$(dirname "$0")/.."
+mkdir -p tmp
+export TMPDIR="$PWD/tmp"
 W=apps/wallet/Sources; T=apps/wallet/Tests; bad=0
 run() { n=$1; shift; files=(); for f in "$@"; do files+=("$W/$f"); done
+  "$HOME/.claude/playbooks/aether-team/wait-compile.sh" || return 1
   if swiftc -o tmp/sw-$n "${files[@]}" $T/$n/main.swift 2>tmp/sw-$n.err && AETHER_AGENT_TEST_TMP=$PWD/tmp ./tmp/sw-$n > tmp/sw-$n.out 2>&1; then echo "OK   $n"; else echo "FAIL $n :: $(head -c 160 tmp/sw-$n.err | tr '\n' ' ') $(tail -2 tmp/sw-$n.out | tr '\n' ' ')"; bad=$((bad+1)); fi; }
 run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
+run app-search AppSearch.swift BrowserOriginPolicy.swift
 run balance-sources Brand.swift EarningsModel.swift ChainActivity.swift BalanceBreakdown.swift EarningsExport.swift
 run balance-history BalanceHistory.swift
 run browser-origin BrowserOriginPolicy.swift
@@ -54,6 +58,7 @@ run bridge-plan BridgePlan.swift
 # Native identity fixtures need signed task-owned executables and arguments.
 if [ "$(uname -s)" = Darwin ]; then
   for fixture in update-daemon update-listener; do
+    "$HOME/.claude/playbooks/aether-team/wait-compile.sh" || exit 1
     if bash "scripts/test-$fixture.sh" > "tmp/sw-$fixture.out" 2> "tmp/sw-$fixture.err"; then
       echo "OK   $fixture"
     else

@@ -22,8 +22,22 @@ final class BrowserController: NSObject, ObservableObject {
     /// Bumped whenever the WebView had to be rebuilt (a store switch).
     @Published private(set) var webViewGeneration = 0
     @Published private(set) var canGoBack = false
-    /// nil until something was loaded: while nil the curated home shows.
+    /// nil until something was loaded: while nil the Explore home shows.
     @Published private(set) var currentURL: URL?
+    /// Native results are read from the same local node as the explorer.
+    /// nil hides the page; an empty query shows its search instructions.
+    @Published private(set) var searchQuery: String?
+    @Published private(set) var searchResults: [AppSearchResult] = []
+    @Published private(set) var searchBusy = false
+    @Published private(set) var searchFailure: String?
+    @Published private(set) var searchInfo: AppSearchInfo?
+    @Published private(set) var searchSuggestions: [AppSearchResult] = []
+    @Published private(set) var suggestionsBusy = false
+    @Published private(set) var suggestionsFailure: String?
+    @Published private(set) var suggestionsInfo: AppSearchInfo?
+    /// A suggestion's original warning remains visible when its record opens.
+    @Published var searchRecord: AppSearchResult?
+    @Published private(set) var searchRecordInfo: AppSearchInfo?
 
     struct SiteWarning: Identifiable {
         let id = UUID()
@@ -58,6 +72,8 @@ final class BrowserController: NSObject, ObservableObject {
     /// The URL a just-acknowledged warning may load (one shot, so the same
     /// warning cannot loop).
     private var approvedURL: URL?
+    private var searchTask: Task<Void, Never>?
+    private var suggestionTask: Task<Void, Never>?
 
     private static let acknowledgedKey = "explore.acknowledged"
     private var acknowledged: Set<String> {
@@ -126,23 +142,153 @@ final class BrowserController: NSObject, ObservableObject {
 
     // MARK: - Navigation
 
-    /// The address bar's Go: scheme-less text is treated as a host.
+    /// The address bar's Go: names and phrases open native search; explicit
+    /// web addresses keep the existing origin and warning checks.
     func open(_ text: String) {
-        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return }
-        let withScheme = raw.contains("://") ? raw : "https://\(raw)"
-        guard let url = URL(string: withScheme) else {
+        switch AppSearchInput.destination(for: text) {
+        case .empty:
+            return
+        case .search(let query):
+            search(query)
+        case .web(let url):
+            load(url)
+        case .invalid:
             notice = String(localized: "That is not a web address.")
+        }
+    }
+
+    /// No parallel or stale responses can replace the submitted query.
+    func search(_ text: String = "") {
+        searchTask?.cancel()
+        dismissSuggestions()
+        notice = nil
+        let query = AppSearchInput.seaName(in: text) ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchQuery = query
+        addressField = query
+        searchResults = []
+        searchFailure = nil
+        searchInfo = nil
+        searchBusy = false
+        guard !query.isEmpty else { return }
+        let request: AppSearchRequest
+        do { request = try AppSearchRequest(query: query) }
+        catch { searchFailure = AppSearchFailure.queryTooLong.message; return }
+        guard let port = model?.nodeRpcPort else {
+            searchFailure = AppSearchFailure.unavailable.message
             return
         }
-        load(url)
+        searchBusy = true
+        searchTask = Task { [weak self] in
+            let result = await Self.readSearch(port: port, request: request)
+            guard !Task.isCancelled, let self, self.searchQuery == query,
+                  self.model?.nodeRpcPort == port else { return }
+            self.searchBusy = false
+            switch result {
+            case .success(let response):
+                self.searchResults = response.records
+                self.searchInfo = response.info
+            case .failure(let failure): self.searchFailure = failure.message
+            }
+        }
+    }
+
+    /// Only text that would submit a native search is suggested, after typing
+    /// has paused. Editing, leaving the field, or navigating cancels the read.
+    func suggest(_ text: String) {
+        dismissSuggestions()
+        guard case .search(let query) = AppSearchInput.destination(for: text), !query.isEmpty else { return }
+        let request: AppSearchRequest
+        do { request = try AppSearchRequest(query: query, limit: 5) }
+        catch { suggestionsFailure = AppSearchFailure.queryTooLong.message; return }
+        guard let port = model?.nodeRpcPort else { return }
+        suggestionTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 300_000_000) }
+            catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.suggestionsBusy = true
+            let result = await Self.readSearch(port: port, request: request)
+            guard !Task.isCancelled, self.model?.nodeRpcPort == port,
+                  AppSearchInput.destination(for: self.addressField) == .search(query) else { return }
+            self.suggestionsBusy = false
+            switch result {
+            case .success(let response):
+                self.searchSuggestions = response.records
+                self.suggestionsInfo = response.info
+            case .failure(let failure): self.suggestionsFailure = failure.message
+            }
+        }
+    }
+
+    func dismissSuggestions() {
+        suggestionTask?.cancel()
+        suggestionTask = nil
+        searchSuggestions = []
+        suggestionsBusy = false
+        suggestionsFailure = nil
+        suggestionsInfo = nil
+    }
+
+    func showSearchRecord(_ record: AppSearchResult) {
+        searchRecordInfo = suggestionsInfo
+        dismissSuggestions()
+        searchRecord = record
+    }
+
+    /// Return to the previous browser page without destroying its history.
+    func dismissSearch() {
+        searchTask?.cancel()
+        searchTask = nil
+        dismissSuggestions()
+        searchQuery = nil
+        searchResults = []
+        searchFailure = nil
+        searchInfo = nil
+        searchBusy = false
+        addressField = currentURL.map { urlBarText($0) } ?? ""
+    }
+
+    func refreshSearchForNode() {
+        searchRecord = nil
+        if let query = searchQuery { search(query) }
+        else { dismissSuggestions() }
+    }
+
+    private struct SearchResponse {
+        let records: [AppSearchResult]
+        let info: AppSearchInfo?
+    }
+
+    nonisolated private static func readSearch(port: UInt16, request: AppSearchRequest) async -> Result<SearchResponse, AppSearchFailure> {
+        async let recordsRead = nodeCall(port: port, method: AppSearchRequest.method, params: request.params)
+        async let infoRead = nodeCall(port: port, method: "aether_searchInfo", params: [])
+        let (recordsReply, infoReply) = await (recordsRead, infoRead)
+        switch recordsReply {
+        case .success(let value):
+            let info: AppSearchInfo?
+            if case .success(let value) = infoReply { info = try? AppSearchInfo.decode(from: value) }
+            else { info = nil }
+            do { return .success(SearchResponse(records: try request.results(from: value), info: info)) }
+            catch { return .failure(.malformedResponse) }
+        case .failure(let error):
+            return .failure(error.code == -32601 ? .unsupported : .unavailable)
+        }
     }
 
     /// Load a URL through the same rules a link goes through.
     func load(_ url: URL) {
+        if url.scheme?.lowercased() == "sea" {
+            guard let name = AppSearchInput.seaName(in: url.absoluteString) else {
+                notice = String(localized: "That is not a web address.")
+                return
+            }
+            search(name)
+            return
+        }
         notice = nil
         switch BrowserOriginPolicy.classify(url) {
         case .bundled, .external:
+            if searchQuery != nil { dismissSearch() }
+            else { dismissSuggestions() }
             webViewFor(url: url).load(URLRequest(url: url))
         case .blocked(let why):
             notice = why
@@ -155,7 +301,8 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     func goBack() {
-        webView?.goBack()
+        if searchQuery != nil { dismissSearch() }
+        else { webView?.goBack() }
     }
 
     /// The user acknowledged the warning: remember the host (once per site,
@@ -551,6 +698,10 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> WKNavigationActionPolicy {
         guard let url = navigationAction.request.url else { return .cancel }
+        if url.scheme?.lowercased() == "sea" {
+            open(url.absoluteString)
+            return .cancel
+        }
         switch BrowserOriginPolicy.classify(url) {
         case .bundled:
             return .allow
@@ -572,7 +723,7 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate {
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         currentURL = webView.url
-        addressField = webView.url.map { urlBarText($0) } ?? ""
+        if searchQuery == nil { addressField = webView.url.map { urlBarText($0) } ?? "" }
         canGoBack = webView.canGoBack
         notice = nil
     }

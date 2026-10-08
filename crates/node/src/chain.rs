@@ -270,6 +270,8 @@ pub struct Executed {
     pub timestamp: u64,
     pub state: WorldState,
     pub receipts: Vec<Receipt>,
+    /// Derived execution observations, never serialized or committed.
+    pub call_targets: Vec<aether_execution::CallTargets>,
     pub tx_hashes: Vec<TxHash>,
     pub gas: GasVector,
     /// New storage slots counted against this block's 512-slot cap.
@@ -541,6 +543,10 @@ pub struct Inner {
     pub finalized: Arc<Executed>,
     pub blocks: BTreeMap<u64, BlockSummary>,
     pub receipts: HashMap<TxHash, (u64, Receipt)>,
+    /// Derived finalized discovery facts, with a separate lock so searching
+    /// never holds the consensus/state lock while it ranks records.
+    pub search: Arc<Mutex<crate::search::SearchIndex>>,
+    pub search_sources: crate::search_sources::SearchSources,
     pub mempool: BTreeMap<TxHash, TxEnvelope>,
     /// When each mempool tx arrived (inclusion lists name the oldest).
     arrivals: HashMap<TxHash, Instant>,
@@ -682,6 +688,11 @@ pub enum ChainError {
 
 impl Chain {
     pub fn new(cfg: ChainConfig) -> (Self, Block) {
+        Self::new_with_search_sources(cfg, Default::default())
+    }
+
+    pub fn new_with_search_sources(cfg: ChainConfig, sources: crate::search_sources::SearchSources) -> (Self, Block) {
+        let sources = sources.validated().expect("valid search protocol source pins");
         let state = cfg.genesis_state();
         let genesis = Block::genesis_with(cfg.chain_id, state.root(), cfg.history_v2, cfg.group);
         // A genesis above protocol 1 carries its activation from height 0: the
@@ -699,6 +710,7 @@ impl Chain {
             timestamp: 0,
             state,
             receipts: vec![],
+            call_targets: vec![],
             tx_hashes: vec![],
             gas: GasVector::default(),
             new_slots: 0,
@@ -731,6 +743,8 @@ impl Chain {
             finalized: exec,
             blocks,
             receipts: HashMap::new(),
+            search: Arc::new(Mutex::new(crate::search::SearchIndex::new())),
+            search_sources: sources,
             mempool: BTreeMap::new(),
             pending_by_sender: HashMap::new(),
             nonces_by_sender: HashMap::new(),
@@ -793,7 +807,11 @@ impl Chain {
     /// Open with durable state: resume from the stored checkpoint, or start at
     /// genesis and persist it.
     pub fn open(cfg: ChainConfig, store: Store) -> Result<(Self, Block), StoreError> {
-        let (chain, genesis) = Self::new(cfg);
+        Self::open_with_search_sources(cfg, store, Default::default())
+    }
+
+    pub fn open_with_search_sources(cfg: ChainConfig, store: Store, sources: crate::search_sources::SearchSources) -> Result<(Self, Block), StoreError> {
+        let (chain, genesis) = Self::new_with_search_sources(cfg, sources.clone());
         // The store belongs to one genesis: refuse data of another instead of diverging from it.
         let ours = genesis_digest(&genesis);
         match store.meta(GENESIS)? {
@@ -807,6 +825,14 @@ impl Chain {
         match store.load()? {
             Some(cp) => {
                 use commonware_codec::DecodeExt;
+                let search = match store.search_index(cp.height, cp.digest, sources.fingerprint())? {
+                    Some(index) => index,
+                    None => {
+                        let index = rebuild_search_cache(&cp, &sources);
+                        store.put_search_index(cp.height, cp.digest, &index, sources.fingerprint())?;
+                        index
+                    }
+                };
                 let digest = Digest::decode(cp.digest.as_slice())
                     .map_err(|_| StoreError::Corrupt("digest"))?;
                 let summary = cp.blocks.get(&cp.height).cloned();
@@ -818,6 +844,7 @@ impl Chain {
                     timestamp: summary.as_ref().map(|b| b.timestamp_ms).unwrap_or_default(),
                     state,
                     receipts: vec![],
+                    call_targets: vec![],
                     tx_hashes: summary.as_ref().map(|b| b.txs.clone()).unwrap_or_default(),
                     gas: GasVector::default(),
                     new_slots: 0,
@@ -836,6 +863,7 @@ impl Chain {
                     registration_ids: vec![],
                 });
                 let mut g = chain.lock();
+                g.search = Arc::new(Mutex::new(search));
                 g.executed.insert(digest, exec.clone());
                 // History proofs need every block from genesis; a checkpoint-started node has none before it.
                 // A pruned store keeps the roots of the eras it dropped instead (roadmap B4).
@@ -969,6 +997,12 @@ impl Chain {
     pub fn adopt(&self, exec: Arc<Executed>, summary: BlockSummary) {
         let mut g = self.lock();
         let height = exec.height;
+        let search = g.search.clone();
+        let search_sources = g.search_sources.clone();
+        let search_store = g.store.clone();
+        let unchanged_search_head = g.finalized.height == height && g.finalized.digest == exec.digest;
+        let search_digest = digest_bytes(&exec.digest);
+        let search_at = exec.timestamp / 1000;
         g.executed.clear();
         g.executed.insert(exec.digest, exec.clone());
         let sb = summary_bytes(&summary);
@@ -998,6 +1032,18 @@ impl Chain {
         // Old finalized blocks are no longer provable here (their states are
         // gone); do not let them hold the prover's queue.
         g.recent.clear();
+        drop(g);
+        if let Some(restored) = search_store.as_ref().and_then(|store| store.search_index(height, search_digest, search_sources.fingerprint()).ok().flatten()) {
+            *search.lock().expect("search index") = restored;
+            return;
+        }
+        if unchanged_search_head { return; }
+        // A snapshot contains state, not intervening discovery events. Old
+        // resolver facts could have changed during the gap; report that gap.
+        let mut index = search.lock().expect("search index");
+        *index = crate::search::SearchIndex::new();
+        index.apply(crate::search::SearchEvent::Tick { at: search_at });
+        index.mark_history_incomplete();
     }
 
     /// Key rounds only go up: a handoff built on `parent` must carry a round
@@ -2368,6 +2414,7 @@ impl Chain {
             timestamp: block.timestamp,
             state: out.state,
             receipts: out.receipts,
+            call_targets: out.call_targets,
             tx_hashes,
             gas: out.gas,
             new_slots: out.new_slots,
@@ -2528,6 +2575,7 @@ impl Chain {
             state: exec.state.clone(),
             bal: payload.bal.clone(),
             receipts: exec.receipts.clone(),
+            call_targets: exec.call_targets.clone(),
             gas: exec.gas,
             persistent_bytes: exec.persistent_bytes,
             new_slots: exec.new_slots,
@@ -2666,6 +2714,11 @@ impl Chain {
         };
         let payload = block.payload().ok_or(ChainError::BadPayload)?;
         let summary = summary(block, &exec, payload.parent_state_root);
+        let search = self.lock().search.clone();
+        let search_sources = self.lock().search_sources.clone();
+        let mut search_index = search.lock().expect("search index");
+        let search_events = crate::search_events::block_events(&payload.txs, &exec.receipts, &exec.call_targets, &exec.state, &search_sources, block.timestamp / 1000);
+        let search_delta = search_index.apply_batch(&search_events);
         let (store, history_v2, compact_swaps, previous_history, relaxed) = {
             let g = self.lock();
             (g.store.clone(), g.cfg.history_v2, g.cfg.node_rewards || g.cfg.history_v2, g.finalized.history.clone(), g.relaxed)
@@ -2757,8 +2810,10 @@ impl Chain {
                     era_start: era_start.as_ref(),
                 }),
             };
-            store.commit_with_history(write, &account_rows, relaxed)
-                .map_err(|e| ChainError::Store(e.to_string()))?;
+            if let Err(error) = store.commit_with_search(write, &account_rows, &search_delta, &search_index, search_sources.fingerprint(), relaxed) {
+                search_index.undo(&search_delta);
+                return Err(ChainError::Store(error.to_string()));
+            }
             // An era's last block: seal it into a file, off the consensus path.
             // Below the free-space floor the seal waits — the blocks stay
             // staged in the store, and a later start's `seal_pending` catches up.
@@ -3530,6 +3585,39 @@ fn current_draw(state: &WorldState, height: u64) -> u64 {
     let p = aether_execution::registry::params(state);
     // Saturating: a genesis is bounded (roster.rs), but a state word is read here.
     height / p.epoch_blocks.saturating_mul(p.draw_epochs).max(1)
+}
+
+/// Upgrade backfill streams kept receipt events in canonical block/tx/log
+/// order. Older stores do not retain every signed transaction alongside its
+/// receipt, so the activity signal stays unavailable for one complete week.
+fn rebuild_search_cache(cp: &crate::store::Checkpoint, sources: &crate::search_sources::SearchSources) -> crate::search::SearchIndex {
+    use crate::search::{SearchEvent, SearchIndex};
+    let mut index = SearchIndex::new();
+    let mut missing = cp.pruned_below != 0;
+    let mut expected_height = 0;
+    for block in cp.blocks.values() {
+        if block.height != expected_height || (block.height != 0 && block.timestamp_ms == 0) {
+            // Pre-gap resolver facts may have been changed by missing events.
+            index = SearchIndex::new();
+            missing = true;
+        }
+        expected_height = block.height.saturating_add(1);
+        let at = block.timestamp_ms / 1000;
+        index.apply(SearchEvent::Tick { at });
+        for hash in &block.txs {
+            if let Some((_, receipt)) = cp.receipts.get(hash).filter(|(height, _)| *height == block.height) {
+                if receipt.success {
+                    for event in &receipt.events {
+                        for decoded in crate::search_events::decode_from_source(event, &cp.state, sources, at) { index.apply(decoded); }
+                    }
+                }
+            } else { missing = true; }
+        }
+    }
+    missing |= expected_height != cp.height.saturating_add(1);
+    if missing { index.mark_history_incomplete(); }
+    if cp.height != 0 { index.mark_usage_incomplete(); }
+    index
 }
 
 fn keep<T: Serialize + ?Sized>(store: &Option<Arc<Store>>, key: &str, value: &T) {

@@ -125,7 +125,7 @@ if (token) {
   check('search finds the address', found?.page === 'account');
   const byHeight = await resolveSearch(String(newest.height), node);
   check('search finds the height', byHeight?.page === 'block');
-  check('search rejects junk', (await resolveSearch('not a thing', node)) === null);
+  check('text search routes to apps and names', (await resolveSearch('not a thing', node))?.page === 'search');
 } else {
   console.log('     (no token sources for this chain; skipping the token page)');
 }

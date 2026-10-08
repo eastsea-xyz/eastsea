@@ -1,13 +1,14 @@
 import SwiftUI
 import WebKit
 
-/// The Explore tab (docs/design/09-wallet.md "인앱 브라우저"): a curated home,
+/// The Explore tab (docs/design/09-wallet.md "인앱 브라우저"): chain search,
 /// an address bar that opens external https after one warning per site, and
 /// the block explorer bundled with the app. Pages' `window.aether` is
 /// answered by the wallet itself through BrowserController.
 struct ExplorePage: View {
     @EnvironmentObject var model: WalletModel
     @EnvironmentObject var browser: BrowserController
+    @FocusState private var addressFocused: Bool
     /// Back to Home, always in the address bar: a page in the full-bleed
     /// web view must never be a dead end (founder report on 0.7.0).
     var goHome: (() -> Void)?
@@ -15,6 +16,11 @@ struct ExplorePage: View {
     var body: some View {
         VStack(spacing: 0) {
             addressBar
+            if addressFocused && (browser.suggestionsBusy || !browser.searchSuggestions.isEmpty || browser.suggestionsFailure != nil
+                || browser.suggestionsInfo?.incomplete == true || browser.suggestionsInfo?.usageComplete == false
+                || browser.suggestionsInfo?.sourcesConfigured == false) {
+                suggestions
+            }
             if let n = browser.notice {
                 Text(n).font(.aeFootnote).foregroundStyle(Color.warn)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -22,7 +28,9 @@ struct ExplorePage: View {
                     .background(Color.warn.opacity(0.12))
             }
             Divider()
-            if browser.webView == nil {
+            if browser.searchQuery != nil {
+                AppSearchPage(browser: browser)
+            } else if browser.webView == nil {
                 home.padding(20)
             } else if let web = browser.webView {
                 WebViewHolder(webView: web)
@@ -30,6 +38,18 @@ struct ExplorePage: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: browser.addressField) { _, text in
+            if addressFocused { browser.suggest(text) }
+        }
+        .onChange(of: addressFocused) { _, focused in
+            if focused { browser.suggest(browser.addressField) }
+            else { browser.dismissSuggestions() }
+        }
+        .onChange(of: model.nodeRpcPort) { _, _ in
+            browser.refreshSearchForNode()
+            if addressFocused { browser.suggest(browser.addressField) }
+        }
+        .onDisappear { browser.dismissSuggestions() }
         .sheet(item: $browser.warning) { w in
             SiteWarningSheet(warning: w, browser: browser)
                 .frame(width: 460)
@@ -37,6 +57,9 @@ struct ExplorePage: View {
         .sheet(item: $browser.ask) { ask in
             ProviderAskSheet(ask: ask, browser: browser)
                 .frame(width: 480)
+        }
+        .sheet(item: $browser.searchRecord) { record in
+            AppSearchRecordSheet(record: record, info: browser.searchRecordInfo) { browser.searchRecord = nil }
         }
     }
 
@@ -48,19 +71,70 @@ struct ExplorePage: View {
                     .help("Back to Home")
             }
             #if os(macOS)
-            if browser.canGoBack {
+            if browser.searchQuery != nil || browser.canGoBack {
                 Button { browser.goBack() } label: { Image(systemName: "chevron.left") }
                     .buttonStyle(.borderless).help("Back")
             }
             #endif
-            Image(systemName: "lock.fill").font(.aeCaption).foregroundStyle(.secondary)
-            TextField("Enter a web address (https)", text: $browser.addressField)
+            Button {
+                addressFocused = false
+                if case .search(let query) = AppSearchInput.destination(for: browser.addressField) { browser.search(query) }
+                else { browser.search() }
+            } label: {
+                Label("Search", systemImage: "magnifyingglass").labelStyle(.iconOnly)
+            }
+            .buttonStyle(.bordered).help("Search")
+            TextField("Search apps and names, or enter an https address", text: $browser.addressField)
                 .textFieldStyle(.roundedBorder).font(.aeBody)
-                .onSubmit { browser.open(browser.addressField) }
-            Button("Go") { browser.open(browser.addressField) }
+                .focused($addressFocused)
+                .onSubmit { submitAddress() }
+            Button("Go") { submitAddress() }
                 .buttonStyle(.borderedProminent).disabled(browser.addressField.trimmingCharacters(in: .whitespaces).isEmpty)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+
+    private func submitAddress() {
+        addressFocused = false
+        browser.open(browser.addressField)
+    }
+
+    private var suggestions: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                if browser.suggestionsBusy {
+                    ProgressView(String(localized: "Searching the chain…")).controlSize(.small)
+                }
+                if let failure = browser.suggestionsFailure {
+                    Text(failure).font(.aeFootnote).foregroundStyle(Color.warn)
+                }
+                if !browser.suggestionsBusy && (!browser.searchSuggestions.isEmpty || browser.suggestionsInfo?.incomplete == true
+                    || browser.suggestionsInfo?.usageComplete == false || browser.suggestionsInfo?.sourcesConfigured == false) {
+                    AppSearchIndexNotice(info: browser.suggestionsInfo)
+                }
+                ForEach(Array(browser.searchSuggestions.enumerated()), id: \.offset) { _, record in
+                    Button {
+                        browser.showSearchRecord(record)
+                        addressFocused = false
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(verbatim: record.name).font(.aeHeadline)
+                            if !record.title.isEmpty && record.title != record.name {
+                                Text(verbatim: record.title).font(.aeFootnote).foregroundStyle(.secondary)
+                            }
+                            AppSearchHashLabel(present: record.verified)
+                            AppSearchLookalikeWarning(name: record.lookalike)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    Divider()
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+        }
+        .frame(maxHeight: 240)
     }
 
     /// The curated home: what the tab is for, before any address is typed.
@@ -80,6 +154,19 @@ struct ExplorePage: View {
             }
             Card {
                 VStack(alignment: .leading, spacing: 12) {
+                    Button {
+                        addressFocused = false
+                        browser.search()
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Search", systemImage: "magnifyingglass").font(.aeHeadline)
+                            Text("Find apps and .sea names using your own node.")
+                                .font(.aeBody).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    Divider()
                     Button {
                         browser.openExplorer()
                     } label: {
@@ -109,6 +196,169 @@ struct ExplorePage: View {
             Spacer()
         }
         .frame(maxWidth: 620)
+    }
+}
+
+/// Results retain the node's ordering. Registered text is displayed verbatim;
+/// it never becomes a WebKit document or a wallet transaction.
+private struct AppSearchPage: View {
+    @ObservedObject var browser: BrowserController
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text("Search").font(.aeHeadline)
+                    Spacer()
+                    Button("Back to Explore") { browser.dismissSearch() }
+                        .buttonStyle(.bordered)
+                }
+                Text("Apps and names recorded on chain").font(.aeBody).foregroundStyle(.secondary)
+                DisclosureGroup(String(localized: "How results are ordered")) {
+                    Text("Search reads your own node. Exact names come first, then prefixes and title or description tokens, then distinct contract callers in the last 7 days, then older records. There are no paid placements, publisher boosts or hidden blocklists.")
+                        .font(.aeFootnote).foregroundStyle(.secondary).padding(.top, 6)
+                }
+                if let query = browser.searchQuery, !query.isEmpty {
+                    Text("Results for \(query)").font(.aeBody).textSelection(.enabled)
+                    if !browser.searchBusy && browser.searchFailure == nil {
+                        AppSearchIndexNotice(info: browser.searchInfo)
+                    }
+                    if browser.searchBusy {
+                        ProgressView(String(localized: "Searching the chain…"))
+                    } else if let failure = browser.searchFailure {
+                        Text(failure).font(.aeBody).foregroundStyle(Color.warn)
+                        Button("Try Again") { browser.search(query) }.buttonStyle(.bordered)
+                    } else if browser.searchResults.isEmpty {
+                        Text("No matching apps or names.").font(.aeBody).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(browser.searchResults.enumerated()), id: \.offset) { _, record in
+                            Card { AppSearchRecordDetails(record: record, info: browser.searchInfo) }
+                        }
+                    }
+                } else {
+                    Text("Search by app name, .sea name or description.").font(.aeBody)
+                }
+                Text("The content hash label only reports that a hash is recorded on chain. It does not establish the publisher's identity or the app's safety.")
+                    .font(.aeFootnote).foregroundStyle(.secondary)
+            }
+            .padding(20).frame(maxWidth: 680, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct AppSearchRecordSheet: View {
+    let record: AppSearchResult
+    let info: AppSearchInfo?
+    let close: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text("Search record").font(.aeHeadline)
+                    Spacer()
+                    Button("Close", action: close).buttonStyle(.bordered)
+                }
+                AppSearchIndexNotice(info: info)
+                AppSearchRecordDetails(record: record, info: info)
+                Text("The content hash label only reports that a hash is recorded on chain. It does not establish the publisher's identity or the app's safety.")
+                    .font(.aeFootnote).foregroundStyle(.secondary)
+            }
+            .padding(20)
+        }
+        .frame(idealWidth: 560, idealHeight: 540)
+    }
+}
+
+private struct AppSearchRecordDetails: View {
+    let record: AppSearchResult
+    let info: AppSearchInfo?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(verbatim: record.name).font(.aeHeadline).textSelection(.enabled)
+            if !record.title.isEmpty && record.title != record.name {
+                Text(verbatim: record.title).font(.aeBody).textSelection(.enabled)
+            }
+            AppSearchLookalikeWarning(name: record.lookalike)
+            AppSearchHashLabel(present: record.verified)
+            if !record.description.isEmpty {
+                Text(verbatim: record.description).font(.aeBody).textSelection(.enabled)
+            }
+            AppSearchField(label: String(localized: "App address"), value: record.url)
+            AppSearchField(label: String(localized: "Category"), value: record.category)
+            AppSearchField(label: String(localized: "Publisher"), value: record.publisher)
+            AppSearchField(label: String(localized: "Distinct callers in the last 7 days"),
+                           value: record.usageAvailable(info: info) ? record.usage7d.formatted() : String(localized: "Activity signal unavailable"))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Registered").font(.aeCaption).foregroundStyle(.secondary)
+                Text(Date(timeIntervalSince1970: TimeInterval(record.createdAt)), format: .dateTime.year().month().day())
+                    .font(.aeFootnote).textSelection(.enabled)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct AppSearchIndexNotice: View {
+    let info: AppSearchInfo?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let info {
+                if info.sourcesConfigured == false {
+                    Label("This node has no app or name registry sources configured.", systemImage: "exclamationmark.triangle")
+                }
+                if info.incomplete {
+                    Label("This node's search index is incomplete. Some chain records may be missing from these results.", systemImage: "exclamationmark.triangle")
+                }
+                if !info.usageComplete {
+                    Label("Activity signal unavailable", systemImage: "exclamationmark.triangle")
+                }
+            } else {
+                Label("Search index status unavailable. Results may be incomplete.", systemImage: "exclamationmark.triangle")
+            }
+        }
+        .font(.aeFootnote).foregroundStyle(Color.warn)
+    }
+}
+
+private struct AppSearchField: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.aeCaption).foregroundStyle(.secondary)
+            Text(verbatim: value).font(.aeFootnote).textSelection(.enabled)
+        }
+    }
+}
+
+private struct AppSearchHashLabel: View {
+    let present: Bool
+
+    var body: some View {
+        Label(present ? String(localized: "Content hash present") : String(localized: "Content hash not recorded"),
+              systemImage: "number.circle")
+            .font(.aeCaption).foregroundStyle(.secondary)
+    }
+}
+
+private struct AppSearchLookalikeWarning: View {
+    let name: String?
+
+    var body: some View {
+        if let name {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Lookalike warning", systemImage: "exclamationmark.triangle.fill").font(.aeFootnote)
+                Text("This name resembles \(name). It may be a phishing attempt. Check the name and publisher.")
+                    .font(.aeFootnote).textSelection(.enabled)
+            }
+            .foregroundStyle(Color.warn).frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8).background(Color.warn.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        }
     }
 }
 

@@ -30,6 +30,7 @@ struct AetherWalletApp: App {
                 .environmentObject(appDelegate.updates)
                 .environmentObject(appDelegate.health)
                 .environmentObject(earnings)
+                .eastSeaPage()
                 .onAppear {
                     appDelegate.start(node: node, model: model, unattended: unattended)
                     earnings.attach(node, operatorAddress: { model.payoutAddress })
@@ -49,6 +50,7 @@ struct AetherWalletApp: App {
             #else
             ContentView()
                 .environmentObject(model)
+                .eastSeaPage()
                 .onOpenURL { model.open(url: $0) }
                 #if DEBUG
                 // `-spinnerGallery` (debug builds only) shows every loader on one screen.
@@ -88,6 +90,7 @@ struct AetherWalletApp: App {
         #if os(macOS)
         Settings {
             SettingsView().environmentObject(node).environmentObject(model).environmentObject(unattended).environmentObject(appDelegate.updates)
+                .eastSeaSheet()
         }
         // Always in the menu bar: balance, node and prover at a glance; the window opens from here.
         MenuBarExtra {

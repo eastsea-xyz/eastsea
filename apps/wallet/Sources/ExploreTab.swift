@@ -18,18 +18,19 @@ struct ExplorePage: View {
             if let n = browser.notice {
                 Text(n).font(.aeFootnote).foregroundStyle(Color.warn)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16).padding(.vertical, 6)
-                    .background(Color.warn.opacity(0.12))
+                    .padding(.horizontal, DesignTokens.Space.s4).padding(.vertical, DesignTokens.Space.s2)
+                    .background(DesignTokens.Palette.surfaceSunken.color)
             }
-            Divider()
+            Rectangle().fill(DesignTokens.Palette.line.color).frame(height: 1)
             if browser.webView == nil {
-                home.padding(20)
+                home.padding(DesignTokens.Space.s5)
             } else if let web = browser.webView {
                 WebViewHolder(webView: web)
                     .id(browser.webViewGeneration)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .eastSeaPage()
         .sheet(item: $browser.warning) { w in
             SiteWarningSheet(warning: w, browser: browser)
                 .frame(width: 460)
@@ -41,10 +42,10 @@ struct ExplorePage: View {
     }
 
     private var addressBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DesignTokens.Space.s2) {
             if let goHome {
                 Button(action: goHome) { Label("Home", systemImage: "house.fill") }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(EastSeaQuietButtonStyle()).fixedSize()
                     .help("Back to Home")
             }
             #if os(macOS)
@@ -53,54 +54,72 @@ struct ExplorePage: View {
                     .buttonStyle(.borderless).help("Back")
             }
             #endif
-            Image(systemName: "lock.fill").font(.aeCaption).foregroundStyle(.secondary)
+            Image(systemName: "lock.fill").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
             TextField("Enter a web address (https)", text: $browser.addressField)
-                .textFieldStyle(.roundedBorder).font(.aeBody)
+                .textFieldStyle(EastSeaTextFieldStyle()).font(.aeBody)
                 .onSubmit { browser.open(browser.addressField) }
             Button("Go") { browser.open(browser.addressField) }
-                .buttonStyle(.borderedProminent).disabled(browser.addressField.trimmingCharacters(in: .whitespaces).isEmpty)
+                .buttonStyle(EastSeaPrimaryButtonStyle()).disabled(browser.addressField.trimmingCharacters(in: .whitespaces).isEmpty)
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
+        .padding(.horizontal, DesignTokens.Space.s4).padding(.vertical, DesignTokens.Space.s3)
+        .background(DesignTokens.Palette.surface.color)
     }
 
     /// The curated home: what the tab is for, before any address is typed.
     private var home: some View {
-        VStack(spacing: 16) {
-            Card {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(alignment: .top, spacing: 14) {
-                        Image(systemName: "safari.fill").font(.system(size: 30)).foregroundStyle(Color.aether)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Explore the chain").font(.aeHeadline)
-                            Text("The block explorer below is part of the app and reads this Mac's own node. Pages you open can connect to your wallet — every request asks first, and Security lists the sites you allowed.")
-                                .font(.aeBody).foregroundStyle(.secondary)
-                        }
-                    }
+        VStack(spacing: DesignTokens.Space.s4) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+                HStack(spacing: DesignTokens.Space.s3) {
+                    EastSeaDawnMark().frame(width: 40, height: 40)
+                    Text("Explore the chain").font(DesignTokens.TypeScale.title2.font)
                 }
+                Text("The block explorer below is part of the app and reads this Mac's own node. Pages you open can connect to your wallet — every request asks first, and Security lists the sites you allowed.")
+                    .font(.aeBody).foregroundStyle(DesignTokens.Palette.plateSoft.color)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .padding(DesignTokens.Space.s6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .foregroundStyle(DesignTokens.Palette.plateInk.color)
+            .eastSeaNavyPlate(cornerRadius: DesignTokens.Radius.lg)
             Card {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
                     Button {
                         browser.openExplorer()
                     } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Block explorer").font(.aeHeadline)
-                            Text("Bundled with the app — reads your own node, signs nothing.")
-                                .font(.aeBody).foregroundStyle(.secondary)
+                        HStack(spacing: DesignTokens.Space.s3) {
+                            Image(systemName: "square.stack.3d.up").font(.aeTitle).foregroundStyle(Color.aether)
+                                .frame(width: 32)
+                            VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
+                                Text("Block explorer").font(.aeHeadline)
+                                Text("Bundled with the app — reads your own node, signs nothing.")
+                                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                            }
+                            Spacer(minLength: DesignTokens.Space.s2)
+                            Image(systemName: "chevron.right").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, DesignTokens.Space.s2)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    Divider()
+                    Rectangle().fill(DesignTokens.Palette.line.color).frame(height: 1)
                     ForEach(Array(BrowserOriginPolicy.curatedDomains).sorted(), id: \.self) { domain in
                         Button {
                             browser.load(URL(string: "https://\(domain)")!)
                         } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(domain).font(.aeHeadline)
-                                Text("The \(Brand.name) website.").font(.aeBody).foregroundStyle(.secondary)
+                            HStack(spacing: DesignTokens.Space.s3) {
+                                Image(systemName: "globe").font(.aeTitle).foregroundStyle(Color.aether)
+                                    .frame(width: 32)
+                                VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
+                                    Text(domain).font(.aeHeadline)
+                                    Text("The \(Brand.name) website.").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                                }
+                                Spacer(minLength: DesignTokens.Space.s2)
+                                Image(systemName: "arrow.up.right").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, DesignTokens.Space.s2)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -146,10 +165,16 @@ struct SiteWarningSheet: View {
     @ObservedObject var browser: BrowserController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Open this site in Explore?").font(.aeTitle)
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+            HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
+                Image(systemName: "exclamationmark.shield").font(.aeTitle).foregroundStyle(Color.warn)
+                Text("Open this site in Explore?").font(.aeTitle)
+            }
             Text("You are about to open **\(warning.host)**. Explore shows pages like any browser: the site's content is the site's, not \(Brand.name)'s.")
                 .font(.aeBody)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(DesignTokens.Space.s4)
+                .background(DesignTokens.Palette.surfaceSunken.color, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
             if let like = warning.lookalike {
                 // Label's title does not render Markdown; Text does (the bold host).
                 Label {
@@ -157,21 +182,25 @@ struct SiteWarningSheet: View {
                 } icon: {
                     Image(systemName: "exclamationmark.triangle.fill")
                 }
-                .font(.aeBody).foregroundStyle(Color.warn)
+                .font(.aeBody).foregroundStyle(Color.warn).fixedSize(horizontal: false, vertical: true)
             }
             if warning.punycode {
                 Label("This address mixes in characters that can hide inside look-alike letters.", systemImage: "character.cursor.ibeam")
-                    .font(.aeBody).foregroundStyle(Color.warn)
+                    .font(.aeBody).foregroundStyle(Color.warn).fixedSize(horizontal: false, vertical: true)
             }
             Text("Pages cannot see your addresses until you approve them, and every payment asks again. This warning appears once per site.")
-                .font(.aeFootnote).foregroundStyle(.secondary)
+                .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { browser.refuseWarning() }.keyboardShortcut(.cancelAction)
-                Button("Open Site") { browser.approveWarning() }.keyboardShortcut(.defaultAction)
+                Button("Cancel", role: .cancel) { browser.refuseWarning() }
+                    .buttonStyle(EastSeaQuietButtonStyle()).keyboardShortcut(.cancelAction)
+                Button("Open Site") { browser.approveWarning() }
+                    .buttonStyle(EastSeaPrimaryButtonStyle()).keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
+        .padding(DesignTokens.Space.s6)
+        .eastSeaSheet()
     }
 }
 
@@ -184,17 +213,17 @@ struct ProviderAskSheet: View {
     @ObservedObject var browser: BrowserController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
             switch ask.kind {
             case .connect(let origin, let host):
                 Text("Connect to \(host.isEmpty ? origin : host)?").font(.aeTitle)
                 Text("This site is asking which address this wallet controls. Saying yes shows it **\(Short.address(model.address))** — the address itself, not your key, and not your balances.")
-                    .font(.aeBody)
+                    .font(.aeBody).fixedSize(horizontal: false, vertical: true)
                 Text("You can take this back any time in Security → Connected sites.")
-                    .font(.aeFootnote).foregroundStyle(.secondary)
+                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
             case .send(let origin, let host, let tx, let feeWei):
                 Text("\(host.isEmpty ? origin : host) asks to send").font(.aeTitle)
-                VStack(alignment: .leading, spacing: 8) {
+                Grid(alignment: .topLeading, horizontalSpacing: DesignTokens.Space.s4, verticalSpacing: DesignTokens.Space.s3) {
                     row("Action", CallDescribe.action(to: tx.to, data: tx.data), mono: false)
                     if !tx.to.isEmpty { row("To", tx.to, mono: true) }
                     row("Amount", tx.valueWei == "0" ? "—" : "\(Wei.format(tx.valueWei)) \(Brand.networkCoinTicker)")
@@ -203,35 +232,39 @@ struct ProviderAskSheet: View {
                     }
                     row("Gas", tx.gas == 0 ? String(localized: "the wallet's default") : "\(tx.gas)")
                     if tx.data != "0x" {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Calldata").font(.aeFootnote).foregroundStyle(.secondary)
+                        GridRow(alignment: .top) {
+                            Text("Calldata").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                                .frame(width: 96, alignment: .leading)
                             Text(tx.data).font(.aeFootnote.monospaced()).lineLimit(4)
                                 .truncationMode(.middle).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                 }
-                .padding(12)
-                .background(.background.tertiary, in: RoundedRectangle(cornerRadius: Radius.inner))
+                .padding(DesignTokens.Space.s4)
+                .background(DesignTokens.Palette.surfaceSunken.color, in: RoundedRectangle(cornerRadius: Radius.inner))
                 Label("Only continue if you started this on \(host.isEmpty ? origin : host). A refused request sends nothing.", systemImage: "exclamationmark.shield")
-                    .font(.aeFootnote).foregroundStyle(Color.warn)
+                    .font(.aeFootnote).foregroundStyle(Color.warn).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
                 Spacer()
-                Button("Refuse", role: .cancel) { browser.refuseAsk() }.keyboardShortcut(.cancelAction)
+                Button("Refuse", role: .cancel) { browser.refuseAsk() }
+                    .buttonStyle(EastSeaQuietButtonStyle()).keyboardShortcut(.cancelAction)
                 Button(ask.kind.isConnect ? String(localized: "Connect") : String(localized: "Send")) { browser.approveAsk() }
-                    .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction).buttonStyle(EastSeaPrimaryButtonStyle())
             }
         }
-        .padding(20)
+        .padding(DesignTokens.Space.s6)
+        .eastSeaSheet()
     }
 
     /// Addresses in a fixed-width face (easier to compare), words in the body face.
     private func row(_ label: LocalizedStringKey, _ value: String, mono: Bool = false) -> some View {
-        HStack(alignment: .top) {
-            Text(label).font(.aeFootnote).foregroundStyle(.secondary).frame(width: 110, alignment: .leading)
+        GridRow(alignment: .top) {
+            Text(label).font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color).frame(width: 96, alignment: .leading)
             Text(value).font(mono ? .aeBody.monospaced() : .aeBody.monospacedDigit()).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -243,39 +276,42 @@ struct ConnectedSitesSection: View {
 
     var body: some View {
         Card {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: "safari").font(.system(size: 30)).foregroundStyle(Color.aether)
-                    VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+                HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
+                    Image(systemName: "safari").font(.aeTitle).foregroundStyle(Color.aether)
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                         Text("Connected sites").font(.aeHeadline)
                         Text(model.sitePermissions.sites.isEmpty
                              ? String(localized: "No site can see your address. When the Explore tab connects one, it appears here.")
                              : String(localized: "These sites may ask about your address. Disconnecting takes effect the next time they ask."))
-                            .font(.aeBody).foregroundStyle(.secondary)
+                            .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 ForEach(model.sitePermissions.sites) { site in
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
                         HStack {
-                            VStack(alignment: .leading, spacing: 2) {
+                            VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                                 Text(site.origin).font(.aeBody.monospaced())
+                                    .fixedSize(horizontal: false, vertical: true)
                                 Text("may see \(Short.address(site.address)) · connected \(site.grantedAt, style: .date)")
-                                    .font(.aeFootnote).foregroundStyle(.secondary)
+                                    .font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                             }
                             Spacer()
                             if site.address.lowercased() == model.address.lowercased() {
                                 Button("Disconnect") { model.revokeSitePermission(origin: site.origin) }
+                                    .buttonStyle(EastSeaQuietButtonStyle())
                             } else {
                                 // The grant names an address this wallet no
                                 // longer holds: it stopped meaning anything.
-                                Text("stale — was \(Short.address(site.address))").font(.aeFootnote).foregroundStyle(.secondary)
+                                Text("stale — was \(Short.address(site.address))").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                             }
                         }
-                        Divider()
+                        Rectangle().fill(DesignTokens.Palette.line.color).frame(height: 1)
                     }
                 }
                 if model.sitePermissions.sites.contains(where: { $0.address.lowercased() == model.address.lowercased() }) {
-                    Button("Disconnect all") { model.revokeAllSitePermissions() }
+                    Button("Disconnect all") { model.revokeAllSitePermissions() }.buttonStyle(EastSeaQuietButtonStyle())
                 }
             }
         }

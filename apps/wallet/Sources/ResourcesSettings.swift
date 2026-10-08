@@ -19,44 +19,59 @@ struct ResourcesSection: View {
     }
 
     var body: some View {
-        Section("Resources") {
-            Toggle("Prove blocks on this Mac", isOn: Binding(get: { node.prove }, set: {
-                if $0 { node.proveAddress = model.payoutAddress }
-                node.prove = $0
-            }))
-            .disabled(model.payoutAddress.isEmpty)
-            .help("Your node proves recent blocks with Metal. The first valid proof of a block gets a test \(Brand.networkCoinTicker) reward in your chosen node payout account.")
+        SettingsSection(LocalizedStringKey("Resources"), explanation: LocalizedStringKey("Proving stays within this Mac's resource limits.")) {
+            SettingsControlRow(LocalizedStringKey("Prove blocks")) {
+                Toggle("Prove blocks on this Mac", isOn: Binding(get: { node.prove }, set: {
+                    if $0 { node.proveAddress = model.payoutAddress }
+                    node.prove = $0
+                }))
+                .disabled(model.payoutAddress.isEmpty)
+                .help("Your node proves recent blocks with Metal. The first valid proof of a block gets a test \(Brand.networkCoinTicker) reward in your chosen node payout account.")
+            }
             if developerMode {
-                Picker("Memory limit", selection: $node.proverMemory) {
-                    Text("Automatic (25% of memory)").tag("auto")
-                    Text("4 GB").tag("4")
-                    Text("8 GB").tag("8")
-                    Text("16 GB").tag("16")
-                    Text("Off").tag("off")
+                SettingsControlRow(LocalizedStringKey("Memory limit")) {
+                    Picker("Memory limit", selection: $node.proverMemory) {
+                        Text("Automatic (25% of memory)").tag("auto")
+                        Text("4 GB").tag("4")
+                        Text("8 GB").tag("8")
+                        Text("16 GB").tag("16")
+                        Text("Off").tag("off")
+                    }
+                    .help("Proving stops when it uses more memory than this and starts again after a pause that doubles each time (a minute up to half an hour). Off stops proving entirely.")
                 }
-                .help("Proving stops when it uses more memory than this and starts again after a pause that doubles each time (a minute up to half an hour). Off stops proving entirely.")
-                Picker("CPU limit", selection: $node.proverCores) {
-                    Text("Half").tag("half")
-                    Text("All").tag("all")
+                SettingsControlRow(LocalizedStringKey("CPU limit")) {
+                    Picker("CPU limit", selection: $node.proverCores) {
+                        Text("Half").tag("half")
+                        Text("All").tag("all")
+                    }
+                    .help("Proving also runs at a lower scheduler priority, so the node and this Mac's work come first.")
                 }
-                .help("Proving also runs at a lower scheduler priority, so the node and this Mac's work come first.")
-                Toggle("Prove on battery", isOn: $node.proverOnBattery)
-                    .help("Off: proving pauses on battery and resumes five minutes after the power adapter returns.")
-            } else {
-                Text("Proving uses at most a quarter of this Mac's memory and half its cores; it stops itself there. Developer mode (⇧⌘D) adds the budgets.")
-                    .font(.caption).foregroundStyle(.secondary)
+                SettingsControlRow(LocalizedStringKey("Prove on battery")) {
+                    Toggle("Prove on battery", isOn: $node.proverOnBattery)
+                        .help("Off: proving pauses on battery and resumes five minutes after the power adapter returns.")
+                }
             }
             if let p = node.prover, p.running {
                 Text("Memory now: \(gbytes(p.memory_bytes)) of \(gbytes(p.memory_cap))")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.aeFootnote).monospacedDigit().foregroundStyle(DesignTokens.Palette.textMuted.color)
             }
             if node.prover?.paused == "memory" {
                 Label("Paused: not enough memory", systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.aeFootnote).foregroundStyle(Color.warn)
             }
             if node.diskLow {
                 Label("Disk space low", systemImage: "externaldrive.badge.exclamationmark")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.aeFootnote).foregroundStyle(Color.warn)
+            }
+            SettingsLearnMore {
+                Text("Your node proves recent blocks with Metal. The first valid proof of a block gets a test \(Brand.networkCoinTicker) reward in your chosen node payout account.")
+                if developerMode {
+                    Text("Proving stops when it uses more memory than this and starts again after a pause that doubles each time (a minute up to half an hour). Off stops proving entirely.")
+                    Text("Proving also runs at a lower scheduler priority, so the node and this Mac's work come first.")
+                    Text("Off: proving pauses on battery and resumes five minutes after the power adapter returns.")
+                } else {
+                    Text("Proving uses at most a quarter of this Mac's memory and half its cores; it stops itself there. Developer mode (⇧⌘D) adds the budgets.")
+                }
             }
         }
     }

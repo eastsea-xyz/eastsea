@@ -29,11 +29,21 @@ run() {
     # Optimize that code while keeping Swift assertions and preconditions on.
     compiler_flags=(-O -assert-config Debug)
   fi
-  if [ -x "$compile_gate" ]; then "$compile_gate" || return 1; fi
-  if swiftc "${compiler_flags[@]}" -module-cache-path "$root/tmp/swift-module-cache" -o "tmp/sw-$n" "${files[@]}" "$T/$n/main.swift" 2>"tmp/sw-$n.err" \
+  # A separate shell owns each compile slot and exits with the compiler.
+  # Reusing this runner's PID would retain multiple slots and deadlock it.
+  if (
+      if [ -x "$compile_gate" ]; then
+        perl -e 'alarm 1200; exec @ARGV' "$compile_gate" || exit 125
+      fi
+      swiftc "${compiler_flags[@]}" -module-cache-path "$root/tmp/swift-module-cache" -o "tmp/sw-$n" "${files[@]}" "$T/$n/main.swift"
+    ) 2>"tmp/sw-$n.err" \
       && AETHER_AGENT_TEST_TMP="$root/tmp" WALLET_TEST_BUNDLE="$localizations" "./tmp/sw-$n" >"tmp/sw-$n.out" 2>&1; then
     echo "OK   $n"
   else
+    if [ "$?" = 125 ]; then
+      echo "compile slot wait exceeded 20 minutes; stop the lane and report remaining gates" >&2
+      exit 125
+    fi
     echo "FAIL $n :: $(head -c 160 "tmp/sw-$n.err" | tr '\n' ' ') $(tail -2 "tmp/sw-$n.out" | tr '\n' ' ')"
     bad=$((bad+1))
   fi

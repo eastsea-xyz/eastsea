@@ -74,6 +74,8 @@ struct Stage {
             .environmentObject(updates)
             .environmentObject(browser)
             .tint(.aether)
+            .font(.aeBody)
+            .foregroundStyle(DesignTokens.Palette.text.color)
     }
 }
 
@@ -163,9 +165,9 @@ final class Renderer {
             // Settings and the menu bar.
             page("settings", dark, ["nodeUnattended": true], width: 460, pad: false) { SettingsView() }
             page("settings-developer", dark, ["developerMode": true, "proveBlocks": true], width: 460, pad: false) { SettingsView() }
-            page("menubar", dark, ["proveBlocks": true], width: 300, pad: false) { MenuBarPanel() }
-            page("menubar-health", dark, health: .proverStalled, width: 300, pad: false) { MenuBarPanel() }
-            page("menubar-qr", dark, ["previewAccounts": 2, "previewSelectedAccount": 2], width: 300, pad: false) { MenuBarPanel(showReceive: true) }
+            page("menubar", dark, ["proveBlocks": true], width: 336, pad: false) { MenuBarPanel() }
+            page("menubar-health", dark, health: .proverStalled, width: 336, pad: false) { MenuBarPanel() }
+            page("menubar-qr", dark, ["previewAccounts": 2, "previewSelectedAccount": 2], width: 336, pad: false) { MenuBarPanel(showReceive: true) }
             // Sheets.
             page("sheet-send", dark, width: 460, pad: false) { SendSheet() }
             page("sheet-send-token", dark, width: 460, pad: false, prepare: { s in s.model.sendToken = s.model.tokens.last }) { SendSheet() }
@@ -264,7 +266,8 @@ final class Renderer {
         let s = Stage()
         if let health { s.health.loadPreview(issue: health) }
         prepare?(s)
-        let view = s.wrap(content(s).padding(pad ? 24 : 0).frame(width: width).background(.background))
+        let view = s.wrap(content(s).padding(pad ? DesignTokens.Space.s6 : 0).frame(width: width)
+            .background(DesignTokens.Palette.bg.color))
         snap(view, name: name, dark: dark, width: width, height: nil)
     }
 

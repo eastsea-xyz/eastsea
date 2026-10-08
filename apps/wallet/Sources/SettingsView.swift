@@ -13,64 +13,111 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            HStack {
-                Text("Language")
-                Spacer()
-                Text(verbatim: AppLanguage.nativeName).foregroundStyle(.secondary)
-                Button("Change in System Settings…", action: openLanguageSettings)
-            }
-            if model.developmentNetwork {
-                Text("Dev network · 127.0.0.1:\(String(developmentNetworkPort))")
-                    .font(.caption.bold()).foregroundStyle(.orange)
-            }
-            Toggle("Run a node on this Mac", isOn: $node.enabled)
-            AccountPayoutSettings(store: model.accountStore)
-            Toggle("Only while on the power adapter", isOn: $node.onlyOnPower)
-                .help("On a laptop, pause the node on battery and resume on power.")
-            Label(node.awakeNote, systemImage: node.keepsAwake ? "sun.max.fill" : "moon.zzz")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Toggle("Open \(Brand.name) at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
-            UnattendedSection()
-            HistoryStorageSection()
-            ResourcesSection()
-            Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting \(Brand.name) stops it.")
-                .font(.caption).foregroundStyle(.secondary)
-            // Honest power ranges (docs/research/mac-power-cost-2026.md): the node is
-            // cheap; GPU proving is the costly part. No won figure — electricity
-            // prices vary, and the range is the honest statement.
-            Text("Power: roughly 5–6 W while only verifying (about 4 kWh a month); proving on the GPU adds roughly 28–50 W (about 20–36 kWh a month).")
-                .font(.caption).foregroundStyle(.secondary)
-            Divider()
-            Toggle("Developer mode (proofs, state roots, raw logs)", isOn: $developerMode)
-                .help("Also in View ▸ Developer Mode (⇧⌘D)")
-            if developerMode {
-                Picker("Network", selection: $useDevelopmentNetwork) {
-                    Text("Default").tag(false)
-                    Text("Local development network").tag(true)
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s6) {
+                HStack(spacing: DesignTokens.Space.s3) {
+                    EastSeaDawnMark().frame(width: 32, height: 32)
+                    Text("Settings").font(.aeTitle)
                 }
-                Stepper("Local RPC: http://127.0.0.1:\(String(developmentNetworkPort))", value: $developmentNetworkPort, in: 1024...65535)
-                    .disabled(!useDevelopmentNetwork)
-            }
-            if let pending = updates.pendingRelease {
-                Divider()
-                Text("Approved release \(pending.version) (\(pending.build))")
-                Text("SHA-256: \(pending.fingerprint)")
-                    .font(.caption.monospaced()).fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                Text("Published in block \(String(pending.publishedBlock))")
-                    .font(.caption).foregroundStyle(.secondary)
-                if pending.emergency {
-                    Label("Emergency release · all three builders signed", systemImage: "exclamationmark.shield")
-                } else if let date = pending.availableAt {
-                    Text("Installable after \(date.formatted())")
-                        .font(.caption).foregroundStyle(.secondary)
+                SettingsSection(LocalizedStringKey("General"), explanation: LocalizedStringKey("Language follows your macOS settings.")) {
+                    SettingsControlRow(LocalizedStringKey("Language")) {
+                        VStack(alignment: .trailing, spacing: DesignTokens.Space.s2) {
+                            Text(verbatim: AppLanguage.nativeName).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                            Button("Change in System Settings…", action: openLanguageSettings)
+                                .controlSize(.small)
+                        }
+                    }
                 }
-            }
-            if let issue = updates.approvalIssue {
-                Text(issue).font(.caption).foregroundStyle(.orange)
+                if model.developmentNetwork {
+                    Label("Dev network · 127.0.0.1:\(String(developmentNetworkPort))", systemImage: "hammer")
+                        .font(.aeFootnote).foregroundStyle(Color.warn)
+                }
+                SettingsSection(LocalizedStringKey("Node on this Mac"), explanation: LocalizedStringKey("Verify blocks and choose where node rewards arrive.")) {
+                    SettingsControlRow(LocalizedStringKey("On this Mac")) {
+                        Toggle("Run a node on this Mac", isOn: $node.enabled)
+                    }
+                    AccountPayoutSettings(store: model.accountStore)
+                    SettingsControlRow(LocalizedStringKey("On power only")) {
+                        Toggle("Only while on the power adapter", isOn: $node.onlyOnPower)
+                            .help("On a laptop, pause the node on battery and resume on power.")
+                    }
+                    Label(node.awakeNote, systemImage: node.keepsAwake ? "sun.max.fill" : "moon.zzz")
+                        .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                        .fixedSize(horizontal: false, vertical: true)
+                    SettingsLearnMore {
+                        Text("Choose where node rewards are received. Switching your wallet account does not change this.")
+                        Text("Your node verifies every block itself and your wallet asks it instead of the network. Quitting \(Brand.name) stops it.")
+                        Text("On a laptop, pause the node on battery and resume on power.")
+                        // Honest power ranges: no price or reward promise.
+                        Text("Power: roughly 5–6 W while only verifying (about 4 kWh a month); proving on the GPU adds roughly 28–50 W (about 20–36 kWh a month).")
+                    }
+                }
+                SettingsSection(LocalizedStringKey("Startup"), explanation: LocalizedStringKey("Choose how the node starts and resumes.")) {
+                    SettingsControlRow(LocalizedStringKey("At login")) {
+                        Toggle("Open \(Brand.name) at login", isOn: Binding(get: { node.startAtLogin }, set: { node.startAtLogin = $0 }))
+                    }
+                    UnattendedSection()
+                }
+                HistoryStorageSection()
+                ResourcesSection()
+                SettingsSection(LocalizedStringKey("Developer"), explanation: LocalizedStringKey("Extra controls for local development.")) {
+                    SettingsControlRow(LocalizedStringKey("Developer mode")) {
+                        Toggle("Developer mode (proofs, state roots, raw logs)", isOn: $developerMode)
+                            .help("Also in View ▸ Developer Mode (⇧⌘D)")
+                    }
+                    if developerMode {
+                        SettingsControlRow(LocalizedStringKey("Network")) {
+                            Picker("Network", selection: $useDevelopmentNetwork) {
+                                Text("Default").tag(false)
+                                Text("Local development network").tag(true)
+                            }
+                        }
+                        SettingsControlRow(LocalizedStringKey("Local RPC")) {
+                            HStack(spacing: DesignTokens.Space.s2) {
+                                Text(verbatim: String(developmentNetworkPort)).monospacedDigit()
+                                Stepper("Local RPC: http://127.0.0.1:\(String(developmentNetworkPort))", value: $developmentNetworkPort, in: 1024...65535)
+                                    .fixedSize()
+                            }
+                            .disabled(!useDevelopmentNetwork)
+                        }
+                    }
+                    SettingsLearnMore {
+                        Text("Developer mode (proofs, state roots, raw logs)")
+                        Text("Also in View ▸ Developer Mode (⇧⌘D)")
+                        if developerMode {
+                            Text("Local RPC: http://127.0.0.1:\(String(developmentNetworkPort))")
+                                .monospaced().textSelection(.enabled)
+                        }
+                    }
+                }
+                if updates.pendingRelease != nil || updates.approvalIssue != nil {
+                    SettingsSection(LocalizedStringKey("Software updates"), explanation: LocalizedStringKey("Releases approved by the network.")) {
+                        if let pending = updates.pendingRelease {
+                            Text("Approved release \(pending.version) (\(pending.build))").font(.aeBody.weight(.semibold))
+                            if pending.emergency {
+                                Label("Emergency release · all three builders signed", systemImage: "exclamationmark.shield")
+                                    .font(.aeFootnote).foregroundStyle(Color.warn)
+                            } else if let date = pending.availableAt {
+                                Text("Installable after \(date.formatted())")
+                                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                            }
+                            SettingsLearnMore {
+                                Text("SHA-256: \(pending.fingerprint)")
+                                    .monospaced().textSelection(.enabled)
+                                Text("Published in block \(String(pending.publishedBlock))")
+                            }
+                        }
+                        if let issue = updates.approvalIssue {
+                            Label(issue, systemImage: "exclamationmark.triangle")
+                                .font(.aeFootnote).foregroundStyle(Color.warn)
+                        }
+                    }
+                }
             }
         }
+        .formStyle(.columns)
+        .font(.aeBody)
+        .foregroundStyle(DesignTokens.Palette.text.color)
+        .tint(DesignTokens.Palette.accent.color)
         .onChange(of: useDevelopmentNetwork) { _, dev in
             model.selectNetwork(development: dev, port: UInt16(developmentNetworkPort))
             if !dev { node.refreshWalletRoute() }
@@ -81,7 +128,8 @@ struct SettingsView: View {
         .onChange(of: developerMode) { _, enabled in
             if !enabled { useDevelopmentNetwork = false; model.selectNetwork(development: false); node.refreshWalletRoute() }
         }
-        .padding(20)
+        .padding(DesignTokens.Space.s5)
+        .background(DesignTokens.Palette.bg.color)
         .frame(width: 420)
     }
 
@@ -100,24 +148,24 @@ private struct AccountPayoutSettings: View {
     @State private var error: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Picker("Node payout account", selection: Binding(get: {
-                store.list().first { $0.address == store.payoutAddress }?.id ?? -1
-            }, set: { id in
-                do { try store.setPayoutAccount(id); error = nil }
-                catch { self.error = error.localizedDescription }
-            })) {
-                if !store.payoutAddress.isEmpty && !store.list().contains(where: { $0.address == store.payoutAddress }) {
-                    Text("Current payout address").tag(-1)
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
+            SettingsControlRow(LocalizedStringKey("Payout account")) {
+                Picker("Node payout account", selection: Binding(get: {
+                    store.list().first { $0.address == store.payoutAddress }?.id ?? -1
+                }, set: { id in
+                    do { try store.setPayoutAccount(id); error = nil }
+                    catch { self.error = error.localizedDescription }
+                })) {
+                    if !store.payoutAddress.isEmpty && !store.list().contains(where: { $0.address == store.payoutAddress }) {
+                        Text("Current payout address").tag(-1)
+                    }
+                    ForEach(store.list()) { account in
+                        Text(verbatim: "\(account.name) · \(Short.address(account.address))").tag(account.id)
+                    }
                 }
-                ForEach(store.list()) { account in
-                    Text(verbatim: "\(account.name) · \(Short.address(account.address))").tag(account.id)
-                }
+                .disabled(store.state != .ready)
             }
-            .disabled(store.state != .ready)
-            Text("Choose where node rewards are received. Switching your wallet account does not change this.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if let error { Text(error).font(.caption).foregroundStyle(.orange) }
+            if let error { Text(error).font(.aeFootnote).foregroundStyle(Color.warn) }
         }
     }
 }
@@ -131,29 +179,33 @@ struct UnattendedSection: View {
     @EnvironmentObject var unattended: UnattendedDaemon
 
     var body: some View {
-        Group {
-            Toggle("Keep this Mac's node running after restarts", isOn: $unattended.enabled)
-                .help("After a reboot the node — and this Mac's vote — come back by themselves, without anyone logging in, everywhere macOS allows it. A FileVault cold boot waits for one unlock first.")
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
+            SettingsControlRow(LocalizedStringKey("After restarts")) {
+                Toggle("Keep this Mac's node running after restarts", isOn: $unattended.enabled)
+                    .help("After a reboot the node — and this Mac's vote — come back by themselves, without anyone logging in, everywhere macOS allows it. A FileVault cold boot waits for one unlock first.")
+            }
             switch unattended.status {
             case .needsApproval:
                 Label("One more step: allow \(Brand.name) in System Settings ▸ General ▸ Login Items. Until then this does not run.", systemImage: "hand.raised")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.aeFootnote).foregroundStyle(Color.warn)
+                    .fixedSize(horizontal: false, vertical: true)
                 Button("Open System Settings") { unattended.openApprovalPane() }
+                    .controlSize(.small)
             case .failed(let why):
                 Label(why, systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.aeFootnote).foregroundStyle(Color.warn)
+                    .fixedSize(horizontal: false, vertical: true)
             case .off, .approved:
                 EmptyView()
             }
-            if unattended.enabled {
-                Label("This Mac signs blocks, or can be picked to: that is why this is on by default. While nobody is logged in, the node keeps verifying and voting; the daily reward check-in resumes when the app is open again.", systemImage: "arrow.clockwise")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            ForEach(UnattendedDecision.powerLines(unattended.power), id: \.self) { line in
-                Label(line, systemImage: "bolt")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            SettingsLearnMore {
+                Text("After a reboot the node — and this Mac's vote — come back by themselves, without anyone logging in, everywhere macOS allows it. A FileVault cold boot waits for one unlock first.")
+                if unattended.enabled {
+                    Label("This Mac signs blocks, or can be picked to: that is why this is on by default. While nobody is logged in, the node keeps verifying and voting; the daily reward check-in resumes when the app is open again.", systemImage: "arrow.clockwise")
+                }
+                ForEach(UnattendedDecision.powerLines(unattended.power), id: \.self) { line in
+                    Label(line, systemImage: "bolt")
+                }
             }
         }
         .onAppear {
@@ -162,6 +214,76 @@ struct UnattendedSection: View {
             unattended.refreshStatus()
             unattended.refreshPower()
         }
+    }
+}
+
+/// A single quiet settings group. Reuses the wallet surface and token scale.
+struct SettingsSection<Content: View>: View {
+    let title: LocalizedStringKey
+    let explanation: LocalizedStringKey
+    let content: Content
+
+    init(_ title: LocalizedStringKey, explanation: LocalizedStringKey, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.explanation = explanation
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
+                Text(title).font(.aeHeadline)
+                Text(explanation).font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            content
+        }
+        .padding(DesignTokens.Space.s4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DesignTokens.Palette.surface.color, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
+    }
+}
+
+/// All labels share one column; controls keep their original accessible labels.
+struct SettingsControlRow<Control: View>: View {
+    let title: LocalizedStringKey
+    let control: Control
+
+    init(_ title: LocalizedStringKey, @ViewBuilder control: () -> Control) {
+        self.title = title
+        self.control = control()
+    }
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: DesignTokens.Space.s4, verticalSpacing: DesignTokens.Space.s2) {
+            GridRow(alignment: .center) {
+                Text(title).font(.aeBody)
+                    .frame(width: 148, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                control.labelsHidden().toggleStyle(.switch)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .gridColumnAlignment(.trailing)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The native disclosure keeps complete operational details in reach.
+struct SettingsLearnMore<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    var body: some View {
+        DisclosureGroup("Learn more") {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s2) { content }
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, DesignTokens.Space.s2)
+        }
+        .font(.aeFootnote)
+        .foregroundStyle(DesignTokens.Palette.textMuted.color)
     }
 }
 #endif

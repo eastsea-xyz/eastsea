@@ -87,21 +87,6 @@ enum EarningsText {
     }
 }
 
-// MARK: - Palette
-
-/// Aether's violet into pink, plus the accents the celebration uses.
-enum EarnInk {
-    static let violet = Color(red: 0.49, green: 0.40, blue: 0.95)
-    static let pink = Color(red: 1.00, green: 0.26, blue: 0.58)
-    static let magenta = Color(red: 0.78, green: 0.22, blue: 0.86)
-    static let sky = Color(red: 0.36, green: 0.62, blue: 1.00)
-    static let night = Color(red: 0.16, green: 0.09, blue: 0.42)
-    static let gold = Color(red: 1.00, green: 0.84, blue: 0.36)
-    static let mint = Color(red: 0.40, green: 1.00, blue: 0.66)
-
-    static let brand = LinearGradient(colors: [violet, pink], startPoint: .leading, endPoint: .trailing)
-}
-
 // MARK: - Hero card
 
 /// The big earnings card while the node is on.
@@ -112,9 +97,6 @@ struct EarningsHero: View {
     /// Turns GPU proving on (nil hides the call to action).
     var onProve: (() -> Void)?
     @Environment(\.narrowLayout) private var narrow
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// On screen (scrolled into view); the aurora only moves while it is.
-    @State private var visible = true
 
     /// Money is the headline once the Mac has been paid (never a row of zeros before).
     private var showsEarnings: Bool { summary.count > 0 }
@@ -127,34 +109,20 @@ struct EarningsHero: View {
             tiles
             footer
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(DesignTokens.Palette.plateInk.color)
         .padding(narrow ? CardPadding.narrow : CardPadding.wide)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // One thing moves continuously per screen: the aurora while proving, else the live dot.
-        .background { AuroraBackground(hot: showsEarnings, live: work.isProving && visible) }
-        .overlay { ConfettiBurst(trigger: celebration?.id ?? 0) }
+        .eastSeaNavyPlate(cornerRadius: DesignTokens.Radius.lg)
+        .dblnRewardShine(arrival: celebration?.id, cornerRadius: DesignTokens.Radius.lg)
         .clipShape(shape)
-        .overlay(shape.strokeBorder(.white.opacity(0.28), lineWidth: 1))
-        .shadow(color: (showsEarnings ? EarnInk.pink : EarnInk.violet).opacity(0.30), radius: 10, y: 4)
-        .keyframeAnimator(initialValue: 1.0, trigger: reduceMotion ? 0 : celebration?.id ?? 0) { view, s in
-            view.scaleEffect(s)
-        } keyframes: { _ in
-            KeyframeTrack {
-                SpringKeyframe(1.035, duration: 0.18)
-                SpringKeyframe(1.0, duration: 0.5)
-            }
-        }
         .accessibilityElement(children: .combine)
-        .onAppear { visible = true }
-        .onDisappear { visible = false }
-        .trackingScrollVisibility($visible)
     }
 
     /// The live indicator sits on the card's own color, on the padding grid;
     /// the coin (the shipped render, 48 pt and up) anchors the money side.
     private var header: some View {
         HStack(alignment: .center) {
-            LivePill(text: pillText, live: work.isLive, beat: work.height, ring: work.isLive && !work.isProving)
+            LivePill(text: pillText, live: work.isLive)
             Spacer(minLength: 0)
             TokenIcon(chainId: Brand.networkChainId, address: nil, symbol: Brand.networkCoinTicker, size: 48)
         }
@@ -207,7 +175,7 @@ struct EarningsHero: View {
             Text(footerText).fixedSize(horizontal: false, vertical: true)
         }
         .font(.aeBody.weight(.medium))
-        .foregroundStyle(.white.opacity(0.92))
+        .foregroundStyle(DesignTokens.Palette.plateSoft.color)
     }
 
     /// " · 57 proofs this session" (nothing before the first one).
@@ -248,13 +216,9 @@ private struct EarnedBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Received so far").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.85))
+            Text("Received so far").font(.aeFootnote.weight(.semibold)).foregroundStyle(DesignTokens.Palette.plateSoft.color)
             BigNumber(value: WeiMath.aeth(summary.totalWei), decimals: EarningsText.decimals(summary.totalWei),
-                      unit: EarningsText.unit, glow: EarnInk.gold)
-                // An overlay, so the label's width never shifts the number.
-                .overlay(alignment: .topLeading) {
-                    FloatingReward(celebration: celebration).fixedSize().offset(x: narrow ? 40 : 60, y: narrow ? -26 : -34)
-                }
+                      unit: EarningsText.unit)
             if summary.lastHourWei != "0" { HourDelta(wei: summary.lastHourWei) }
         }
     }
@@ -266,63 +230,43 @@ private struct VerifiedBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Blocks verified this session").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.85))
-            BigNumber(value: Double(work.blocksVerified), decimals: 0, unit: work.blocksVerified == 1 ? String(localized: "block") : String(localized: "blocks"), glow: EarnInk.sky)
+            Text("Blocks verified this session").font(.aeFootnote.weight(.semibold)).foregroundStyle(DesignTokens.Palette.plateSoft.color)
+            BigNumber(value: Double(work.blocksVerified), decimals: 0, unit: work.blocksVerified == 1 ? String(localized: "block") : String(localized: "blocks"))
         }
     }
 }
 
-/// The headline number: huge, rounded, glowing, and counting up to its value.
+/// Settled on appearance; later changes use the shared finite count-up.
 private struct BigNumber: View {
     let value: Double
     let decimals: Int
     let unit: String
-    let glow: Color
+    var compact = false
     @Environment(\.narrowLayout) private var narrow
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var shown = 0.0
+    @Environment(\.locale) private var locale
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) { number; unitText }
+            HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.s2) { number; unitText }
             VStack(alignment: .leading, spacing: 0) { number; unitText }
         }
-        .onAppear { count(to: value) }
-        .onChange(of: value) { _, v in count(to: v) }
     }
 
     private var number: some View {
-        CountingText(value: shown, decimals: decimals)
-            .font(narrow ? .heroNumberNarrow : .heroNumber)
-            .monospacedDigit()
-            .lineLimit(1)
-            .minimumScaleFactor(0.5)
-            .shadow(color: glow.opacity(0.75), radius: 14)
-            .shadow(color: .black.opacity(0.18), radius: 2, y: 2)
+        BalanceCountUp(amount: Decimal(value), accessibilityText: "\(formatted(value)) \(unit)") {
+            formatted(NSDecimalNumber(decimal: $0).doubleValue)
+        }
+        .font(narrow || compact ? .heroNumberNarrow : .heroNumber)
+        .lineLimit(1)
+        .minimumScaleFactor(0.5)
     }
 
     private var unitText: some View {
-        Text(unit).font(narrow ? .aeHeadline : .aeTitle).foregroundStyle(.white.opacity(0.9))
+        Text(unit).font(.aeBody).foregroundStyle(DesignTokens.Palette.plateSoft.color)
     }
 
-    private func count(to v: Double) {
-        guard !reduceMotion else { shown = v; return }
-        withAnimation(.easeOut(duration: shown == 0 ? 1.6 : 0.9)) { shown = v }
-    }
-}
-
-/// A number SwiftUI can animate digit by digit (a count-up, not a crossfade).
-private struct CountingText: View, Animatable {
-    var value: Double
-    let decimals: Int
-
-    var animatableData: Double {
-        get { value }
-        set { value = newValue }
-    }
-
-    var body: some View {
-        Text(value, format: .number.precision(.fractionLength(decimals)).grouping(.automatic))
+    private func formatted(_ number: Double) -> String {
+        number.formatted(.number.precision(.fractionLength(decimals)).grouping(.automatic).locale(locale))
     }
 }
 
@@ -335,14 +279,14 @@ private struct HourDelta: View {
             Image(systemName: some ? "plus.circle.fill" : "clock")
             Text(some ? String(localized: "+\(EarningsText.aeth(wei)) \(EarningsText.unit) in the last hour") : String(localized: "Nothing in the last hour"))
         }
-        .font(.aeBody.weight(.bold))
-        .foregroundStyle(some ? EarnInk.night : .white.opacity(0.9))
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(some ? AnyShapeStyle(EarnInk.mint) : AnyShapeStyle(.white.opacity(0.16)), in: Capsule())
+        .font(.aeFootnote.weight(.semibold))
+        .foregroundStyle(some ? DesignTokens.Palette.plateSuccess.color : DesignTokens.Palette.plateSoft.color)
+        .padding(.horizontal, DesignTokens.Space.s3).padding(.vertical, DesignTokens.Space.s1)
+        .background(DesignTokens.Palette.plate2.color, in: Capsule())
     }
 }
 
-/// A frosted tile on the aurora.
+/// Quiet facts on the navy plate.
 private struct StatTile: View {
     let label: LocalizedStringKey
     let value: String
@@ -351,63 +295,35 @@ private struct StatTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label).font(.aeCaption.weight(.semibold)).foregroundStyle(.white.opacity(0.82))
+            Text(label).font(.aeCaption.weight(.semibold)).foregroundStyle(DesignTokens.Palette.plateSoft.color)
                 .lineLimit(1).minimumScaleFactor(0.7)
             Text(value).font(narrow ? .aeHeadline : .aeTitle).monospacedDigit()
                 .lineLimit(1).minimumScaleFactor(0.55)
                 .contentTransition(.numericText())
             if let unit {
-                Text(unit).font(.aeCaption).foregroundStyle(.white.opacity(0.82)).lineLimit(1).minimumScaleFactor(0.7)
+                Text(unit).font(.aeCaption).foregroundStyle(DesignTokens.Palette.plateSoft.color).lineLimit(1).minimumScaleFactor(0.7)
             }
         }
         .padding(.horizontal, narrow ? 10 : 14).padding(.vertical, narrow ? 9 : 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(.white.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.inner, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 1))
+        .background(DesignTokens.Palette.plate2.color, in: RoundedRectangle(cornerRadius: Radius.inner, style: .continuous))
     }
 }
 
-/// "● PROVING", with a ring that keeps pulsing and a heartbeat on every new block.
+/// A static status word and dot; a live node never animates while idle.
 struct LivePill: View {
     let text: String
     let live: Bool
-    let beat: UInt64
-    /// The ever-pulsing ring (off while something else on screen already moves).
-    var ring = true
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var ringOut = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            ZStack {
-                if live && ring && !reduceMotion {
-                    Circle().stroke(EarnInk.mint, lineWidth: 2)
-                        .scaleEffect(ringOut ? 2.8 : 1).opacity(ringOut ? 0 : 0.9)
-                }
-                Circle().fill(live ? EarnInk.mint : .orange).shadow(color: EarnInk.mint.opacity(live ? 0.9 : 0), radius: 5)
-            }
-            .frame(width: 9, height: 9)
-            .keyframeAnimator(initialValue: 1.0, trigger: reduceMotion ? 0 : beat) { v, s in v.scaleEffect(s) } keyframes: { _ in
-                KeyframeTrack {
-                    SpringKeyframe(1.8, duration: 0.12)
-                    SpringKeyframe(0.9, duration: 0.14)
-                    SpringKeyframe(1.0, duration: 0.3)
-                }
-            }
-            // Natural spacing stays readable in every supported script.
-            Text(text).font(.aeCaption.weight(.heavy))
+        HStack(spacing: DesignTokens.Space.s2) {
+            Circle().fill(live ? DesignTokens.Palette.plateSuccess.color : DesignTokens.Palette.plateWarn.color)
+                .frame(width: 6, height: 6).accessibilityHidden(true)
+            Text(text).font(.aeCaption.weight(.semibold))
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(.black.opacity(0.25), in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.3), lineWidth: 1))
-        .onAppear { startRing() }
-        .onChange(of: live) { _, _ in startRing() }
-        .onChange(of: ring) { _, _ in startRing() }
-    }
-
-    private func startRing() {
-        guard live, ring, !reduceMotion, !ringOut else { return }
-        withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) { ringOut = true }
+        .foregroundStyle(DesignTokens.Palette.plateInk.color)
+        .padding(.horizontal, DesignTokens.Space.s3).padding(.vertical, DesignTokens.Space.s1)
+        .background(DesignTokens.Palette.plate2.color, in: Capsule())
     }
 }
 
@@ -426,276 +342,33 @@ private struct ProveCallToAction: View {
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right").font(.aeHeadline)
             }
-            .foregroundStyle(EarnInk.night)
+            .foregroundStyle(DesignTokens.Palette.sea.color)
             .padding(.horizontal, 16).padding(.vertical, 12)
-            .background(.white, in: RoundedRectangle(cornerRadius: Radius.inner, style: .continuous))
-            .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+            .background(DesignTokens.Palette.gold.color, in: RoundedRectangle(cornerRadius: Radius.inner, style: .continuous))
         }
         .buttonStyle(.plain)
         .help("Uses the GPU and power while on, at your cost. The first valid proof of a block gets a test \(Brand.networkCoinTicker) reward in this wallet.")
     }
 }
 
-/// "+0.5 test DBLN" that pops, rises and fades when a reward lands.
-private struct FloatingReward: View {
-    let celebration: RewardCelebration?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private struct Frame {
-        var y: CGFloat = 0
-        var opacity: Double = 0
-        var scale: CGFloat = 0.6
-    }
-
-    var body: some View {
-        Text("+\(EarningsText.aeth(celebration?.amountWei ?? "0")) \(EarningsText.unit)")
-            .font(.aeTitle.weight(.black))
-            .foregroundStyle(EarnInk.night)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(LinearGradient(colors: [EarnInk.gold, .white], startPoint: .leading, endPoint: .trailing), in: Capsule())
-            .shadow(color: EarnInk.gold.opacity(0.9), radius: 12)
-            .keyframeAnimator(initialValue: Frame(), trigger: celebration?.id ?? 0) { view, f in
-                view.scaleEffect(f.scale).offset(y: f.y).opacity(f.opacity)
-            } keyframes: { _ in
-                KeyframeTrack(\.opacity) {
-                    LinearKeyframe(1, duration: 0.15)
-                    LinearKeyframe(1, duration: 1.5)
-                    LinearKeyframe(0, duration: 0.6)
-                }
-                KeyframeTrack(\.y) {
-                    LinearKeyframe(0, duration: 0.1)
-                    CubicKeyframe(reduceMotion ? 0 : -80, duration: 2.15)
-                }
-                KeyframeTrack(\.scale) {
-                    SpringKeyframe(reduceMotion ? 1 : 1.25, duration: 0.2)
-                    SpringKeyframe(1, duration: 0.4)
-                    LinearKeyframe(1, duration: 1.65)
-                }
-            }
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-    }
-}
-
-// MARK: - Aurora
-
-/// Drifting violet, pink and blue light under a sweeping sheen and a few twinkling
-/// sparks. One Canvas at 30 fps; a still frame with Reduce Motion or while paused.
-struct AuroraBackground: View {
-    /// Earning: hotter pinks. Working: cooler blues.
-    var hot: Bool
-    var live: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// While the window is being resized the aurora holds its last frame instead of
-    /// rasterizing its blurs onto every layout pass of the drag.
-    @Environment(\.liveResize) private var resizing
-    @State private var epoch = Date()
-
-    var body: some View {
-        let still = reduceMotion || !live
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: still || resizing)) { tl in
-            Canvas { ctx, size in
-                let t = still ? 3.0 : tl.date.timeIntervalSince(epoch)
-                AuroraBackground.draw(in: &ctx, size: size, time: t, hot: hot)
-            }
-        }
-        .accessibilityHidden(true)
-    }
-
-    static func draw(in ctx: inout GraphicsContext, size: CGSize, time t: Double, hot: Bool) {
-        let w = size.width, h = size.height
-        guard w > 2, h > 2 else { return }
-        let base = hot ? [EarnInk.night, EarnInk.violet, EarnInk.pink] : [EarnInk.night, EarnInk.violet, EarnInk.sky]
-        ctx.fill(Path(CGRect(origin: .zero, size: size)),
-                 with: .linearGradient(Gradient(colors: base), startPoint: .zero, endPoint: CGPoint(x: w, y: h)))
-        drawBlobs(in: &ctx, w: w, h: h, t: t, hot: hot)
-        drawSheen(in: &ctx, w: w, h: h, t: t)
-        drawSparks(in: &ctx, w: w, h: h, t: t)
-    }
-
-    private static func drawBlobs(in ctx: inout GraphicsContext, w: CGFloat, h: CGFloat, t: Double, hot: Bool) {
-        let blobs: [(Color, Double, Double, Double)] = [  // color, alpha, speed, phase
-            (hot ? EarnInk.pink : EarnInk.sky, 0.85, 0.23, 0.0),
-            (EarnInk.magenta, 0.65, 0.17, 2.1),
-            (hot ? EarnInk.gold : EarnInk.mint, hot ? 0.30 : 0.22, 0.13, 4.0),
-            (EarnInk.sky, 0.55, 0.19, 5.2),
-        ]
-        ctx.drawLayer { g in
-            g.addFilter(.blur(radius: min(w, h) * 0.28))
-            for (color, alpha, speed, phase) in blobs {
-                let x = w * (0.5 + 0.45 * sin(t * speed + phase))
-                let y = h * (0.5 + 0.40 * cos(t * speed * 1.3 + phase * 0.7))
-                let r = min(w, h) * (0.42 + 0.08 * sin(t * 0.5 + phase))
-                g.fill(Path(ellipseIn: CGRect(x: x - r * 1.4, y: y - r, width: r * 2.8, height: r * 2)), with: .color(color.opacity(alpha)))
-            }
-        }
-    }
-
-    private static func drawSheen(in ctx: inout GraphicsContext, w: CGFloat, h: CGFloat, t: Double) {
-        let cycle = 5.5
-        let u = t.truncatingRemainder(dividingBy: cycle) / cycle
-        guard u < 0.45 else { return }
-        let f = u / 0.45
-        let x = -w * 0.5 + w * 2 * f * f * (3 - 2 * f)
-        let band = w * 0.18
-        var p = Path()
-        p.move(to: CGPoint(x: x, y: 0))
-        p.addLine(to: CGPoint(x: x + band, y: 0))
-        p.addLine(to: CGPoint(x: x + band - h * 0.5, y: h))
-        p.addLine(to: CGPoint(x: x - h * 0.5, y: h))
-        p.closeSubpath()
-        ctx.fill(p, with: .linearGradient(Gradient(colors: [.white.opacity(0), .white.opacity(0.20), .white.opacity(0)]),
-                                          startPoint: CGPoint(x: x - h * 0.25, y: 0), endPoint: CGPoint(x: x + band - h * 0.25, y: 0)))
-    }
-
-    private static func drawSparks(in ctx: inout GraphicsContext, w: CGFloat, h: CGFloat, t: Double) {
-        var rng = SeededRandom(seed: 7)
-        for _ in 0..<16 {
-            let p = CGPoint(x: w * rng.next(), y: h * rng.next())
-            let speed = 0.6 + rng.next() * 1.4, phase = rng.next() * 6.3
-            let a = max(0, sin(t * speed + phase))
-            let r = 1.0 + 2.2 * rng.next() * a
-            Sparkle.draw(in: &ctx, at: p, radius: r * 2.2, color: .white.opacity(0.75 * a))
-        }
-    }
-}
-
-enum Sparkle {
-    /// A four-pointed star.
-    static func draw(in ctx: inout GraphicsContext, at c: CGPoint, radius r: CGFloat, color: Color, angle: Double = 0) {
-        guard r > 0.3 else { return }
-        var p = Path()
-        for i in 0..<8 {
-            let a = angle + Double(i) * .pi / 4
-            let rr = i.isMultiple(of: 2) ? r : r * 0.28
-            let pt = CGPoint(x: c.x + rr * cos(a), y: c.y + rr * sin(a))
-            if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
-        }
-        p.closeSubpath()
-        ctx.fill(p, with: .color(color))
-    }
-}
-
-/// Small deterministic generator (same sparks every frame, same burst per reward).
-struct SeededRandom {
-    private var state: UInt64
-    init(seed: UInt64) { state = seed &* 0x9E37_79B9_7F4A_7C15 | 1 }
-    mutating func next() -> Double {
-        state ^= state << 13
-        state ^= state >> 7
-        state ^= state << 17
-        return Double(state % 1_000_000) / 1_000_000
-    }
-}
-
-// MARK: - Burst
-
-/// Confetti, sparks and a shockwave for about two seconds after each new reward.
-/// Draws nothing (and its timeline sleeps) the rest of the time; off with Reduce Motion.
-struct ConfettiBurst: View {
-    let trigger: Int
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.liveResize) private var resizing
-    @State private var start: Date?
-    static let duration = 2.4
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: start == nil || resizing)) { tl in
-            Canvas { ctx, size in
-                guard let start else { return }
-                let t = tl.date.timeIntervalSince(start)
-                guard t < Self.duration else { return }
-                Self.draw(in: &ctx, size: size, time: t, seed: UInt64(trigger))
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-        .onChange(of: trigger) { _, id in
-            guard id > 0, !reduceMotion else { return }
-            let begun = Date()
-            start = begun
-            Task { @MainActor in
-                try? await Task.sleep(for: .seconds(Self.duration))
-                if start == begun { start = nil }
-            }
-        }
-    }
-
-    static func draw(in ctx: inout GraphicsContext, size: CGSize, time t: Double, seed: UInt64) {
-        let origin = CGPoint(x: size.width * 0.32, y: size.height * 0.36)
-        drawFlash(in: &ctx, size: size, origin: origin, t: t)
-        let colors: [Color] = [.white, EarnInk.gold, EarnInk.mint, EarnInk.sky, EarnInk.pink, .white]
-        var rng = SeededRandom(seed: seed &+ 11)
-        for i in 0..<140 {
-            let angle = -Double.pi / 2 + (rng.next() - 0.5) * 2.6
-            let speed = 260 + rng.next() * 520
-            let spin = (rng.next() - 0.5) * 14
-            let life = 1.4 + rng.next() * 1.0
-            guard t < life else { continue }
-            let drag = (1 - exp(-2.2 * t)) / 2.2
-            let x = origin.x + cos(angle) * speed * drag + (rng.next() - 0.5) * 30
-            let y = origin.y + sin(angle) * speed * drag + 260 * t * t
-            let fade = min(1, (life - t) / 0.5)
-            let color = colors[i % colors.count].opacity(fade)
-            drawPiece(in: &ctx, kind: i % 3, at: CGPoint(x: x, y: y), angle: spin * t, color: color, size: 4 + rng.next() * 5)
-        }
-    }
-
-    private static func drawFlash(in ctx: inout GraphicsContext, size: CGSize, origin: CGPoint, t: Double) {
-        if t < 0.5 {  // a white bloom
-            let a = 0.45 * (1 - t / 0.5)
-            let r = max(size.width, size.height)
-            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .radialGradient(
-                Gradient(colors: [.white.opacity(a), .clear]), center: origin, startRadius: 0, endRadius: r * 0.7))
-        }
-        if t < 0.8 {  // a ring racing outwards
-            let f = t / 0.8
-            let r = 20 + f * max(size.width, size.height) * 0.8
-            ctx.stroke(Path(ellipseIn: CGRect(x: origin.x - r, y: origin.y - r, width: 2 * r, height: 2 * r)),
-                       with: .color(.white.opacity(0.7 * (1 - f))), lineWidth: 3 * (1 - f) + 0.5)
-        }
-    }
-
-    private static func drawPiece(in ctx: inout GraphicsContext, kind: Int, at p: CGPoint, angle: Double, color: Color, size s: Double) {
-        switch kind {
-        case 0:
-            var g = ctx
-            g.translateBy(x: p.x, y: p.y)
-            g.rotate(by: .radians(angle))
-            g.fill(Path(roundedRect: CGRect(x: -s / 2, y: -s, width: s, height: s * 2), cornerRadius: 1.5), with: .color(color))
-        case 1:
-            ctx.fill(Path(ellipseIn: CGRect(x: p.x - s / 2, y: p.y - s / 2, width: s, height: s)), with: .color(color))
-        default:
-            Sparkle.draw(in: &ctx, at: p, radius: s * 1.3, color: color, angle: angle)
-        }
-    }
-}
-
 // MARK: - Compact indicators
 
-/// A small gradient capsule: "● Proving · +1.5 today" or "● Working · 42 blocks".
+/// A quiet status capsule: "● Proving · +1.5 today" or "● Working · 42 blocks".
 struct EarningsBadge: View {
     let summary: EarningsSummary
     let work: NodeWork
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle().fill(work.isLive && !work.proofsFailing ? EarnInk.mint : .orange).frame(width: 7, height: 7)
-                .keyframeAnimator(initialValue: 1.0, trigger: work.height) { v, s in v.scaleEffect(s) } keyframes: { _ in
-                    KeyframeTrack {
-                        SpringKeyframe(1.7, duration: 0.12)
-                        SpringKeyframe(1.0, duration: 0.3)
-                    }
-                }
+            Circle().fill(work.isLive && !work.proofsFailing ? DesignTokens.Palette.success.color : DesignTokens.Palette.warn.color)
+                .frame(width: 7, height: 7).accessibilityHidden(true)
             Text(line).lineLimit(1).minimumScaleFactor(0.6)
         }
         .font(.aeCaption.weight(.bold))
-        .foregroundStyle(.white)
+        .foregroundStyle(DesignTokens.Palette.text.color)
         .padding(.horizontal, 9).padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(LinearGradient(colors: work.isProving || summary.count > 0 ? [EarnInk.violet, EarnInk.pink] : [EarnInk.violet, EarnInk.sky],
-                                   startPoint: .leading, endPoint: .trailing), in: Capsule())
-        .shadow(color: EarnInk.pink.opacity(work.isLive ? 0.35 : 0), radius: 6, y: 2)
+        .background(DesignTokens.Palette.surfaceSunken.color, in: Capsule())
     }
 
     /// Fits the sidebar (170–190 pt) without an ellipsis; the cards keep the full wording.
@@ -939,7 +612,7 @@ private struct EarningsExportCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Export earnings (CSV)").font(.aeHeadline)
                     Text("Every reward this Mac earned, as this app saw it — time, kind and the exact amount — for your own records. This is not tax advice.")
-                        .font(.aeBody).foregroundStyle(.secondary)
+                        .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                         .fixedSize(horizontal: false, vertical: true)
                     if let total = earnings.totalOnChain, total > earnings.entries.count {
                         Text("The node counts \(total) rewards; \(earnings.entries.count) were read. The numbers here cover only what was read.")
@@ -949,6 +622,7 @@ private struct EarningsExportCard: View {
                 }
                 Spacer(minLength: 8)
                 Button("Export CSV…") { export() }
+                    .buttonStyle(EastSeaQuietButtonStyle())
                     .disabled(earnings.entries.isEmpty)
                     .help("Saves eastsea-earnings.csv from what this app saw. The records never leave this Mac.")
             }
@@ -977,17 +651,17 @@ struct RewardStandingCard: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Node rewards").font(.aeHeadline)
                     Text("Operators online: \(s.operatorsOnline) · one operator gets at most 1/\(s.maxShare) of the rewards")
-                        .font(.aeBody).foregroundStyle(.secondary)
+                        .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                         .fixedSize(horizontal: false, vertical: true)
                     if let pct = s.warmupPercent, let days = s.warmupDaysLeft, days > 0 {
                         Text("Warm-up: \(pct)% of a full share · full in \(days) days")
-                            .font(.aeBody).foregroundStyle(.secondary)
+                            .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     }
                     if let share = s.expectedShareWei, share != "0" {
                         Text(s.capped
                              ? String(localized: "Last hour: +\(EarningsText.aeth(share)) \(EarningsText.unit) · capped at 1/\(s.maxShare)")
                              : String(localized: "Last hour: +\(EarningsText.aeth(share)) \(EarningsText.unit)"))
-                            .font(.aeBody).foregroundStyle(.secondary)
+                            .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     }
                 }
             }
@@ -1023,7 +697,7 @@ struct HomeEarnings: View {
     }
 }
 
-/// The compact earnings card for Home: the aurora and the one reward number at
+/// The compact earnings card for Home: a navy plate and one reward number at
 /// 40 pt (never the 48 pt balance's rival), a delta for the last hour, and a
 /// line of facts. Tapping opens the Network page, where the full hero lives.
 private struct HomeEarningsCard: View {
@@ -1032,8 +706,6 @@ private struct HomeEarningsCard: View {
     var celebration: RewardCelebration?
     let open: () -> Void
     @Environment(\.narrowLayout) private var narrow
-    /// On screen (scrolled into view); the aurora only moves while it is.
-    @State private var visible = true
 
     private var pillText: String {
         work.phase.pillText
@@ -1044,47 +716,32 @@ private struct HomeEarningsCard: View {
         Button(action: open) {
             VStack(alignment: .leading, spacing: narrow ? 10 : 12) {
                 HStack {
-                    Text("Received so far").font(.aeFootnote.weight(.semibold)).foregroundStyle(.white.opacity(0.85))
+                    Text("Received so far").font(.aeFootnote.weight(.semibold)).foregroundStyle(DesignTokens.Palette.plateSoft.color)
                     Spacer(minLength: 8)
-                    LivePill(text: pillText, live: work.isLive, beat: work.height, ring: false)
+                    LivePill(text: pillText, live: work.isLive)
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    CountingText(value: WeiMath.aeth(summary.totalWei), decimals: EarningsText.decimals(summary.totalWei))
-                        .font(.heroNumberNarrow)
-                        .monospacedDigit().lineLimit(1).minimumScaleFactor(0.5)
-                        .shadow(color: EarnInk.gold.opacity(0.75), radius: 12)
-                        .shadow(color: .black.opacity(0.18), radius: 2, y: 2)
-                        .overlay(alignment: .topLeading) {
-                            // An overlay, so the label's width never shifts the number.
-                            FloatingReward(celebration: celebration).fixedSize().offset(x: narrow ? 40 : 60, y: -28)
-                        }
-                    Text(EarningsText.unit).font(.aeHeadline).foregroundStyle(.white.opacity(0.9))
+                    BigNumber(value: WeiMath.aeth(summary.totalWei), decimals: EarningsText.decimals(summary.totalWei),
+                              unit: EarningsText.unit, compact: true)
                     Spacer(minLength: 8)
                     if summary.lastHourWei != "0" { HourDelta(wei: summary.lastHourWei).fixedSize() }
                 }
                 Text(facts)
-                    .font(.aeFootnote.weight(.medium)).foregroundStyle(.white.opacity(0.85))
+                    .font(.aeFootnote.weight(.medium)).foregroundStyle(DesignTokens.Palette.plateSoft.color)
                     .lineLimit(1).truncationMode(.tail)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(DesignTokens.Palette.plateInk.color)
             .padding(.horizontal, narrow ? CardPadding.narrow : CardPadding.wide)
             .padding(.vertical, narrow ? 20 : 22)
             .frame(maxWidth: .infinity, alignment: .leading)
-            // Same rule as the hero: one moving thing per screen, and only while
-            // proving and on screen; a live resize holds the last frame.
-            .background { AuroraBackground(hot: true, live: work.isProving && visible) }
-            .overlay { ConfettiBurst(trigger: celebration?.id ?? 0) }
+            .eastSeaNavyPlate(cornerRadius: DesignTokens.Radius.lg)
+            .dblnRewardShine(arrival: celebration?.id, cornerRadius: DesignTokens.Radius.lg)
             .clipShape(shape)
-            .overlay(shape.strokeBorder(.white.opacity(0.28), lineWidth: 1))
-            .shadow(color: EarnInk.pink.opacity(0.30), radius: 10, y: 4)
             .contentShape(shape)
         }
         .buttonStyle(.plain)
         .help("Open the Network page: the node and the full earnings card")
         .accessibilityElement(children: .combine)
-        .onAppear { visible = true }
-        .onDisappear { visible = false }
-        .trackingScrollVisibility($visible)
     }
 
     /// "+12 today · 24 rewards · last one 3m ago" — what the number is made of.
@@ -1117,15 +774,15 @@ struct NodeStatusLine: View {
         HStack(spacing: 12) {
             Circle().fill(Color.aether).frame(width: 8, height: 8)
             Text("This Mac verifies blocks. Rewards go to Macs that prove them.")
-                .font(.aeBody).foregroundStyle(.secondary)
+                .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
             Button(action: prove) { Label("Prove blocks", systemImage: "bolt.fill") }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(EastSeaPrimaryButtonStyle())
                 .help("Uses the GPU and power while on, at your cost. The first valid proof of a block gets a test \(Brand.networkCoinTicker) reward in this wallet.")
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .background(DesignTokens.Palette.surface.color, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
     }
 
     private var line: some View {
@@ -1134,12 +791,12 @@ struct NodeStatusLine: View {
                 Circle().fill(work.isLive ? Color.aether : Color.warn).frame(width: 8, height: 8)
                 Text(text).lineLimit(2)
                 Spacer(minLength: 4)
-                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                Image(systemName: "chevron.right").foregroundStyle(DesignTokens.Palette.textSubtle.color)
             }
             .font(.aeBody)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.Palette.textMuted.color)
             .padding(.horizontal, 16).padding(.vertical, 12)
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .background(DesignTokens.Palette.surface.color, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1180,10 +837,10 @@ struct EarningsMenuLine: View {
                 Image(systemName: "sparkles")
                 Text("+\(EarningsText.aeth(s.todayWei)) \(EarningsText.unit) today").fontWeight(.heavy)
                 Spacer(minLength: 4)
-                Text("\(EarningsText.aeth(s.totalWei)) total").foregroundStyle(.secondary)
+                Text("\(EarningsText.aeth(s.totalWei)) total").foregroundStyle(DesignTokens.Palette.textMuted.color)
             }
             .font(.aeBody)
-            .foregroundStyle(EarnInk.brand)
+            .foregroundStyle(DesignTokens.Palette.accent.color)
             .contentTransition(.numericText())
         }
     }

@@ -17,8 +17,8 @@ func response(eligible: Any = false, whyNot: Any = "streak", hours: Any = 4) -> 
 let verdict = CandidateEligibility.fromRPC(response(), validatorKey: "0x" + key.uppercased())
 check(verdict?.eligibleNextDraw == false && verdict?.whyNot == .streak && verdict?.hoursToEligible == 4,
       "matches this Mac's validator key after hex normalization")
-check(CandidateEligibilityText.line(verdict, ko: false) == "Validator candidate: eligible in about 4 h", "English ETA")
-check(CandidateEligibilityText.line(verdict, ko: true) == "검증자 후보: 자격까지 약 4시간", "Korean ETA")
+check(CandidateEligibilityText.line(verdict, bundle: walletTestBundle("en"), locale: walletTestLocale("en")) == "Validator candidate: eligible in about 4 h", "English ETA")
+check(CandidateEligibilityText.line(verdict, bundle: walletTestBundle("ko"), locale: walletTestLocale("ko")) == "검증자 후보: 자격까지 약 4시간", "Korean ETA")
 
 var prefixed = response()
 var rows = prefixed["candidates"] as! [[String: Any]]
@@ -31,7 +31,7 @@ check(CandidateEligibility.fromRPC(response(), validatorKey: String(repeating: "
 check(CandidateEligibility.fromRPC(nil, validatorKey: key) == nil, "RPC failure gives no verdict")
 check(CandidateEligibility.fromRPC(["candidates": [["validator_key": key, "streak": 4]]], validatorKey: key) == nil,
       "old helpers do not invent eligibility from the old streak field")
-check(CandidateEligibilityText.line(nil, ko: false) == nil && CandidateEligibilityText.line(nil, ko: true) == nil,
+check(CandidateEligibilityText.line(nil, bundle: walletTestBundle("en"), locale: walletTestLocale("en")) == nil && CandidateEligibilityText.line(nil, bundle: walletTestBundle("ko"), locale: walletTestLocale("ko")) == nil,
       "missing data adds no guessed reason or ETA")
 
 let reasons: [(CandidateEligibility.WhyNot, String, String)] = [
@@ -43,10 +43,10 @@ let reasons: [(CandidateEligibility.WhyNot, String, String)] = [
 for (reason, en, ko) in reasons {
     let decoded = CandidateEligibility.fromRPC(response(whyNot: reason.rawValue, hours: NSNull()), validatorKey: key)
     check(decoded?.whyNot == reason && decoded?.hoursToEligible == nil, "decodes \(reason.rawValue) with unknown ETA")
-    check(CandidateEligibilityText.line(decoded, ko: false) == en, "plain English \(reason.rawValue)")
-    check(CandidateEligibilityText.line(decoded, ko: true) == ko, "plain Korean \(reason.rawValue)")
+    check(CandidateEligibilityText.line(decoded, bundle: walletTestBundle("en"), locale: walletTestLocale("en")) == en, "plain English \(reason.rawValue)")
+    check(CandidateEligibilityText.line(decoded, bundle: walletTestBundle("ko"), locale: walletTestLocale("ko")) == ko, "plain Korean \(reason.rawValue)")
     for language in [true, false] {
-        let text = CandidateEligibilityText.line(decoded, ko: language)!
+        let text = CandidateEligibilityText.line(decoded, bundle: walletTestBundle(language ? "ko" : "en"), locale: walletTestLocale(language ? "ko" : "en"))!
         check(!text.contains("RPC") && !text.contains("epoch") && !text.contains("v3") && !text.contains("why_not"),
               "no protocol jargon in \(reason.rawValue) (ko=\(language))")
         check(!text.contains("\n"), "one calm line for \(reason.rawValue) (ko=\(language))")
@@ -55,19 +55,19 @@ for (reason, en, ko) in reasons {
 
 let ready = CandidateEligibility.fromRPC(response(eligible: true, whyNot: "none", hours: NSNull()), validatorKey: key)
 check(ready?.whyNot == CandidateEligibility.WhyNot.none && ready?.eligibleNextDraw == true, "none is the eligible verdict")
-check(CandidateEligibilityText.line(ready, ko: false) == "Validator candidate: eligible, waiting for the next draw", "eligible English waiting line")
-check(CandidateEligibilityText.line(ready, ko: true) == "검증자 후보: 자격을 갖췄어요. 다음 추첨을 기다려요", "eligible Korean waiting line")
+check(CandidateEligibilityText.line(ready, bundle: walletTestBundle("en"), locale: walletTestLocale("en")) == "Validator candidate: eligible, waiting for the next draw", "eligible English waiting line")
+check(CandidateEligibilityText.line(ready, bundle: walletTestBundle("ko"), locale: walletTestLocale("ko")) == "검증자 후보: 자격을 갖췄어요. 다음 추첨을 기다려요", "eligible Korean waiting line")
 
 let fractional = CandidateEligibility(eligibleNextDraw: false, whyNot: .streak, hoursToEligible: 0.25)
-check(CandidateEligibilityText.line(fractional, ko: false) == "Validator candidate: eligible in about 1 h", "rounds a partial hour up")
+check(CandidateEligibilityText.line(fractional, bundle: walletTestBundle("en"), locale: walletTestLocale("en")) == "Validator candidate: eligible in about 1 h", "rounds a partial hour up")
 let rounded = CandidateEligibility(eligibleNextDraw: false, whyNot: .uptime, hoursToEligible: 4.1)
-check(CandidateEligibilityText.line(rounded, ko: true) == "검증자 후보: 자격까지 약 5시간", "rounds ETA conservatively in Korean")
+check(CandidateEligibilityText.line(rounded, bundle: walletTestBundle("ko"), locale: walletTestLocale("ko")) == "검증자 후보: 자격까지 약 5시간", "rounds ETA conservatively in Korean")
 for hours in [0, -1, Double.nan, Double.infinity] {
     let invalid = CandidateEligibility(eligibleNextDraw: false, whyNot: .lastEpoch, hoursToEligible: hours)
-    check(CandidateEligibilityText.line(invalid, ko: false) == reasons[2].1, "invalid ETA \(hours) uses the known reason")
+    check(CandidateEligibilityText.line(invalid, bundle: walletTestBundle("en"), locale: walletTestLocale("en")) == reasons[2].1, "invalid ETA \(hours) uses the known reason")
 }
 let readyWithHours = CandidateEligibility(eligibleNextDraw: true, whyNot: .none, hoursToEligible: 2)
-check(CandidateEligibilityText.line(readyWithHours, ko: false) == "Validator candidate: eligible, waiting for the next draw", "an eligible candidate is not shown as counting down")
+check(CandidateEligibilityText.line(readyWithHours, bundle: walletTestBundle("en"), locale: walletTestLocale("en")) == "Validator candidate: eligible, waiting for the next draw", "an eligible candidate is not shown as counting down")
 
 check(CandidateEligibility.fromRPC(response(eligible: "true", whyNot: "none"), validatorKey: key) == nil,
       "malformed eligibility does not become a waiting line")

@@ -46,25 +46,24 @@ struct CandidateEligibility: Decodable, Equatable, Sendable {
 
 /// One calm line for a registered Mac that has not yet been seated.
 enum CandidateEligibilityText {
-    static func line(_ verdict: CandidateEligibility?,
-                     ko: Bool = Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false) -> String? {
+    static func line(_ verdict: CandidateEligibility?, bundle: Bundle = .main, locale: Locale = .current) -> String? {
         guard let verdict else { return nil }
         if verdict.eligibleNextDraw {
-            return ko ? "검증자 후보: 자격을 갖췄어요. 다음 추첨을 기다려요" : "Validator candidate: eligible, waiting for the next draw"
+            return String(localized: "Validator candidate: eligible, waiting for the next draw", bundle: bundle, locale: locale)
         }
         if let hours = verdict.hoursToEligible, hours.isFinite, hours > 0 {
             let estimate = String(format: "%.0f", hours.rounded(.up))
-            return ko ? "검증자 후보: 자격까지 약 \(estimate)시간" : "Validator candidate: eligible in about \(estimate) h"
+            return String(localized: "Validator candidate: eligible in about \(estimate) h", bundle: bundle, locale: locale)
         }
         switch verdict.whyNot {
         case .streak:
-            return ko ? "검증자 후보: 온라인 상태를 더 오래 유지해야 해요" : "Validator candidate: needs more time online"
+            return String(localized: "Validator candidate: needs more time online", bundle: bundle, locale: locale)
         case .uptime:
-            return ko ? "검증자 후보: 놓친 온라인 확인을 만회할 시간이 필요해요" : "Validator candidate: needs more time online after missed check-ins"
+            return String(localized: "Validator candidate: needs more time online after missed check-ins", bundle: bundle, locale: locale)
         case .lastEpoch:
-            return ko ? "검증자 후보: 최근 온라인 확인을 기다리고 있어요" : "Validator candidate: waiting for the latest online check-in"
+            return String(localized: "Validator candidate: waiting for the latest online check-in", bundle: bundle, locale: locale)
         case .v3Stability:
-            return ko ? "검증자 후보: 안정적인 온라인 활동을 더 확인해야 해요" : "Validator candidate: needs more time to show stable online activity"
+            return String(localized: "Validator candidate: needs more time to show stable online activity", bundle: bundle, locale: locale)
         case .none:
             return nil
         }

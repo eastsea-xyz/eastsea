@@ -22,62 +22,90 @@ struct AgentWalletPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: "sparkles").font(.system(size: 30)).foregroundStyle(Color.aether)
-                VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+            HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
+                Image(systemName: "lock.shield").font(.system(size: 28))
+                    .foregroundStyle(DesignTokens.Palette.accent.color).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                     Text("AI agent payments").font(.aeHeadline)
-                    Text("AI agents on this Mac, like Claude Code or Codex, can pay from this wallet — only to payees you approve and within the limits you set with Touch ID. The network refuses anything over those limits.")
-                        .font(.aeBody).foregroundStyle(.secondary)
+                    Text("Approve payees and set spending limits with Touch ID.")
+                        .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            HStack(alignment: .firstTextBaseline) {
+            SettingsLearnMore {
+                Text("AI agents on this Mac, like Claude Code or Codex, can pay from this wallet — only to payees you approve and within the limits you set with Touch ID. The network refuses anything over those limits.")
                 Text("Stopping takes the agents' permission to pay away at once, with Touch ID. Payments already sent stay sent.")
-                    .font(.aeFootnote).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 8)
-                Button("Stop agent payments") { command(["stop"]) }
-                    .disabled(working)
             }
+            Button("Stop agent payments") { command(["stop"]) }
+                .buttonStyle(EastSeaQuietButtonStyle())
+                .disabled(working)
             if !requests.isEmpty {
+                Divider().overlay(DesignTokens.Palette.line.color)
                 Text("Payees waiting for your approval").font(.aeHeadline)
                 ForEach(requests.indices, id: \.self) { i in
                     let r = requests[i]
                     let address = r["address"] as? String ?? ""
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
                         Text(address).font(.aeFootnote.monospaced()).textSelection(.enabled)
-                        Text("Purpose: \(r["purpose"] as? String ?? "—")").font(.aeFootnote)
-                        Text("Amount asked: \(r["amount"] as? String ?? "—") \(r["asset"] as? String ?? "")").font(.aeFootnote)
-                        HStack {
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("Purpose: \(r["purpose"] as? String ?? "—")")
+                            .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("Amount asked: \(r["amount"] as? String ?? "—") \(r["asset"] as? String ?? "")")
+                            .font(.aeBody.weight(.semibold)).monospacedDigit()
+                        HStack(spacing: DesignTokens.Space.s3) {
                             TextField("Payee name", text: Binding(get: { newNames[address] ?? "" }, set: { newNames[address] = $0 }))
                                 .textFieldStyle(.roundedBorder)
-                            Button("Allow with Touch ID") {
+                            Button {
                                 command(["payee", "add", "--name", newNames[address] ?? "", "--address", address])
-                            }.disabled(working || (newNames[address] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
+                            } label: {
+                                Label("Allow with Touch ID", systemImage: "touchid")
+                            }
+                            .buttonStyle(EastSeaPrimaryButtonStyle())
+                            .disabled(working || (newNames[address] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
                         }
                     }
+                    .padding(.vertical, DesignTokens.Space.s2)
                 }
             }
+            Divider().overlay(DesignTokens.Palette.line.color)
             Text("Agent payments so far").font(.aeHeadline)
-            if history.isEmpty { Text("No agent payments yet.").font(.aeFootnote).foregroundStyle(.secondary) }
+            if history.isEmpty {
+                Text("No agent payments yet.").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+            }
             ForEach(history.indices, id: \.self) { i in
                 let item = history[i]
                 let hash = item["hash"] as? String ?? ""
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(status(item)) · \(item["amount"] as? String ?? "—") \(item["asset"] as? String ?? Brand.networkCoinTicker)")
-                        .font(.aeBody)
-                    Text(date(item)).font(.aeFootnote).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
+                    HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.s2) {
+                        Image(systemName: statusSymbol(item)).foregroundStyle(statusColor(item)).accessibilityHidden(true)
+                        Text("\(status(item)) · \(item["amount"] as? String ?? "—") \(item["asset"] as? String ?? Brand.networkCoinTicker)")
+                            .font(.aeBody.weight(.semibold)).monospacedDigit()
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: DesignTokens.Space.s2)
+                        Text(date(item)).font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                    }
                     Text("To: \(displayNames(item))").font(.aeFootnote)
-                    Text("Purpose: \(item["purpose"] as? String ?? String(localized: "not recorded"))").font(.aeFootnote)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Purpose: \(item["purpose"] as? String ?? String(localized: "not recorded"))")
+                        .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                        .fixedSize(horizontal: false, vertical: true)
                     Button("Show receipt · \(String(hash.prefix(12)))…") { command(["receipt", "--hash", hash]) }
-                        .font(.aeFootnote).disabled(working || hash.isEmpty)
+                        .font(.aeFootnote).buttonStyle(EastSeaQuietButtonStyle())
+                        .disabled(working || hash.isEmpty)
                 }
+                .padding(.vertical, DesignTokens.Space.s2)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Divider()
+                if i != history.indices.last { Divider().overlay(DesignTokens.Palette.line.color) }
             }
-            if !message.isEmpty { Text(message).font(.aeFootnote).textSelection(.enabled) }
+            if !message.isEmpty {
+                Text(message).font(.aeFootnote).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+        .foregroundStyle(DesignTokens.Palette.text.color)
+        .tint(DesignTokens.Palette.accent.color)
         .onAppear {
             reload()
             if let hash = model.agentTransactionHash { command(["receipt", "--hash", hash]) }
@@ -101,6 +129,22 @@ struct AgentWalletPanel: View {
         case "confirmed": return String(localized: "Confirmed")
         case "failed": return String(localized: "Failed")
         default: return String(localized: "Older record · not confirmed")
+        }
+    }
+
+    private func statusSymbol(_ item: [String: Any]) -> String {
+        switch item["status"] as? String {
+        case "confirmed": return "checkmark.circle"
+        case "failed": return "exclamationmark.circle"
+        default: return "clock"
+        }
+    }
+
+    private func statusColor(_ item: [String: Any]) -> Color {
+        switch item["status"] as? String {
+        case "confirmed": return DesignTokens.Palette.success.color
+        case "failed": return DesignTokens.Palette.danger.color
+        default: return DesignTokens.Palette.textMuted.color
         }
     }
 

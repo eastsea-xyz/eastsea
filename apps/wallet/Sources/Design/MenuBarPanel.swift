@@ -2,37 +2,41 @@
 import SwiftUI
 
 extension EastSeaDesign {
-    /// Model-independent phase-1 component. The wallet lane supplies localized
-    /// copy, verification truth, event IDs, bindings, and actions.
-    @available(macOS 14.0, iOS 17.0, *)
-    struct MenuBarPanel: View {
-        struct Labels {
-            let brandName: String
-            let balance: String
-            let node: String
-            let receive: String
-            let receiveHint: String
-            let copyAddress: String
-            let openWallet: String
-            let qrAccessibility: String
-            let receiveUnavailable: String
-        }
+    struct MenuBarLabels {
+        let brandName: String
+        let balance: String
+        let node: String
+        let receive: String
+        let receiveHint: String
+        let copyAddress: String
+        let openWallet: String
+        let qrAccessibility: String
+        let receiveUnavailable: String
+    }
 
-        struct Snapshot {
-            let accountIdentity: String
-            let accountName: String
-            let balance: Decimal?
-            let balanceAccessibility: String
-            let currency: String
-            let verificationText: String
-            let isVerified: Bool
-            let nodeStatus: EastSeaNodeStatus
-            let nodeText: String
-            let address: String?
-            var statusEvent: String? = nil
-            var rewardEvent: String? = nil
-            var successEvent: String? = nil
-        }
+    struct MenuBarSnapshot {
+        let accountIdentity: String
+        let accountName: String
+        let balance: Decimal?
+        let balanceAccessibility: String
+        let currency: String
+        let verificationText: String
+        let isVerified: Bool
+        let nodeStatus: EastSeaNodeStatus
+        let nodeText: String
+        let address: String?
+        var verificationHelp: String = ""
+        var statusEvent: String? = nil
+        var rewardEvent: String? = nil
+        var successEvent: String? = nil
+    }
+
+    /// Localized truth and actions come from the wallet. Typed content slots
+    /// retain its account picker and diagnostics without a second visual panel.
+    @available(macOS 14.0, iOS 17.0, *)
+    struct MenuBarPanel<AccountControl: View, NodeDetails: View, ReceiveDetails: View, Footer: View>: View {
+        typealias Labels = MenuBarLabels
+        typealias Snapshot = MenuBarSnapshot
 
         let snapshot: Snapshot
         let labels: Labels
@@ -40,9 +44,45 @@ extension EastSeaDesign {
         let formatBalance: (Decimal) -> String
         let onCopyAddress: (String) -> Void
         let onOpenWallet: () -> Void
-        var hapticsEnabled = true
+        let hapticsEnabled: Bool
+        private let accountControl: AccountControl
+        private let nodeDetails: NodeDetails
+        private let receiveDetails: ReceiveDetails
+        private let footer: Footer
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
-        @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+        init(snapshot: Snapshot, labels: Labels, nodeEnabled: Binding<Bool>,
+             formatBalance: @escaping (Decimal) -> String,
+             onCopyAddress: @escaping (String) -> Void, onOpenWallet: @escaping () -> Void,
+             hapticsEnabled: Bool = true,
+             @ViewBuilder accountControl: () -> AccountControl,
+             @ViewBuilder nodeDetails: () -> NodeDetails,
+             @ViewBuilder receiveDetails: () -> ReceiveDetails,
+             @ViewBuilder footer: () -> Footer) {
+            self.snapshot = snapshot
+            self.labels = labels
+            _nodeEnabled = nodeEnabled
+            self.formatBalance = formatBalance
+            self.onCopyAddress = onCopyAddress
+            self.onOpenWallet = onOpenWallet
+            self.hapticsEnabled = hapticsEnabled
+            self.accountControl = accountControl()
+            self.nodeDetails = nodeDetails()
+            self.receiveDetails = receiveDetails()
+            self.footer = footer()
+        }
+
+        init(snapshot: Snapshot, labels: Labels, nodeEnabled: Binding<Bool>,
+             formatBalance: @escaping (Decimal) -> String,
+             onCopyAddress: @escaping (String) -> Void, onOpenWallet: @escaping () -> Void,
+             hapticsEnabled: Bool = true)
+        where AccountControl == Text, NodeDetails == EmptyView, ReceiveDetails == EmptyView, Footer == EmptyView {
+            self.init(snapshot: snapshot, labels: labels, nodeEnabled: nodeEnabled,
+                      formatBalance: formatBalance, onCopyAddress: onCopyAddress, onOpenWallet: onOpenWallet,
+                      hapticsEnabled: hapticsEnabled,
+                      accountControl: { Text(verbatim: snapshot.accountName) },
+                      nodeDetails: { EmptyView() }, receiveDetails: { EmptyView() }, footer: { EmptyView() })
+        }
 
         var body: some View {
             panelBody.id(snapshot.accountIdentity)
@@ -53,9 +93,12 @@ extension EastSeaDesign {
                 header.padding(.bottom, DesignTokens.Space.s3)
                 balancePlate
                 nodeRow.padding(.vertical, DesignTokens.Space.s5)
+                nodeDetails
                 Rectangle().fill(DesignTokens.Palette.line.color).frame(height: 1)
                 receiveRow.padding(.vertical, DesignTokens.Space.s5)
+                receiveDetails
                 openButton
+                footer
             }
             .padding(DesignTokens.Space.s4)
             .frame(width: 336)
@@ -75,10 +118,11 @@ extension EastSeaDesign {
             HStack(spacing: DesignTokens.Space.s2) {
                 EastSeaDawnMark().frame(width: 24, height: 24)
                 Text(verbatim: labels.brandName).font(DesignTokens.TypeScale.headline.font.weight(.semibold))
-                Spacer(minLength: DesignTokens.Space.s2)
-                Text(verbatim: snapshot.accountName)
+                    .fixedSize()
+                accountControl
                     .font(DesignTokens.TypeScale.caption.font)
                     .foregroundStyle(DesignTokens.Palette.textMuted.color)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .frame(minHeight: 24)
         }
@@ -92,12 +136,15 @@ extension EastSeaDesign {
                         BalanceCountUp(amount: balance, accessibilityText: snapshot.balanceAccessibility, format: formatBalance)
                             .font(DesignTokens.TypeScale.amountMd.font)
                             .tracking(DesignTokens.TypeScale.amountMd.tracking * DesignTokens.TypeScale.amountMd.size)
+                            .lineLimit(1).minimumScaleFactor(0.45)
+                            .layoutPriority(1)
                     } else {
                         Text(verbatim: "—").font(DesignTokens.TypeScale.amountMd.font)
                             .accessibilityLabel(snapshot.balanceAccessibility)
                     }
                     Text(verbatim: snapshot.currency).font(DesignTokens.TypeScale.headline.font)
                         .foregroundStyle(DesignTokens.Palette.plateSoft.color)
+                        .fixedSize()
                 }
                 HStack(spacing: DesignTokens.Space.s1) {
                     Image(systemName: snapshot.isVerified ? "checkmark" : "clock")
@@ -105,6 +152,7 @@ extension EastSeaDesign {
                 }
                 .font(DesignTokens.TypeScale.caption.font)
                 .foregroundStyle(DesignTokens.Palette.plateSoft.color)
+                .help(snapshot.verificationHelp)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(DesignTokens.Space.s4)

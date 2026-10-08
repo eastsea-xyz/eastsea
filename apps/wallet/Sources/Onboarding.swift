@@ -51,11 +51,11 @@ private struct Bullet: View {
     let text: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
             Image(systemName: icon).foregroundStyle(Color.aether).frame(width: 20)
-            Text(text).fixedSize(horizontal: false, vertical: true)
+            Text(text).fixedSize(horizontal: false, vertical: true).lineSpacing(DesignTokens.Space.s1)
         }
-        .font(.callout)
+        .font(.aeBody)
     }
 }
 
@@ -66,16 +66,21 @@ struct TermsSheet: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
                 if useDevelopmentNetwork {
                     Text("Dev network · 127.0.0.1")
-                        .font(.caption.bold()).foregroundStyle(.orange)
+                        .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
                 }
-                Image(systemName: "exclamationmark.shield.fill").font(.system(size: 34)).foregroundStyle(Color.warn)
-                Text("Before you use \(Brand.name)").font(.title2.bold())
+                HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
+                    EastSeaDawnMark().frame(width: 40, height: 40)
+                    Text("Before you use \(Brand.name)").font(DesignTokens.TypeScale.title2.font)
+                }
                 if let notice = Terms.referenceNotice {
-                    Text(notice).font(.caption).foregroundStyle(.secondary)
+                    Text(notice).font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                         .fixedSize(horizontal: false, vertical: true)
+                        .padding(DesignTokens.Space.s3)
+                        .background(DesignTokens.Palette.surfaceSunken.color,
+                                    in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
                 }
                 Bullet(icon: "hammer", text: Terms.isTestnet
                        ? String(localized: "\(Brand.name) is built for production. Mainnet has not launched yet; the network running today is the public testnet, and its \(Brand.networkCoinTicker) does not carry over. It is provided as is, without warranty, and has not had an independent security audit yet.", bundle: Terms.legalBundle, locale: Terms.legalLocale)
@@ -85,19 +90,20 @@ struct TermsSheet: View {
                 Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule(locale: Terms.legalLocale, bundle: Terms.legalBundle))
                 Bullet(icon: "network", text: String(localized: "Running \(Brand.name) shows your IP address to other nodes and the public DHT. Joining as a voting node sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks it with Apple. Addresses and transactions are public on chain.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
                 Bullet(icon: "key.fill", text: String(localized: "Your key stays on this device. If you lose the device and have not set up a recovery key, nobody can restore the account.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
-                Link("Read the full terms and disclaimer", destination: Terms.disclaimerURL).font(.callout)
+                Link("Read the full terms and disclaimer", destination: Terms.disclaimerURL).font(.aeFootnote)
                 HStack {
                     #if os(macOS)
-                    Button("Quit") { NSApp.terminate(nil) }
+                    Button("Quit") { NSApp.terminate(nil) }.buttonStyle(EastSeaQuietButtonStyle())
                     #endif
                     Spacer()
-                    Button("I understand and agree", action: accept).buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    Button("I understand and agree", action: accept).buttonStyle(EastSeaPrimaryButtonStyle()).keyboardShortcut(.defaultAction)
                 }
-                .padding(.top, 4)
+                .padding(.top, DesignTokens.Space.s1)
             }
-            .padding(24)
+            .padding(DesignTokens.Space.s6)
         }
         .macMinSize(width: 440, height: 460)
+        .eastSeaSheet()
         .interactiveDismissDisabled()
     }
 }
@@ -109,23 +115,26 @@ struct VotingNodeInvite: View {
     let later: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Image(systemName: "person.badge.plus").font(.system(size: 30)).foregroundStyle(Color.aether)
-            Text("Join the network as a voting node?").font(.title3.bold())
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+            HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
+                EastSeaDawnMark().frame(width: 40, height: 40)
+                Text("Join the network as a voting node?").font(.aeTitle)
+            }
             Bullet(icon: "clock", text: String(localized: "Your Mac proves it is online every hour. After \(VotingRules.minStreakEpochs) hours in a row it can be drawn to sign blocks."))
             Bullet(icon: "bolt", text: String(localized: "Keep \(Brand.name) running. A signing Mac that goes offline hands its seat to the next one. It uses some network, CPU and power."))
             Bullet(icon: "iphone.and.arrow.forward", text: String(localized: "Registration sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks with Apple that this is a real Mac: one Mac, one voting node. Touch ID signs it."))
             Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule)
             Bullet(icon: "person.fill.checkmark", text: String(localized: "Running a voting node is your choice and your responsibility. You can turn the node off anytime."))
             HStack {
-                Button("Not now", action: later)
+                Button("Not now", action: later).buttonStyle(EastSeaQuietButtonStyle())
                 Spacer()
-                Button(action: join) { Label("Join", systemImage: "touchid") }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                Button(action: join) { Label("Join", systemImage: "touchid") }.buttonStyle(EastSeaPrimaryButtonStyle()).keyboardShortcut(.defaultAction)
             }
-            .padding(.top, 4)
+            .padding(.top, DesignTokens.Space.s1)
         }
-        .padding(24)
+        .padding(DesignTokens.Space.s6)
         .frame(width: 440)
+        .eastSeaSheet()
     }
 }
 #endif

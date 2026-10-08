@@ -194,14 +194,15 @@ mod tests {
     use aether_crypto::Signer as _;
     use std::os::unix::net::UnixListener;
 
-    fn temp_dir(tag: &str) -> PathBuf {
+    fn temp_dir(_tag: &str) -> PathBuf {
         // macOS limits a Unix socket's entire pathname to 103 bytes. Keep
-        // fixtures short enough for a worktree's mandatory ./tmp directory.
+        // fixtures short enough for a worktree's mandatory ./tmp directory,
+        // including macOS's longer /System/Volumes/Data path alias.
         // Claim a fresh name rather than deleting a prior process's fixture.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         loop {
             let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let dir = std::env::temp_dir().join(format!("sg-{tag}-{:x}-{next:x}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("sg-{:x}-{next:x}", std::process::id()));
             match std::fs::create_dir(&dir) {
                 Ok(()) => return dir,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -213,7 +214,7 @@ mod tests {
     /// A stand-in for `aether-registrar-signer`: answers every connection with
     /// `reply`, for the rest of the test process.
     fn mock_helper(dir: &Path, reply: impl Fn(&serde_json::Value) -> serde_json::Value + Send + 'static) -> PathBuf {
-        let path = dir.join("signer.sock");
+        let path = dir.join("s");
         let listener = UnixListener::bind(&path).unwrap();
         std::thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
@@ -288,7 +289,7 @@ mod tests {
         let dir = temp_dir("refuse");
         let path = mock_helper(&dir, |_| serde_json::json!({ "ok": false, "error": "no key: run `aether-registrar-signer init`" }));
         assert!(EnclaveSigner::connect(&path).unwrap_err().contains("run `aether-registrar-signer init`"));
-        let absent = dir.join("nothing.sock");
+        let absent = dir.join("n");
         let err = EnclaveSigner::connect(&absent).unwrap_err();
         assert!(err.contains("aether-registrar-signer serve"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -313,7 +314,7 @@ mod tests {
         let bin = std::env::var("AETHER_REGISTRAR_SIGNER_BIN")
             .unwrap_or_else(|_| format!("{}/../../target/registrar-signer/aether-registrar-signer", env!("CARGO_MANIFEST_DIR")));
         let dir = temp_dir("live");
-        let socket = dir.join("signer.sock");
+        let socket = dir.join("s");
         let mut helper = std::process::Command::new(&bin)
             .args(["serve", "--socket"])
             .arg(&socket)

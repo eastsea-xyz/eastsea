@@ -167,20 +167,16 @@ impl Sidecar {
                 .map(|m| m.limits.prover_threads)
                 .unwrap_or_else(|| crate::resources::Limits::default().prover_threads);
             cmd.env("RAYON_NUM_THREADS", threads.to_string());
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt as _;
-                // Between fork and exec: one syscall, async-signal-safe.
-                unsafe {
-                    cmd.pre_exec(|| {
-                        libc::setpriority(libc::PRIO_PROCESS, 0, 15);
-                        Ok(())
-                    });
-                }
-            }
         }
+        // With no child-side customization, Command uses posix_spawn on macOS.
+        // Network.framework's child handlers make a forked node unsafe.
         let mut child = cmd.spawn().map_err(|e| format!("start {}: {e}", bin.display()))?;
         let pid = child.id();
+        #[cfg(unix)]
+        if tuned && unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, 15) } != 0 {
+            let error = std::io::Error::last_os_error();
+            tracing::warn!(pid, %error, "could not lower proving sidecar priority");
+        }
         let stdin = child.stdin.take().ok_or("no sidecar stdin")?;
         let stdout = BufReader::new(child.stdout.take().ok_or("no sidecar stdout")?);
         let (tx, lines) = std::sync::mpsc::channel();
@@ -1065,6 +1061,138 @@ pub(crate) fn next_job(chain: &Chain, prover: Address) -> Result<Option<Job>, (u
         return Err((height, "the prover input does not restate the block's recorded statement".to_string()));
     }
     Ok(Some((height, payload.txs.len(), input)))
+}
+
+/// Initialize the macOS network runtime before either spawn path's smoke test.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn initialize_network_for_spawn_smoke_test() {
+    #[repr(C)]
+    #[derive(Default, Debug)]
+    struct CFStreamError {
+        domain: isize,
+        error: i32,
+    }
+    #[link(name = "Network", kind = "framework")]
+    extern "C" {
+        fn nw_endpoint_create_host(host: *const libc::c_char, port: *const libc::c_char) -> *mut libc::c_void;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFStringCreateWithCString(
+            allocator: *const libc::c_void,
+            text: *const libc::c_char,
+            encoding: u32,
+        ) -> *const libc::c_void;
+        fn CFRelease(object: *const libc::c_void);
+    }
+    #[link(name = "CFNetwork", kind = "framework")]
+    extern "C" {
+        fn CFHostCreateWithName(allocator: *const libc::c_void, name: *const libc::c_void) -> *mut libc::c_void;
+        fn CFHostStartInfoResolution(host: *mut libc::c_void, info: libc::c_int, error: *mut CFStreamError) -> u8;
+    }
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(|| unsafe {
+        let endpoint = nw_endpoint_create_host(c"localhost".as_ptr(), c"0".as_ptr());
+        assert!(!endpoint.is_null(), "initialize Network.framework endpoint");
+        // Keep the passive endpoint alive for this test process. CFHost below
+        // initializes the resolver without a long-lived path-monitor callback.
+        let name = CFStringCreateWithCString(std::ptr::null(), c"localhost".as_ptr(), 0x0800_0100);
+        assert!(!name.is_null(), "create local hostname");
+        let host = CFHostCreateWithName(std::ptr::null(), name);
+        assert!(!host.is_null(), "create CFHost");
+        let mut error = CFStreamError::default();
+        let resolved = CFHostStartInfoResolution(host, 0, &mut error);
+        CFRelease(host);
+        CFRelease(name);
+        assert_ne!(resolved, 0, "resolve localhost through CFHost: {error:?}");
+    });
+}
+
+#[cfg(all(test, unix))]
+mod spawn_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn scratch() -> PathBuf {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tmp")
+            .join(format!("aether-prover-spawn-{}", unique()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn fake_prover(dir: &Path) -> PathBuf {
+        let program = PROGRAM.unwrap_or("any-program");
+        let path = dir.join("fake-prover");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho '{{\"guest_elf_sha256\":\"{program}\"}}'\n\
+                 while IFS= read -r line; do\n\
+                   printf '{{\"ok\":true,\"threads\":\"%s\"}}\\n' \"${{RAYON_NUM_THREADS-}}\"\n\
+                 done\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn priority(pid: u32) -> i32 {
+        unsafe { libc::getpriority(libc::PRIO_PROCESS, pid as libc::id_t) }
+    }
+
+    #[test]
+    fn proving_priority_is_lowered_from_parent_and_thread_limit_is_preserved() {
+        let dir = scratch();
+        let parent_priority = priority(std::process::id());
+        let threads = crate::resources::monitor()
+            .map(|m| m.limits.prover_threads)
+            .unwrap_or_else(|| crate::resources::Limits::default().prover_threads);
+        let sidecar = Sidecar::spawn_prover(&fake_prover(&dir), &dir).unwrap();
+        assert_eq!(priority(sidecar.pid), 15, "only the proving child gets nice 15");
+        assert_eq!(priority(std::process::id()), parent_priority, "node priority is unchanged");
+        let answer = sidecar.request(json!({"cmd": "threads"}), VERIFY_TIMEOUT).unwrap();
+        assert_eq!(answer["threads"].as_str(), Some(threads.to_string().as_str()));
+        drop(sidecar);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn consensus_verifier_keeps_normal_priority_and_inherited_thread_environment() {
+        let dir = scratch();
+        let parent_priority = priority(std::process::id());
+        let threads = std::env::var("RAYON_NUM_THREADS").unwrap_or_default();
+        let sidecar = Sidecar::spawn(&fake_prover(&dir), &dir).unwrap();
+        assert_eq!(priority(sidecar.pid), parent_priority, "verifier inherits the node's priority");
+        assert_eq!(priority(std::process::id()), parent_priority);
+        let answer = sidecar.request(json!({"cmd": "threads"}), VERIFY_TIMEOUT).unwrap();
+        assert_eq!(answer["threads"].as_str(), Some(threads.as_str()));
+        drop(sidecar);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn network_initialized_prover_spawn_200_times_smoke() {
+        initialize_network_for_spawn_smoke_test();
+        let dir = scratch();
+        let bin = fake_prover(&dir);
+        // The old Network.framework crash depends on framework/OS timing.
+        // This exercises the real spawn path, rather than asserting that an
+        // unsafe spawn would fail deterministically on every supported Mac.
+        for attempt in 0..200 {
+            let sidecar = Sidecar::spawn_prover(&bin, &dir)
+                .unwrap_or_else(|error| panic!("proving spawn {attempt}: {error}"));
+            // Priority is best effort and has its own focused regression.
+            // This smoke checks that the warmed network runtime permits a
+            // working sidecar, including its request/response pipes.
+            sidecar.request(json!({"cmd": "threads"}), VERIFY_TIMEOUT)
+                .unwrap_or_else(|error| panic!("proving request {attempt}: {error}"));
+            drop(sidecar);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[cfg(test)]

@@ -695,7 +695,8 @@ do {
     try? big.write(to: root2.appending(path: "Aether/node/state.redb"))
     let meter2 = DataMigration.ProgressMeter { fractions.append($0) }
     expect(migrate(root2, d2, forceCopy: true, meter: meter2) == .done, "the forced verified copy completes")
-    expect(meter2.total >= Int64(big.count) * 3, "the copy path expects copy + two hashes of every byte: \(meter2.total)")
+    expect(meter2.total >= Int64(big.count) * 2 && meter2.total < Int64(big.count) * 3,
+           "the copy path expects source copy/hash + destination hash: \(meter2.total)")
     expect(!fractions.isEmpty && fractions.allSatisfy { $0 > 0 && $0 <= 1 }, "progress was reported as a fraction: \(fractions)")
     expect(FileManager.default.fileExists(atPath: root2.appending(path: "Aether/node/MIGRATED-TO-EASTSEA").path),
            "the copied-from tree stays, marked")

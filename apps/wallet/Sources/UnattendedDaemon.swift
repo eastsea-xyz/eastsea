@@ -106,7 +106,18 @@ final class UnattendedDaemon: ObservableObject {
 
     /// The block data lives on a disk the daemon cannot open.
     var blockDataOnExternalDisk: Bool {
-        (UserDefaults.standard.string(forKey: "nodeChainDataPath") ?? "").hasPrefix("/Volumes/")
+        // A full internal disk may delay cfprefsd. The move's durable
+        // record, also used by app startup, wins over a stale preference.
+        guard let path = try? selectedChainDataPath() else { return true }
+        return path.hasPrefix("/Volumes/")
+    }
+
+    private func selectedChainDataPath() throws -> String {
+        if let root = try BlockDataMove.authoritativeRoot(in: NodeController.dataDir) {
+            guard BlockDataMove.selectionAvailable(root, internalRoot: NodeController.dataDir) else { throw BlockDataMove.Failure.unavailable }
+            return root.path == BlockDataLocation.resolvedRoot(NodeController.dataDir).path ? "" : root.path
+        }
+        return UserDefaults.standard.string(forKey: "nodeChainDataPath") ?? ""
     }
 
     /// The one sentence (and the Login Items button) while the daemon waits
@@ -179,7 +190,7 @@ final class UnattendedDaemon: ObservableObject {
         // A launchd daemon cannot reach /Volumes (TCC, exit 78 on the
         // testnet Macs): with the block data on a chosen external disk the
         // node runs inside the app only, and Settings says so.
-        if blockDataOnExternalDisk {
+        guard let chainDataPath = try? selectedChainDataPath(), !chainDataPath.hasPrefix("/Volumes/") else {
             Marker.remove()
             return
         }
@@ -195,7 +206,7 @@ final class UnattendedDaemon: ObservableObject {
                                                        activeProcessors: ProcessInfo.processInfo.activeProcessorCount),
                                                        storageFlag: StorageSetting.flag(shards: storageShards ?? StorageSetting.defaultShards),
                         locationFlags: BlockDataLocation.flags(
-                            chainDataPath: UserDefaults.standard.string(forKey: "nodeChainDataPath") ?? "",
+                            chainDataPath: chainDataPath,
                             archive: UserDefaults.standard.bool(forKey: "nodeArchive"))),
                      proveAddress: UserDefaults.standard.string(forKey: "proveAddress"))
     }

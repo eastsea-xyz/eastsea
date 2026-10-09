@@ -23,7 +23,7 @@ run() {
   : > "tmp/sw-$n.err"
   : > "tmp/sw-$n.out"
   compiler_flags=(-Onone)
-  if [ "$n" = rename-migration ] || [ "$n" = hash-memory ]; then
+  if [ "$n" = rename-migration ] || [ "$n" = hash-memory ] || [ "$n" = block-data-progress ]; then
     # Large file fixtures hash hundreds of MB or more with the release code.
     # Optimize that code while keeping Swift assertions and preconditions on.
     compiler_flags=(-O -assert-config Debug)
@@ -64,6 +64,8 @@ run legacy-aether Brand.swift LegacyAether.swift
 run network-upgrade Brand.swift NetworkUpgrade.swift
 run node-stop Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift
 run block-data Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift UnattendedDecision.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift DataMigration.swift BlockDataMove.swift NodeStorageMove.swift
+run block-data-progress DataMigration.swift
+run block-data-full-volume Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift DataMigration.swift BlockDataMove.swift
 run prover-menu ProverMenuText.swift
 run localization ProverMenuText.swift
 run key-safety Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift

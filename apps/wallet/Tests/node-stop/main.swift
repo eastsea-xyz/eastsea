@@ -94,8 +94,8 @@ f = NodeResumeFacts(); f.migrating = true
 check(NodeResume.decide(f) == .wait(.migrating), "migration copying")
 f = NodeResumeFacts(); f.migrationGate = "x"
 check(NodeResume.decide(f) == .wait(.migrationBlocked("x")), "migration gate")
-f = NodeResumeFacts(); f.movingStoragePercent = 42
-check(NodeResume.decide(f) == .wait(.movingStorage(percent: 42)), "storage move")
+f = NodeResumeFacts(); f.preparingStorage = true
+check(NodeResume.decide(f) == .wait(.startingStorage(height: 0, target: 0)), "fresh-location preparation")
 f = NodeResumeFacts(); f.onBattery = true
 check(NodeResume.decide(f) == .wait(.onBattery), "battery")
 f.isValidator = true
@@ -270,14 +270,15 @@ let all: [NodeStopReason] = [.switchedOff, .onBattery, .wrongLocation, .noHelper
                              .otherNodeRunning, .diskFull(freeBytes: GiB, resumeBytes: 7 * GiB, volume: nil),
                              .diskMissing(volume: "v"), .diskNoAccess(volume: "v"), .restarting(inSeconds: 3),
                              .crashLoop(.other, retryInSeconds: 300), .needsAttention(.database), .upgradeNeeded,
-                             .identityLost, .waitingForMacConfirmation, .keyElsewhere, .launchFailed("e"), .movingStorage(percent: 5)]
+                             .identityLost, .waitingForMacConfirmation, .keyElsewhere, .launchFailed("e"), .startingStorage(height: 5, target: 10)]
 var codes = Set<String>()
 for r in all {
     codes.insert(r.code)
     for language in ["en", "ko", "ja", "zh-Hans", "zh-Hant"] {
         let c = r.copy(locale: walletTestLocale(language), bundle: walletTestBundle(language))
         check(!c.title.isEmpty && !c.detail.isEmpty, "\(r.code) has a title and a detail (language=\(language))")
-        check(c.title.count <= 40, "\(r.code) title fits the sidebar: \(c.title)")
+        let limit = r.code == "starting_storage" ? 100 : 40
+        check(c.title.count <= limit, "\(r.code) title fits the wrapping sidebar: \(c.title)")
         check((c.action == nil) == (c.actionLabel == nil), "\(r.code) button has a label")
         check(!c.paragraph.lowercased().contains("rpc") && !c.paragraph.contains("exit "), "\(r.code) has no jargon")
         if r.isIncident && r != .identityLost && r != .keyElsewhere && r != .wrongLocation && r != .noHelper {

@@ -5,7 +5,7 @@ import Foundation
 /// disk the person picks. Keys never move: `validator.key`,
 /// `node-account.key`, `node.identity`, the DeviceCheck token and the
 /// follower's endpoint key stay in the node's data folder on the internal
-/// disk; only the follower's chain state (and the archive, when on) moves,
+/// disk; the follower's chain state (and archive history) starts fresh,
 /// passed to the node as `--chain-data`.
 ///
 /// Pure (Foundation only): the validation rules, the copy the person reads,
@@ -20,9 +20,30 @@ enum BlockDataLocation {
     /// Files inside those folders that are keys and stay on the internal
     /// disk: the follower's endpoint key (`wallet-node.key`).
     static let keepInternal: Set<String> = ["wallet-node.key"]
+    private static let protectedNames = Set(KeySafety.keyFiles.map { URL(fileURLWithPath: $0).lastPathComponent })
+        .union(["node.identity", "network.json", "settings.json", "key-creation.json", "run.lock"])
     /// Reserved key names stay internal even when APFS stores a casing alias.
     /// Folding conservatively also retains an unused alias on a case-sensitive disk.
-    static func keepsInternal(_ name: String) -> Bool { keepInternal.contains(name.lowercased()) }
+    static func keepsInternal(_ name: String) -> Bool {
+        let folded = name.lowercased()
+        return protectedNames.contains(folded) || KeySafety.isKey(folded)
+    }
+
+    /// Initial fresh-state allowance plus the same free-space margin used
+    /// by a new node. Old database allocation and archive history do not
+    /// contribute; snapshot sync also enforces its actual wire-size budget.
+    static let freshDataBytes: UInt64 = 1_073_741_824
+    static let freshFootprintBytes = freshDataBytes + NodeResume.resumeBytes
+
+    static func validateFresh(_ volume: Volume) -> Problem? {
+        validate(volume, dataBytes: freshDataBytes)
+    }
+
+    static func confirmation(archive: Bool, locale: Locale = .current, bundle: Bundle = .main) -> String {
+        let message = String(localized: "The node starts empty here and syncs from the network. The old block data is deleted only after the new node answers and follows a certified block. Your keys, identity and settings stay on this Mac. The wallet keeps working while it syncs.", bundle: bundle, locale: locale)
+        guard archive else { return message }
+        return message + "\n\n" + String(localized: "In archive mode, the extra history is rebuilt from peers and era files over time.", bundle: bundle, locale: locale)
+    }
     /// Formats the node can live on: APFS and Mac OS Extended. exFAT/FAT
     /// lack the locking and the crash safety the database needs; network
     /// shares come and go.
@@ -61,7 +82,8 @@ enum BlockDataLocation {
         if !v.isLocal || networkFormats.contains(v.format) { return .networkShare }
         if !supportedFormats.contains(v.format) { return .unsupportedFormat(v.format) }
         if v.isReadOnly { return .readOnly }
-        let needed = dataBytes + NodeResume.resumeBytes
+        let (sum, overflow) = dataBytes.addingReportingOverflow(NodeResume.resumeBytes)
+        let needed = overflow ? UInt64.max : sum
         if v.freeBytes < needed { return .notEnoughSpace(freeBytes: v.freeBytes, neededBytes: needed) }
         return nil
     }
@@ -78,7 +100,7 @@ enum BlockDataLocation {
         }
     }
 
-    static func sentence(_ p: Problem, locale: Locale = .current, bundle: Bundle = .main) -> String {
+    static func sentence(_ p: Problem, returningToDefault: Bool = false, locale: Locale = .current, bundle: Bundle = .main) -> String {
         switch p {
         case .networkShare:
             return String(localized: "A network share cannot hold the block data. Pick a disk connected to this Mac.", bundle: bundle, locale: locale)
@@ -89,6 +111,9 @@ enum BlockDataLocation {
             return String(localized: "This disk is read-only. Pick one that can be written to.", bundle: bundle, locale: locale)
         case .notEnoughSpace(let free, let needed):
             let freeSpace = NodeStopReason.gb(free), neededSpace = NodeStopReason.gb(needed)
+            if returningToDefault {
+                return String(localized: "Cannot move back to default: the internal disk has \(freeSpace) free; \(neededSpace) is needed to start fresh.", bundle: bundle, locale: locale)
+            }
             return String(localized: "Not enough space: \(freeSpace) free, \(neededSpace) needed.", bundle: bundle, locale: locale)
         case .inUse:
             return String(localized: "The block data is already there.", bundle: bundle, locale: locale)
@@ -112,7 +137,7 @@ enum BlockDataLocation {
         return suffix.reduce(ancestor.resolvingSymlinksInPath()) { $0.appendingPathComponent($1) }.standardizedFileURL
     }
 
-    /// Copy and cleanup roots must never overlap in either direction.
+    /// Fresh-start and cleanup roots must never overlap in either direction.
     static func disjoint(_ a: URL, _ b: URL) -> Bool {
         let x = resolvedRoot(a).path, y = resolvedRoot(b).path
         return x != y && !x.hasPrefix(y + "/") && !y.hasPrefix(x + "/") && x != "/" && y != "/"
@@ -127,10 +152,21 @@ enum BlockDataLocation {
             let dir = root.appendingPathComponent(name)
             if (try? fm.destinationOfSymbolicLink(atPath: dir.path)) != nil { return false }
             guard fm.fileExists(atPath: dir.path) else { continue }
-            guard preservingInternalKeys, let entries = try? fm.contentsOfDirectory(atPath: dir.path),
-                  entries.allSatisfy({ keepsInternal($0) }) else { return false }
+            guard preservingInternalKeys, containsOnlyInternalFiles(dir) else { return false }
         }
         return true
+    }
+
+    /// Cleanup can retain nested keys. A return move accepts those keys in
+    /// place, while refusing any old database or link as a fresh destination.
+    private static func containsOnlyInternalFiles(_ dir: URL) -> Bool {
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]) else { return false }
+        return entries.allSatisfy { item in
+            guard let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]),
+                  values.isSymbolicLink != true else { return false }
+            if values.isDirectory == true { return containsOnlyInternalFiles(item) }
+            return values.isRegularFile == true && keepsInternal(item.lastPathComponent)
+        }
     }
 
     /// The node flags for the stored choices, appended to the shared argv.

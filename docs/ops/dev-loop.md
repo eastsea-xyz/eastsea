@@ -154,7 +154,7 @@ their separate lifecycle; use the test commands above for test scenarios.
 The authorized builder is the `poc-m3` SSH alias, account `kjaylee`, macOS M3 with
 24 GiB RAM and preinstalled Rust 1.98.1. All remote work stays in
 `~/eastsea-lab/dev-speed`. A read-only preflight checks the account, platform,
-owned paths, free/speculative RAM and disk before any remote write.
+owned paths, available RAM and disk before any remote write.
 
 ```bash
 scripts/remote-test.sh --dry-run -p aether-crypto
@@ -178,8 +178,11 @@ The target family includes the base commit, compiler and profile/config inputs.
 Every remote build and test runs at `nice -n 15`, with four Cargo workers and two
 Swift workers. The guard samples owned processes every 0.5 seconds, including its
 private foreground sccache server. It stops if aggregate owned RSS exceeds
-12 GiB, free plus speculative RAM drops below 4 GiB, or free disk drops below
-30 GiB. It never counts inactive/reclaimable pages as free. Signals, lost command
+12 GiB, available RAM drops below 4 GiB, or free disk drops below 30 GiB.
+Available RAM is `(free + inactive + speculative + purgeable) * page_size` from
+`vm_stat`, cross-checked against `memory_pressure`'s free percentage multiplied
+by its reported total RAM; the guard uses the smaller estimate. Missing,
+malformed or failed probes stop execution. Signals, lost command
 ownership, resource stops and normal completion clean up only owned processes.
 Failed process discovery also stops the run; cleanup signals recorded private
 groups and reaps direct children without requiring another successful `ps` query.
@@ -187,7 +190,8 @@ Warm build artifacts remain for the next run. Remote builds bypass the local
 gate only in the exact guarded `kjaylee` snapshot; they never take this Mac's slot.
 The transported timing record includes the system rsync subprocess wall time
 and a resource report: sampled peak aggregate owned RSS, minimum free RAM/disk,
-observed process nice range, exit status and cleanup result. Resource reports
+observed process nice range, exit status and cleanup result. The existing
+`min_free_ram_bytes` report/limit keys now refer to available RAM. Resource reports
 also survive guard startup failures and resource stops. The peak uses 0.5-second
 samples; it includes the private sccache server and build/test descendants.
 
@@ -269,7 +273,10 @@ Raw measurements, timing JSON, source snapshots, the Swift diagnosis and the
 remote resource refusal are under `tmp/dev-speed-round2/`; per-command fast-path
 timing records are under `tmp/dev-test-*/timing.json`.
 
-### Round 3: matched node cases; remote RAM floor still blocks execution
+### Round 3: matched node cases; old RAM accounting blocks execution
+
+The RAM refusals below used the old free-plus-speculative calculation; round 4
+corrects it to include reclaimable pages and cross-check memory pressure.
 
 Measured on 2026-10-09, starting from `ccbbcce` on `codex/dev-speed`. The workload
 is the three tests in the automatically selected `aether-node::rpc_alias`
@@ -341,6 +348,114 @@ snapshot/resource cleanup; shellcheck and diff whitespace checks passed.
 The source probe, 80 protected guest-input files and root manifest bytes were
 verified unchanged. The existing `last_proof_reward` dead-code warning appeared
 in the local builds; it was not modified.
+
+### Round 4: available RAM guard and completed remote comparison
+
+Measured on 2026-10-09 from `254f4e2` on `codex/dev-speed`, with the corrected
+RAM guard. The development Mac is an M1 Max with 64 GiB RAM; poc-m3 is an M3
+with 24 GiB. Both used Rust/Cargo 1.98.1, nextest 0.9.148 and sccache 0.18.0.
+Existing machine load was left running. The selected workload and commands
+match round 3: three `aether-node::rpc_alias` tests, selected by the explicit
+`crates/node/tests/rpc_alias.rs` changed path.
+
+The captured regression reproduces the accounting error: `vm_stat` reported
+4,069 free, 585,360 inactive, 1,553 speculative and 77 purgeable pages at
+16,384 bytes per page. The old guard counted 92,110,848 bytes (0.09 GiB);
+the corrected sum is 9,683,910,656 bytes (9.02 GiB). `memory_pressure` reported
+76% of 25,769,803,776 bytes, so the smaller page-based estimate wins. The raw
+outputs are committed as `scripts/tests/fixtures/poc-m3-low-free-*.txt`, with
+trailing whitespace normalized. Regression tests also make the pressure estimate
+win, verify that a lower estimate stops execution, and reject missing/malformed
+statistics and failed probes. The captured case failed before the fix and passed
+afterward. Corrected live preflight accepted 10.04 GiB available RAM and
+111.59 GiB free disk.
+
+The first remote attempt began with the lane, registry, compiler cache and target
+absent. It compiled successfully, then failed because offline workspace metadata
+needed the unused `aead` crate, which a node-only build had not downloaded.
+That attempt is retained below and in `remote-cold.json`; it did not run tests.
+A guarded `cargo metadata --locked --format-version 1` fetched the remaining
+workspace metadata dependencies without compiling. Its peak owned RSS was
+0.21 GiB, observed nice was 15, and cleanup completed. The failed attempt's
+lane-owned target was then removed before the successful cold-target run.
+
+Thus the successful **cold cases have absent targets and populated Cargo
+registries/compiler caches**. The local target was
+`tmp/dev-speed-round4/local-targets/aether-round4`; the remote target was
+`~/eastsea-lab/dev-speed/targets/aether-fc75af2c969af988-5ea8e31678b89dd5`.
+Neither successful cold case represents an empty compiler cache. Local cold and
+the first remote attempt ran concurrently on separate Macs. The successful
+remote cold case followed metadata preparation. Warm cases reused the same
+source bytes, targets and environment. Then exactly one comment line was
+appended to `rpc_alias.rs`, both edit cases ran with identical source bytes,
+and the original file was restored. Both warm cases verified cached binaries
+and took no compile gate; both edits caused a rebuild.
+
+| Host and case | Runner wall | rsync | Compile | Launch + run | Queue | Other time | Sampled peak owned RSS | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| This Mac, cold target | 222.11 s | n/a | 207.24 s | 6.99 s | 0.02 s | 7.86 s | 2.40 GiB | three passed |
+| This Mac, warm | 1.77 s | n/a | 0.00 s | 0.71 s | 0.00 s | 1.06 s | 0.088 GiB | three passed; cache hit |
+| This Mac, one-line edit | 31.16 s | n/a | 28.83 s | 1.10 s | 0.02 s | 1.20 s | 1.23 GiB | three passed; rebuild |
+| poc-m3, cold target after preparation | 61.98 s | 0.47 s | 56.33 s | 0.60 s | 0.00 s | 4.57 s | 1.92 GiB | three passed |
+| poc-m3, warm | 4.53 s | 0.57 s | 0.00 s | 0.07 s | 0.00 s | 3.89 s | 0.0053 GiB | three passed; cache hit |
+| poc-m3, one-line edit | 6.50 s | 0.47 s | 1.62 s | 0.54 s | 0.00 s | 3.88 s | 1.09 GiB | three passed; rebuild |
+| poc-m3, initial empty-registry attempt | 135.49 s | 0.73 s | 121.00 s | not run | 0.00 s | 13.76 s | 1.86 GiB | exit 101; offline metadata miss |
+
+Runner wall is `dev-test.py`'s monotonic timing, including selection and the
+remote transfer/SSH lifecycle, excluding shell/interpreter startup. This uses
+the same timing source on both hosts and excludes the external local memory
+sampler's exit-observation delay. Outer observer timings are also retained in
+the raw JSON. Compile is the complete nextest build/list stage, including any
+build-time downloads, link and artifact-lock wait. Launch + run includes nextest
+startup. Other time is runner wall minus rsync, compile, run and queue; it
+includes hashing, metadata, SSH setup, guard startup/cleanup and other control
+work. Rounded components may differ by 0.01 s. System `/usr/bin/rsync` supplied
+every transfer. Local compiles held the counting semaphore in the build's shell,
+used four Cargo jobs and kept the shared sccache. Remote compiles used four jobs
+inside the guarded snapshot and bypassed the development Mac's semaphore.
+
+For these measurements, remote cold-target wall was 3.58 times faster and the
+edit wall was 4.79 times faster; warm local reuse was 2.56 times faster than
+remote. These are observations under the recorded caches and live machine load,
+not whole-workspace or hardware benchmarks. The local compiler cache had prior
+rounds' artifacts; the remote compiler cache had the initial attempt's artifacts.
+
+RSS is aggregate owned-process memory sampled at nominal 0.5-second intervals.
+Remote samples include the private sccache server; local samples include the
+runner/build/test tree and exclude its pre-existing shared sccache daemon.
+Short-lived peaks can be missed, especially the 0.07-second remote warm test
+run; its 5.47 MiB sampled maximum is not a bound on instantaneous memory use.
+
+| Successful remote case | Samples | Minimum available RAM | Minimum free disk | Nice range | Cleanup |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Cold target | 111 | 8.74 GiB | 107.46 GiB | 15–15 | complete |
+| Warm | 3 | 9.84 GiB | 107.46 GiB | 15–15 | complete |
+| One-line edit | 7 | 9.50 GiB | 107.45 GiB | 15–15 | complete |
+
+All remote resource reports, including the failed attempt and metadata
+preparation, recorded completed cleanup and nice 15. After exporting the
+reports, the lane had no owner record, snapshot lease, sccache socket or surviving
+process with a cwd inside it. Because the lane was absent before this round,
+its source, tools, registry, compiler cache and targets were removed together.
+The development lane owns no compile slot. The v4 validator, its LaunchAgent,
+`~/aether-testnet` and `/Applications/EastSea.app` were left untouched. No guest,
+wallet, staticlib or release build ran. All 83 protected tracked files, including
+the root manifests/toolchain and prover inputs, match their pre-measurement
+hashes; the edit probe is restored byte for byte.
+
+Verification passed 84 workflow unittest cases across remote scope/cleanup,
+affected selection, routing, caches, compile timing, Rust execution and temp
+directory handling, plus all six successful real test runs. ShellCheck, Python
+AST/bytecode compilation and whitespace checks passed. The existing node
+`last_proof_reward` dead-code warning remains. A freshly created remote registry
+still needs online workspace metadata preparation before the runner's offline
+metadata stage; this round fixes the RAM guard without changing that stage.
+
+Evidence is under `tmp/dev-speed-round4/`: `summary.json`, seven measured
+run logs/JSON records, `remote-cold-prepare.json`, raw captured memory statistics,
+tool versions, workflow checks, protected hashes, exported `remote-reports/`
+and `remote-cleanup.json`. The measurement helper is `measure.py`. These temporary
+artifacts are not committed.
 
 ### Release and guest isolation proof
 

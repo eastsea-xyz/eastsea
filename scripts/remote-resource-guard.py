@@ -40,12 +40,19 @@ def validate_root(root):
 
 
 def free_ram():
+    """Available RAM, conservatively cross-checked with macOS memory pressure."""
     output = subprocess.check_output(['/usr/bin/vm_stat'], text=True, timeout=10)
     page_size = re.search(r'page size of (\d+) bytes', output)
-    pages = dict(re.findall(r'^(Pages (?:free|speculative)):\s*(\d+)\.', output, re.M))
-    if not page_size or 'Pages free' not in pages or 'Pages speculative' not in pages:
-        raise RuntimeError('cannot determine free/speculative RAM from vm_stat')
-    return int(page_size[1]) * sum(int(count) for count in pages.values())
+    pages = dict(re.findall(r'^(Pages (?:free|inactive|speculative|purgeable)):\s*(\d+)\.', output, re.M))
+    if not page_size or int(page_size[1]) <= 0 or len(pages) != 4:
+        raise RuntimeError('cannot determine available RAM from vm_stat')
+    available = int(page_size[1]) * sum(int(count) for count in pages.values())
+    pressure = subprocess.check_output(['/usr/bin/memory_pressure'], text=True, timeout=10)
+    total = re.search(r'^The system has (\d+) ', pressure, re.M)
+    percent = re.search(r'^System-wide memory free percentage:\s*(\d+)%\s*$', pressure, re.M)
+    if not total or int(total[1]) <= 0 or not percent or not 0 <= int(percent[1]) <= 100:
+        raise RuntimeError('cannot determine available RAM from memory_pressure')
+    return min(available, int(total[1]) * int(percent[1]) // 100)
 
 
 def check_resources(root, rss=0, report=None):
@@ -58,7 +65,7 @@ def check_resources(root, rss=0, report=None):
         report['min_free_ram_bytes'] = min(report['min_free_ram_bytes'], ram)
         report['min_free_disk_bytes'] = min(report['min_free_disk_bytes'], disk)
     if ram < MIN_RAM or disk < MIN_DISK or rss > MAX_RSS:
-        raise RuntimeError(f'resource stop: free+speculative RAM={ram / GIB:.2f} GiB '
+        raise RuntimeError(f'resource stop: available RAM={ram / GIB:.2f} GiB '
                            f'(minimum 4); disk={disk / GIB:.2f} GiB (minimum 30); '
                            f'owned RSS={rss / GIB:.2f} GiB (maximum 12)')
     return ram, disk
@@ -251,7 +258,7 @@ def run(root, command, sccache=False, owner_file=None, report_file=None):
                   nice_min=None, nice_max=None, cleanup_complete=False,
                   limits=dict(min_free_ram_bytes=MIN_RAM, min_free_disk_bytes=MIN_DISK,
                               max_owned_rss_bytes=MAX_RSS, nice=15))
-    print(f'remote resources: RAM={ram / GIB:.2f} GiB; disk={disk / GIB:.2f} GiB; '
+    print(f'remote resources: available RAM={ram / GIB:.2f} GiB; disk={disk / GIB:.2f} GiB; '
           'RSS limit=12 GiB; nice=15; checks every 0.5s', file=sys.stderr, flush=True)
     environment = dict(os.environ, AETHER_REMOTE_TEST_ROOT=str(root),
                        AETHER_REMOTE_GUARD_ACTIVE='1', TMPDIR=str(root / 'tmp'))
@@ -367,7 +374,7 @@ def main():
     if args.preflight:
         validate_root(root)
         ram, disk = check_resources(root)
-        print(f'poc-m3 preflight: RAM={ram / GIB:.2f} GiB; disk={disk / GIB:.2f} GiB')
+        print(f'poc-m3 preflight: available RAM={ram / GIB:.2f} GiB; disk={disk / GIB:.2f} GiB')
         return 0
     if args.command[:1] == ['--']:
         args.command.pop(0)

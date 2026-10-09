@@ -303,13 +303,50 @@ class ResourceGuardTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_mac_memory_counts_only_free_and_speculative_pages(self):
-        text = ('Mach Virtual Memory Statistics: (page size of 16384 bytes)\n'
-                'Pages free: 200000.\nPages speculative: 62144.\nPages inactive: 999999.\n')
-        with mock.patch.object(guard.subprocess, 'check_output', return_value=text):
-            self.assertEqual(guard.free_ram(), 4 * guard.GIB)
-        with mock.patch.object(guard.subprocess, 'check_output', return_value='unknown statistics'):
-            self.assertRaises(RuntimeError, guard.free_ram)
+    def memory_outputs(self):
+        # Captured together on poc-m3 (24 GiB), 2026-10-09. Free pages are low
+        # while inactive pages are reclaimable; neither command induced load.
+        fixtures = ROOT / 'scripts/tests/fixtures'
+        return [(fixtures / ('poc-m3-low-free-' + name + '.txt')).read_text()
+                for name in ('vm-stat', 'memory-pressure')]
+
+    def test_mac_available_memory_includes_reclaimable_pages(self):
+        vm, pressure = self.memory_outputs()
+        with mock.patch.object(guard.subprocess, 'check_output', side_effect=[vm, pressure]) as command:
+            self.assertEqual(guard.free_ram(), 9683910656)
+        self.assertEqual(command.call_args_list, [
+            mock.call(['/usr/bin/vm_stat'], text=True, timeout=10),
+            mock.call(['/usr/bin/memory_pressure'], text=True, timeout=10)])
+        self.assertLess((4069 + 1553) * 16384, guard.MIN_RAM)
+        with mock.patch.object(guard.subprocess, 'check_output', side_effect=[vm, pressure]), \
+             mock.patch.object(guard.shutil, 'disk_usage', return_value=SimpleNamespace(free=40 * guard.GIB)):
+            self.assertGreater(guard.check_resources(self.root)[0], guard.MIN_RAM)
+
+    def test_mac_available_memory_uses_lower_pressure_estimate(self):
+        vm, pressure = self.memory_outputs()
+        pressure = pressure.replace('free percentage: 76%', 'free percentage: 10%')
+        with mock.patch.object(guard.subprocess, 'check_output', side_effect=[vm, pressure]):
+            self.assertEqual(guard.free_ram(), 2576980377)
+        with mock.patch.object(guard.subprocess, 'check_output', side_effect=[vm, pressure]), \
+             mock.patch.object(guard.shutil, 'disk_usage', return_value=SimpleNamespace(free=40 * guard.GIB)):
+            self.assertRaisesRegex(RuntimeError, 'available RAM', guard.check_resources, self.root)
+
+    def test_mac_available_memory_requires_valid_both_probes(self):
+        vm, pressure = self.memory_outputs()
+        for bad_vm, bad_pressure in [
+                ('unknown statistics', pressure),
+                (vm.replace('Pages inactive:', 'Missing inactive:'), pressure),
+                (vm.replace('Pages purgeable:', 'Missing purgeable:'), pressure),
+                (vm.replace('page size of 16384', 'page size of 0'), pressure),
+                (vm, 'unknown pressure'),
+                (vm, pressure.replace('25769803776', '0', 1)),
+                (vm, pressure.replace('free percentage: 76%', 'free percentage: 101%'))]:
+            with self.subTest(vm=bad_vm, pressure=bad_pressure), \
+                 mock.patch.object(guard.subprocess, 'check_output', side_effect=[bad_vm, bad_pressure]):
+                self.assertRaises(RuntimeError, guard.free_ram)
+        with mock.patch.object(guard.subprocess, 'check_output',
+                               side_effect=[vm, subprocess.TimeoutExpired('memory_pressure', 10)]):
+            self.assertRaises(subprocess.TimeoutExpired, guard.free_ram)
 
     def test_limits_refuse_low_ram_disk_or_excess_owned_memory(self):
         for ram, disk, rss in [(guard.MIN_RAM - 1, 40 * guard.GIB, 0),

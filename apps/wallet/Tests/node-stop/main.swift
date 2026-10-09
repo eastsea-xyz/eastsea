@@ -291,6 +291,21 @@ check(NodeStopReason.crashLoop(.other, retryInSeconds: 540).copy(locale: koLocal
 check(NodeStopReason.restarting(inSeconds: 4).copy(locale: enLocale, bundle: enBundle).resume == "Starting in 4 s.", "seconds")
 check(!NodeStopReason.onBattery.isIncident && NodeStopReason.otherNodeRunning.isIncident, "incident flags")
 
+// A retained NodeStopRow must read the current reason and switch. This also
+// covers the menu-bar panel, which uses the same row for identityLost.
+for reason in all {
+    check(reason.showsDiagnostics(currentReason: reason, nodeEnabled: true) == reason.isIncident,
+          "\(reason.code): diagnostics belong only to a current incident")
+    check(!reason.showsDiagnostics(currentReason: reason, nodeEnabled: false),
+          "\(reason.code): switching off removes diagnostics")
+    check(!reason.showsDiagnostics(currentReason: nil, nodeEnabled: true),
+          "\(reason.code): recovery removes diagnostics from a retained row")
+}
+check(!NodeStopReason.identityLost.showsDiagnostics(currentReason: .switchedOff, nodeEnabled: true),
+      "an old identity incident cannot leave diagnostics beside an ordinary user stop")
+check(!NodeStopReason.identityLost.showsDiagnostics(currentReason: .onBattery, nodeEnabled: true),
+      "an old identity incident cannot leave diagnostics beside an expected battery pause")
+
 // MARK: node-status.log
 
 let at = Date(timeIntervalSince1970: 1_791_000_000)

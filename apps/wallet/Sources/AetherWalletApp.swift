@@ -83,6 +83,9 @@ struct AetherWalletApp: App {
                     .keyboardShortcut("d", modifiers: [.command, .shift])
             }
             CommandMenu("Go") { PageCommands() }
+            CommandGroup(after: .help) {
+                Button(DiagnosticReport.copyLabel(helpMenu: true)) { appDelegate.health.copyDiagnostics() }
+            }
         }
         #endif
         #if os(macOS)
@@ -235,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         unattended.wrongLocation = node.wrongLocation
         unattended.storageShards = node.storageShards
         node.unattended = unattended
-        unattended.refreshStatus()
+        unattended.restore()
         unattended.refreshPower()
         node.restore()
         // A slow data move finishing in the background (M1) lets the node

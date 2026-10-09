@@ -6945,6 +6945,40 @@
         }
       }
     },
+    "Copy Diagnostics…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy Diagnostics…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "診断情報をコピー…"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "진단 정보 복사…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制诊断信息…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "複製診斷資訊…"
+          }
+        }
+      }
+    },
     "Copy Token Address" : {
       "localizations" : {
         "en" : {
@@ -23126,36 +23160,36 @@
         }
       }
     },
-    "The node stopped. Copy Diagnostics on Home shows why." : {
+    "The node stopped. Copy Diagnostics in Help shows why." : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The node stopped. Copy Diagnostics on Home shows why."
+            "value" : "The node stopped. Copy Diagnostics in Help shows why."
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "ノードが停止しました。ホームの「診断情報をコピー」で理由を確認できます。"
+            "value" : "ノードが停止しました。ヘルプの「診断情報をコピー…」で理由を確認できます。"
           }
         },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "노드가 멈췄어요. 홈의 진단 정보 복사로 이유를 볼 수 있어요."
+            "value" : "노드가 멈췄어요. 도움말의 진단 정보 복사…로 이유를 볼 수 있어요."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "节点已停止。在首页复制诊断信息可查看原因。"
+            "value" : "节点已停止。在帮助菜单中选择“复制诊断信息…”可查看原因。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "節點已停止，可在首頁複製診斷資訊查看原因。"
+            "value" : "節點已停止，可在說明選單選擇「複製診斷資訊…」查看原因。"
           }
         }
       }

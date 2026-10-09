@@ -8,6 +8,46 @@
 import Foundation
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
 
+// A new, correctly bundled service may be notFound until the first register
+// call (Apple DTS, forums/thread/719862). A saved opt-in must reach that call.
+for service in [UnattendedDecision.ServiceStatus.notFound, .notRegistered] {
+    check(UnattendedDecision.shouldRegister(enabled: true, bundledService: true, service: service),
+          "an unseen or unregistered bundled daemon must be registered")
+    check(UnattendedDecision.status(enabled: true, bundledService: true, service: service) == .needsApproval,
+          "an unseen bundled daemon is awaiting setup, never a failed app build")
+    check(!UnattendedDecision.shouldRegister(enabled: false, bundledService: true, service: service),
+          "an opt-out must never register a daemon")
+    check(!UnattendedDecision.shouldRegister(enabled: true, bundledService: false, service: service),
+          "a missing helper must never be registered")
+    check(UnattendedDecision.status(enabled: true, bundledService: true, service: service,
+                                    registrationFailure: "registration error") == .failed("registration error"),
+          "a real registration failure remains visible on subsequent refreshes")
+}
+for service in [UnattendedDecision.ServiceStatus.enabled, .requiresApproval, .unknown] {
+    check(!UnattendedDecision.shouldRegister(enabled: true, bundledService: true, service: service),
+          "registered, denied or unknown services must not be re-registered")
+}
+check(UnattendedDecision.status(enabled: true, bundledService: true, service: .enabled,
+                                registrationFailure: "old failure") == .approved,
+      "approval clears an earlier registration error")
+check(UnattendedDecision.status(enabled: true, bundledService: true, service: .requiresApproval,
+                                registrationFailure: "launch denied") == .needsApproval,
+      "withheld consent is an approval instruction, never a failure")
+check(UnattendedDecision.status(enabled: false, bundledService: false, service: .notFound,
+                                registrationFailure: "old failure") == .off,
+      "an opted-out daemon shows no problem even when the helper is absent")
+check(UnattendedDecision.Status.needsApproval.allowsMarker && UnattendedDecision.Status.approved.allowsMarker,
+      "an opt-in may prepare the marker before or after user approval")
+check(!UnattendedDecision.Status.off.allowsMarker && !UnattendedDecision.Status.failed("error").allowsMarker,
+      "an off or failed daemon cannot retain a respawn marker")
+for language in ["en", "ko", "ja", "zh-Hans", "zh-Hant"] {
+    let missing = UnattendedDecision.status(enabled: true, bundledService: false, service: .notFound,
+                                           locale: walletTestLocale(language), bundle: walletTestBundle(language))
+    let expected = String(localized: "This build of the app cannot keep the node running after restarts.",
+                          bundle: walletTestBundle(language), locale: walletTestLocale(language))
+    check(missing == .failed(expected), "a genuinely missing helper is explained in \(language)")
+}
+
 // The exit the node uses when the data directory's run.lock is held — the
 // number `NodeController.exited` branches on, so it cannot drift from the
 // Rust side's EXIT_LOCKED (crates/node/src/supervisor.rs).
@@ -70,6 +110,16 @@ check(UnattendedDecision.afterLockExit(rpcAlive: false, releaseMatches: true) ==
 let sourceRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 let appSource = try String(contentsOf: sourceRoot.appendingPathComponent("Sources/AetherWalletApp.swift"), encoding: .utf8)
+let unattendedSource = try String(contentsOf: sourceRoot.appendingPathComponent("Sources/UnattendedDaemon.swift"), encoding: .utf8)
+check(appSource.contains("unattended.restore()"), "startup restores a saved daemon opt-in instead of only reading its status")
+check(unattendedSource.contains("UnattendedDecision.shouldRegister("),
+      "the system adapter uses the tested decision for unseen services")
+check(unattendedSource.contains("UnattendedDecision.status("),
+      "the log and UI use the tested service-state classification")
+let refreshBody = unattendedSource.components(separatedBy: "func refreshStatus() {")[1]
+    .components(separatedBy: "/// The block data lives")[0]
+check(refreshBody.contains("syncMarker()"),
+      "an approval refresh restores the marker after a registration failure without restarting the app node")
 check(appSource.contains("node.prepareForUpdate()") && appSource.contains("applicationShouldTerminate("),
       "R11 automatic and quit-time installation coordinate node shutdown")
 check(!UnattendedDecision.mayStopForUpdate(ownProcess: false, attached: false, daemonPresent: true,

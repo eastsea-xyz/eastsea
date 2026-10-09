@@ -75,6 +75,12 @@ check(approved.manifest.version == "0.7.4" && approved.manifest.build == "74", "
 check(approved.installAfterHeight == readyHeight, "install barrier derives from certified publication height")
 check(approved.artifactSources.count == 3, "GitHub, webseed and peer are fetch candidates")
 
+let inflatedDiscovery = try fixture(announcementChanges: ["install_after_height": UInt64.max,
+    "restart_slot_height": UInt64.max])
+let independentlyReady = try policy(inflatedDiscovery)
+check(independentlyReady.installAfterHeight == readyHeight,
+    "untrusted discovery heights cannot postpone a certified signed release")
+
 // A maximum-sized valid manifest can expand when nested as an escaped JSON
 // string. Bound the raw payloads independently of their discovery envelope.
 let padding = Data(String(repeating: "\t", count: 16_384 - approvedFixture.0.manifestData.count).utf8)

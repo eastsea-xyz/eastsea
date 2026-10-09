@@ -469,6 +469,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if status.releaseJson != "null" { updates.approvalIssue = ChainReleaseFailure.forgedEntry.sentence }
             return
         }
+        guard UpdateChannel.isNewerBuild(announcement.build,
+            than: Bundle.main.infoDictionary?["CFBundleVersion"] as? String) else { return }
         // Sparkle retains its driver through a held install and cannot start
         // a second session. Finish this immutable approved item safely; the
         // relaunched app then learns the newer announcement from chain status.
@@ -480,10 +482,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // check, then waits until its announced barrier before trying again.
         if releaseAttemptIdentity == announcement.identity,
            let attempted = releaseAttemptHeight,
-           status.height < announcement.installAfterHeight || attempted == status.height { return }
+           status.height < (updates.pendingRelease?.installAfterHeight ?? 0) || attempted == status.height { return }
+        if releaseAttemptIdentity == announcement.identity,
+           tracker.state.failedCause == .network, !tracker.retryDue() { return }
         releaseAttemptIdentity = announcement.identity
         releaseAttemptHeight = status.height
         releasePreparing = true
+        // prepare revokes a superseded item's origin even if the new fetch fails.
+        preparedChainRelease = nil
+        updates.pendingRelease = nil
         releaseGate.prepare(announcement: announcement, validators: model?.validators ?? 0) { [weak self] prepared, pending, issue in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -492,7 +499,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       self.model?.status?.chainId == trust.chainId else { return }
                 self.updates.pendingRelease = pending
                 self.updates.approvalIssue = issue
-                guard let prepared else { return }
+                guard let prepared else {
+                    if issue == ChainReleaseFailure.unavailable.sentence {
+                        self.tracker.found(key: announcement.identity, version: announcement.version, build: announcement.build)
+                        self.tracker.aborted(networkError: true)
+                        self.syncUpdateNotice()
+                    }
+                    return
+                }
                 self.preparedChainRelease = prepared
                 self.updater.updater.checkForUpdatesInBackground()
             }

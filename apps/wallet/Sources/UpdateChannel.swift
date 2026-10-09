@@ -23,6 +23,13 @@ enum UpdateChannel {
     }
 
     #if os(macOS)
+    /// Release manifests use monotonically increasing decimal Sparkle builds.
+    /// Ignore an installed announcement without disturbing its health window.
+    static func isNewerBuild(_ build: String, than runningBuild: String?) -> Bool {
+        guard let runningBuild, let current = UInt64(runningBuild), let proposed = UInt64(build) else { return true }
+        return proposed > current
+    }
+
     /// Only a bundled legacy trust decision enables timed feed discovery.
     /// A failed RPC or a malformed new-chain pin can never enable the timer.
     static func pollsForDiscovery(trust: ReleaseTrust?, activeChainId: UInt64? = nil) -> Bool {

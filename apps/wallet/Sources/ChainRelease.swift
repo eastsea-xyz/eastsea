@@ -29,7 +29,7 @@ struct ChainReleaseAnnouncement: Decodable {
     var manifestData: Data { Data(manifest.utf8) }
     var signaturesData: Data { Data(signatures.utf8) }
     var identity: String {
-        "\(chainId)|\(logAddress.lowercased())|\(index)|\(manifestHash.lowercased())|\(archiveSha256.lowercased())|\(signaturesHash.lowercased())|\(installAfterHeight)|\(restartSlotHeight ?? 0)"
+        "\(chainId)|\(logAddress.lowercased())|\(index)|\(manifestHash.lowercased())|\(archiveSha256.lowercased())|\(signaturesHash.lowercased())"
     }
 
     static func parse(json: String) -> ChainReleaseAnnouncement? {
@@ -116,19 +116,23 @@ enum ChainReleasePolicy {
               count >= (manifest.emergency ? ReleaseTrust.emergencyThreshold : ReleaseTrust.threshold) else {
             throw ChainReleaseFailure.insufficientApprovals
         }
-        // An unauthenticated status response cannot shorten either wait.
-        // New chain slots use one-second blocks, including emergency releases.
-        let minimumHeight = proof.publishedBlock.addingReportingOverflow(ReleaseApproval.waitSeconds)
+        // Only certified publication and signed manifest fields set the wait.
+        // An RPC hint may neither shorten it nor postpone an approved release.
+        let barrier = try installAfterHeight(proof: proof, manifest: manifest)
         let minimumTime = proof.publishedAt.addingReportingOverflow(ReleaseApproval.waitSeconds)
-        guard !minimumHeight.overflow, !minimumTime.overflow else { throw ChainReleaseFailure.forgedEntry }
-        let barrier = max(max(minimumHeight.partialValue, announcement.installAfterHeight),
-            max(announcement.restartSlotHeight ?? 0, max(manifest.installAfterHeight ?? 0, manifest.restartSlotHeight ?? 0)))
+        guard !minimumTime.overflow else { throw ChainReleaseFailure.forgedEntry }
         guard proof.stateHeight >= barrier, proof.certifiedBlock > barrier,
               proof.certifiedTimestampMs / 1_000 >= minimumTime.partialValue else {
             throw ChainReleaseFailure.beforeSlot
         }
         return VerifiedChainRelease(announcement: announcement, manifest: manifest, artifact: artifact,
             artifactSources: sources, proof: proof, installAfterHeight: barrier)
+    }
+
+    static func installAfterHeight(proof: ReleaseProof, manifest: ReleaseManifest) throws -> UInt64 {
+        let minimum = proof.publishedBlock.addingReportingOverflow(ReleaseApproval.waitSeconds)
+        guard !minimum.overflow else { throw ChainReleaseFailure.forgedEntry }
+        return max(minimum.partialValue, max(manifest.installAfterHeight ?? 0, manifest.restartSlotHeight ?? 0))
     }
 
     static func artifactSources(_ artifact: ReleaseManifest.Artifact, version: String) throws -> [URL] {

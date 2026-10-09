@@ -977,8 +977,10 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // Discovery bytes were checked against pinned builder keys
                 // and a finalized parent-state commitment. Wallets still
                 // independently prove the entry with verified_release.
-                "release": g.release_watcher.status(g.cfg.chain_id, f.height,
-                    crate::release::restart_slot(&g, None, unix_millis())),
+                "release": if g.release_watcher.pin.is_some() {
+                    g.release_watcher.status(g.cfg.chain_id, f.height,
+                        crate::release::restart_slot(&g, None, unix_millis()))
+                } else { Value::Null },
                 // The free registration lane (G2): wallets see it and register
                 // without needing a balance for a paid contract call.
                 "free_registration": aether_rewards::enabled(&f.state),

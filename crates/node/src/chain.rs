@@ -2709,10 +2709,12 @@ impl Chain {
         };
         // The next finalized header certifies its parent's post-state. Event
         // bytes from this block remain discovery until that anchor exists.
-        if previous.height.checked_add(1) == Some(exec.height) && payload.parent_state_root == previous.state.root() {
-            release_watcher.certify(&previous.state, chain_id, previous.height, block.timestamp);
+        if release_watcher.pin.is_some() {
+            if previous.height.checked_add(1) == Some(exec.height) && payload.parent_state_root == previous.state.root() {
+                release_watcher.certify(&previous.state, chain_id, previous.height, block.timestamp);
+            }
+            release_watcher.discover(&exec.receipts, &exec.state, chain_id, exec.height);
         }
-        release_watcher.discover(&exec.receipts, &exec.state, chain_id, exec.height);
         let release_cache = release_watcher.cache_if_dirty();
         let mut upgrade_notices = self.lock().upgrade_notices.clone();
         upgrade_notices.retain(|s| s.upgrade.activate_at > exec.height);

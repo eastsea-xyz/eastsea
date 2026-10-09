@@ -22,6 +22,7 @@ struct PendingRelease {
     let build: String
     let fingerprint: String
     let publishedBlock: UInt64
+    let installAfterHeight: UInt64
     let availableAt: Date?
     let emergency: Bool
 }
@@ -41,6 +42,7 @@ final class ReleaseUpdateGate {
         let value: PreparedChainRelease
         let release: VerifiedChainRelease
         let artifact: URL
+        let artifactIdentity: ReleaseArtifact.FileIdentity
         let server: ReleaseFeedServer
     }
 
@@ -93,7 +95,7 @@ final class ReleaseUpdateGate {
         if trust.legacy { return UpdateChannel.pollsForDiscovery(trust: trust) }
         guard let state = lock.withLock({ prepared }),
               Self.trackerKey(item) == Self.trackerKey(state.value.item) else { return false }
-        return ReleaseArtifact.valid(state.artifact, release: state.release) && hasPreparedApproval(for: item)
+        return ReleaseArtifact.identity(state.artifact) == state.artifactIdentity && hasPreparedApproval(for: item)
     }
 
     /// Compatibility for the existing Sparkle delegate. A remote appcast can
@@ -139,6 +141,7 @@ final class ReleaseUpdateGate {
                 let release = try ChainReleasePolicy.verify(announcement: announcement, trust: trust, proof: freshProof)
                 let artifact = try await ReleaseArtifact.acquire(release, cacheDirectory: self.cacheDirectory, fetch: self.fetch)
                 try Task.checkCancellation()
+                guard let artifactIdentity = ReleaseArtifact.identity(artifact) else { throw ChainReleaseFailure.hashMismatch }
                 let origin = try ReleaseFeedServer(release: release, artifact: artifact)
                 server = origin
                 let feedURL = try await origin.start()
@@ -152,7 +155,8 @@ final class ReleaseUpdateGate {
                     guard self.requestedIdentity == identity, !Task.isCancelled,
                           self.chainId() == trust.chainId else { return false }
                     self.prepared?.server.shutdown()
-                    self.prepared = Prepared(value: value, release: release, artifact: artifact, server: origin)
+                    self.prepared = Prepared(value: value, release: release, artifact: artifact,
+                        artifactIdentity: artifactIdentity, server: origin)
                     return true
                 }
                 guard accepted else { throw CancellationError() }
@@ -162,7 +166,7 @@ final class ReleaseUpdateGate {
                 DispatchQueue.main.async { finished(nil, nil, nil) }
             } catch {
                 server?.shutdown()
-                let failure = (error as? ChainReleaseFailure) ?? .forgedEntry
+                let failure = Self.failure(error)
                 let pending = failure == .beforeSlot ? proof.map { Self.pending(announcement, proof: $0) } : nil
                 DispatchQueue.main.async { finished(nil, pending, failure.sentence) }
             }
@@ -187,13 +191,20 @@ final class ReleaseUpdateGate {
                 _ = try ChainReleasePolicy.verify(announcement: state.release.announcement, trust: trust, proof: proof)
                 guard ReleaseArtifact.valid(state.artifact, release: state.release) else { return .hashMismatch }
                 return nil
-            } catch { return (error as? ChainReleaseFailure) ?? .forgedEntry }
+            } catch { return Self.failure(error) }
         }.value
         guard chainId() == trust.chainId,
               lock.withLock({ prepared?.value.identity == state.value.identity }) else {
             return ChainReleaseFailure.forgedEntry.sentence
         }
         return result?.sentence
+    }
+
+    private static func failure(_ error: Error) -> ChainReleaseFailure {
+        if let failure = error as? ChainReleaseFailure { return failure }
+        if let walletError = error as? WalletError, case .Network = walletError { return .unavailable }
+        if error is URLError { return .unavailable }
+        return .forgedEntry
     }
 
     private static func verifiedProof(_ announcement: ChainReleaseAnnouncement, _ trust: ReleaseTrust,
@@ -208,8 +219,11 @@ final class ReleaseUpdateGate {
 
     private static func pending(_ announcement: ChainReleaseAnnouncement, proof: ReleaseProof) -> PendingRelease {
         let until = proof.publishedAt.addingReportingOverflow(ReleaseApproval.waitSeconds)
+        let manifest = try? JSONDecoder().decode(ReleaseManifest.self, from: announcement.manifestData)
+        let height = manifest.flatMap { try? ChainReleasePolicy.installAfterHeight(proof: proof, manifest: $0) }
         return PendingRelease(version: announcement.version, build: announcement.build,
             fingerprint: proof.archiveSha256, publishedBlock: proof.publishedBlock,
+            installAfterHeight: height ?? UInt64.max,
             availableAt: until.overflow ? nil : Date(timeIntervalSince1970: TimeInterval(until.partialValue)),
             emergency: proof.emergency)
     }

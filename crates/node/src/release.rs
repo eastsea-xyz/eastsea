@@ -558,7 +558,7 @@ pub(crate) fn restart_slot(g: &crate::chain::Inner, key: Option<&str>, now_ms: u
             .ok()
         })
         .collect::<BTreeSet<_>>();
-    let distinct_proposers = proposers.iter().filter(|p| active.contains(p)).count();
+    let distinct_proposers = proposers.iter().filter(|p| active.contains(*p)).count();
     let slot_end_height = (height / SLOT_BLOCKS)
         .saturating_add(1)
         .saturating_mul(SLOT_BLOCKS);

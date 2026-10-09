@@ -5,6 +5,7 @@ import Sparkle
 
 // Only the production default refers to the FFI bridge. This standalone
 // fixture supplies inert symbols and injects its independently verified proof.
+enum WalletError: Error { case Network(message: String), Verification(message: String) }
 func configuredChainId() -> UInt64 { 9_001 }
 func verifiedRelease(contract: String, codeHash: String, index: UInt64, validators: UInt32) throws -> ReleaseProof {
     fatalError("fixture must use its injected verifier")
@@ -111,16 +112,21 @@ var currentProof = approved.1
 var fetches = 0
 var activeChainId: UInt64 = 9_001
 var switchChainDuringVerify = false
+var sourceOffline = false
+var proofOffline = false
 let gate = ReleaseUpdateGate(trust: trust, chainId: { activeChainId }, verify: { _, _, _ in
+    if proofOffline { throw WalletError.Network(message: "fixture is offline") }
     if switchChainDuringVerify { activeChainId = 9_002 }
     return currentProof
 }, cacheDirectory: root) { _, destination in
     fetches += 1
+    if sourceOffline { throw URLError(.notConnectedToInternet) }
     try archive.write(to: destination)
 }
 let result = await prepared(gate, approved.0)
 guard let item = result.0 else { fatalError("approved release failed: \(result.2 ?? "missing item")") }
-check(result.2 == nil && result.1?.version == "0.7.4", "approved release is silent")
+check(result.2 == nil && result.1?.version == "0.7.4" && result.1?.installAfterHeight == height,
+    "approved release is silent and its pending height comes from the proof")
 check(fetches == 1 && item.appcastURL.host == "127.0.0.1", "release event fetches once and binds loopback")
 check(item.item.versionString == "74" && item.item.displayVersionString == "0.7.4", "real SUAppcastItem built from manifest")
 check(gate.mayProceed(item.item), "real Sparkle handoff passes only verified item")
@@ -196,6 +202,18 @@ let approvalBeforeSuperseding = await gate.validateForInstall(item: item.item, v
 check(approvalBeforeSuperseding == nil, "old release was approved before asynchronous preparation")
 let next = try fixture(version: "0.7.5", index: 1)
 currentProof = next.1
+proofOffline = true
+let unavailableProof = await prepared(gate, next.0)
+check(unavailableProof.0 == nil && unavailableProof.2 == ChainReleaseFailure.unavailable.sentence,
+    "a transient proof transport failure remains retryable without installing")
+proofOffline = false
+try FileManager.default.removeItem(at: cache)
+sourceOffline = true
+let failedReplacement = await prepared(gate, next.0)
+check(failedReplacement.0 == nil && failedReplacement.2 == ChainReleaseFailure.unavailable.sentence
+    && !gate.hasPreparedApproval(for: item.item),
+    "failed supersession revokes the old feed and remains eligible for a transport retry")
+sourceOffline = false
 let replacement = await prepared(gate, next.0)
 guard let replacementItem = replacement.0 else { fatalError("new approved entry must prepare") }
 check(!gate.mayProceed(item.item) && gate.mayProceed(replacementItem.item), "superseded item loses permission")

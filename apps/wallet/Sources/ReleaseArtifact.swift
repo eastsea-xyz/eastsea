@@ -7,6 +7,26 @@ import Foundation
 enum ReleaseArtifact {
     typealias Fetch = (URL, URL) async throws -> Void
 
+    struct FileIdentity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+        let size: UInt64
+        let modified: Date
+    }
+
+    /// A cheap change check for Sparkle's synchronous callback. Full hashing
+    /// stays in asynchronous preparation and immediately before installation.
+    static func identity(_ file: URL) -> FileIdentity? {
+        guard let info = try? FileManager.default.attributesOfItem(atPath: file.path),
+              info[.type] as? FileAttributeType == .typeRegular,
+              let device = info[.systemNumber] as? NSNumber,
+              let inode = info[.systemFileNumber] as? NSNumber,
+              let size = info[.size] as? NSNumber,
+              let modified = info[.modificationDate] as? Date else { return nil }
+        return FileIdentity(device: device.uint64Value, inode: inode.uint64Value,
+            size: size.uint64Value, modified: modified)
+    }
+
     static func acquire(_ release: VerifiedChainRelease, cacheDirectory: URL,
                         fetch: Fetch = download) async throws -> URL {
         let manager = FileManager.default

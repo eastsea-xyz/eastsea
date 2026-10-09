@@ -10,7 +10,7 @@ struct NodeStopRow: View {
     var compact = false
 
     var body: some View {
-        let c = reason.copy(ko: HealthCheck.korean)
+        let c = reason.copy()
         VStack(alignment: .leading, spacing: 6) {
             Label(c.title, systemImage: reason.isIncident ? "exclamationmark.triangle.fill" : "pause.circle")
                 .font(compact ? .aeCaption.weight(.semibold) : .aeBody.weight(.semibold))
@@ -22,6 +22,11 @@ struct NodeStopRow: View {
             if let action = c.action, let label = c.actionLabel {
                 Button(label) { node.perform(action) }
                     .controlSize(compact ? .small : .regular)
+                    .disabled(node.keyRebindInProgress)
+            }
+            if reason == .keyElsewhere, let error = node.keyRebindError {
+                Text(error).font(compact ? .aeCaption : .aeFootnote).foregroundStyle(Color.warn)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -53,7 +58,6 @@ struct BlockDataSection: View {
     @State private var showArchiveInfo = false
     @State private var confirmArchiveOff = false
 
-    private var ko: Bool { HealthCheck.korean }
 
     private var placeLine: String {
         if node.chainDataPath.isEmpty {
@@ -125,10 +129,9 @@ struct ArchiveRequirementsSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        let ko = HealthCheck.korean
         VStack(alignment: .leading, spacing: 12) {
             Text(String(localized: "Keep the full history?")).font(.aeHeadline)
-            ForEach(ArchiveRequirements(height: height).lines(ko: ko), id: \.self) { line in
+            ForEach(ArchiveRequirements(height: height).lines(), id: \.self) { line in
                 Label(line, systemImage: "circle.fill").labelStyle(BulletLabel())
                     .font(.aeBody).fixedSize(horizontal: false, vertical: true)
             }

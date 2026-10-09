@@ -3,8 +3,8 @@
 //! give one, the compiled-in program of their chain when they predate the RPC,
 //! and a failure (never a guess) otherwise.
 
+use aether_test_support::Port;
 use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -12,9 +12,11 @@ const OLD_7780: &str = "3e9c897628c91fc1bbbf977a1a05d6b5d53ae4cd69038fad5abe7106
 
 /// A JSON-RPC endpoint that answers every request with `body`.
 fn serve(body: &'static str) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = Port::reserve().expect("reserve validator-program RPC port");
+    let listener = port.bind_tcp().unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
+        let _port = port;
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let mut buf = [0u8; 4096];
@@ -81,9 +83,8 @@ fn an_old_validator_of_an_unpinned_chain_or_no_answer_is_a_failure() {
     assert!(program.is_empty());
     assert!(stderr.contains("method not found"), "{stderr}");
     // Nobody listening: a failure too.
-    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", closed.local_addr().unwrap());
-    drop(closed);
+    let closed = Port::reserve().expect("reserve unreachable RPC port");
+    let url = format!("http://{}", closed.addr());
     let (ok, program, _) = ask(7780, &url);
     assert!(!ok, "an unreachable network must not read as the 7780 pin ({program})");
 }

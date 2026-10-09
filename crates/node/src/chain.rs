@@ -2940,6 +2940,9 @@ impl Chain {
                 g.proposal = None;
             }
             keep(&g.store, POOL, &g.pool);
+            if let Some((draw, pool)) = &g.pool {
+                crate::rotation::log_draw_pool(*draw, pool.len(), crate::rotation::open_seats_at(&g, exec.height));
+            }
         }
         // With the draw's seed on chain, everyone draws the same next voting
         // set. Node-rewards networks committed it with the block that carries
@@ -3010,7 +3013,7 @@ impl Chain {
             } else {
                 "proof"
             };
-            let record = serde_json::json!({ "kind": kind, "proven": proven, "amount": amount, "height": exec.height, "timestamp_ms": exec.timestamp * 1_000 });
+            let record = serde_json::json!({ "kind": kind, "proven": proven, "amount": amount, "height": exec.height, "timestamp_ms": exec.timestamp });
             if let Some(Err(e)) = g.store.as_ref().map(|s| {
                 s.put_reward(
                     &prover.0 .0,
@@ -3934,6 +3937,41 @@ mod pool_tests {
             group: 0,
             max_committee: crate::rotation::GROW_UNTIL,
         }
+    }
+
+    #[test]
+    fn finalized_reward_records_keep_the_block_timestamp_in_milliseconds() {
+        let dir = std::env::temp_dir().join(format!("aether-reward-timestamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("state.redb")).unwrap();
+        let config = cfg(vec![]);
+        let (chain, genesis) = Chain::open(config.clone(), store).unwrap();
+        let parent = chain.get(&genesis.digest()).unwrap();
+        let (block, exec) = build(&chain, &parent, &genesis, vec![]);
+        let prover = Address::repeat_byte(0xc1);
+        // Supply accepted payouts at the finalized-recording boundary; this
+        // tests stored reward metadata without generating a cryptographic proof.
+        let mut paid = (*exec).clone();
+        paid.payouts = vec![(0, prover, U256::from(5)), (exec.height, prover, U256::from(7))];
+        chain.lock().executed.insert(block.digest(), Arc::new(paid));
+        chain.finalize(&block).unwrap();
+        let rows = chain.rewards(&prover);
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert_eq!(row["timestamp_ms"], block.timestamp, "reward time uses the certified block's millisecond unit");
+            assert_eq!(row["height"], exec.height);
+        }
+        assert!(rows.iter().any(|row| row["kind"] == "proof"));
+        assert!(rows.iter().any(|row| row["kind"] == "node"));
+        drop(chain);
+        let (reopened, _) = Chain::open(config, Store::open(&dir.join("state.redb")).unwrap()).unwrap();
+        let page = reopened.rewards_page(&prover, None, 10).unwrap();
+        assert_eq!(page["total"], 2);
+        for row in page["rewards"].as_array().unwrap() {
+            assert_eq!(row["timestamp_ms"], block.timestamp, "persisted reward pages preserve milliseconds after restart");
+        }
+        drop(reopened);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

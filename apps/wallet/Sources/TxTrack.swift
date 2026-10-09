@@ -36,10 +36,9 @@ enum TxTrack {
     }
 
     /// What a not-included row and callback say: not a permanent failure.
-    /// In the app's language (its bundle localization), like every row sentence.
-    static var notIncludedNote: String {
-        (Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false)
-            ? "처리되지 않았어요 (아직 체인에 기록되지 않음)"
-            : "Not processed (not on chain yet)"
+    static func notIncludedNote(locale: Locale = .current, bundle: Bundle = .main) -> String {
+        String(localized: "Not processed (not on chain yet)", bundle: bundle, locale: locale)
     }
+
+    static var notIncludedNote: String { notIncludedNote() }
 }

@@ -105,7 +105,9 @@ prev_terms_source() {
 
 release() {
   local dmg=$1 tag=$2 repo=$3 prev_tag work
-  work=$PWD/tmp/identity-gate
+  # macOS per-user temp: hdiutil refused (EPERM, 2026-10-08) to mount the
+  # downloaded previous DMG on a mountpoint in the external workspace volume.
+  work="$(getconf DARWIN_USER_TEMP_DIR)eastsea-identity-gate"
   rm -rf "$work"; mkdir -p "$work/new" "$work/prev" "$work/dl"
   prev_tag=${PREV_RELEASE_TAG:-}
   if [ -z "$prev_tag" ]; then

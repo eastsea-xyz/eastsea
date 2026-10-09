@@ -32,7 +32,7 @@ struct AetherWalletApp: App {
                 .environmentObject(earnings)
                 .onAppear {
                     appDelegate.start(node: node, model: model, unattended: unattended)
-                    earnings.attach(node, operatorAddress: { model.address })
+                    earnings.attach(node, operatorAddress: { model.payoutAddress })
                     NSApp.setActivationPolicy(.regular)
                     #if DEBUG
                     if ResizeBenchmark.on { ResizeBenchmark.run() }
@@ -95,7 +95,7 @@ struct AetherWalletApp: App {
                 .environmentObject(appDelegate.health)
                 .onAppear {
                     appDelegate.start(node: node, model: model, unattended: unattended)
-                    earnings.attach(node, operatorAddress: { model.address })
+                    earnings.attach(node, operatorAddress: { model.payoutAddress })
                 }
         } label: {
             Image(systemName: node.prover?.proving != nil ? "cube.transparent.fill" : "cube.transparent")
@@ -216,6 +216,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let check: () -> Void = { [weak self] in self?.checkKnownRelease() }
         node.onUpgradeNeeded = check
         node.onUpdateMomentChanged = { [weak self] in self?.installIfSafe() }
+        node.authorizeKeyRebind = { [weak model] address, typed, directory in
+            guard let model else { throw NodeKeyRebind.Refusal.ownerKeyUnavailable }
+            return try await model.authorizeNodeKeyRebind(validatorAddress: address, typedAddress: typed,
+                                                         dataDirectory: directory)
+        }
         model.onOutdated = check
         updateNetworkWatch = model.$networkChainId.sink { [weak self] chain in
             MainActor.assumeIsolated {

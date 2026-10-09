@@ -154,6 +154,30 @@ mkdir -p "$PWD/tmp"
 rollback_test=$(mktemp -d "$PWD/tmp/package-rollback-test.XXXXXX")
 trap 'rm -rf "${rollback_test:?}"' EXIT
 mkdir -p "$rollback_test/scripts" "$rollback_test/bin" "$rollback_test/tmp" "$rollback_test/out"
+# Exercise the actual contamination matcher with enough trailing strings to
+# expose an early-exit grep/SIGPIPE false negative under build-wallet's pipefail.
+python3 - scripts/build-wallet.sh "$rollback_test" <<'PY'
+from pathlib import Path
+import re, sys
+source = Path(sys.argv[1]).read_text()
+root = Path(sys.argv[2])
+matcher = re.search(r'^\s*\|\| (strings target/release/aether .*); then$', source, re.M)
+assert matcher is not None, 'release contamination matcher is missing'
+expression = matcher.group(1).replace('target/release/aether', '"$1"')
+(root / 'contamination-check.sh').write_text('#!/bin/bash\nset -euo pipefail\n' + expression + '\n')
+(root / 'contaminated-code').write_bytes(b'AETHER_TEST_INTERNAL_KEY_DIR\n' + b'fixture-padding\n' * 100000)
+(root / 'ordinary-code').write_text('ordinary release code\n')
+PY
+if /bin/bash "$rollback_test/contamination-check.sh" "$rollback_test/contaminated-code"; then
+  pass "release contamination matcher detects fixture code without a pipefail/SIGPIPE false negative"
+else
+  fail "release contamination matcher missed fixture code under pipefail"
+fi
+if /bin/bash "$rollback_test/contamination-check.sh" "$rollback_test/ordinary-code"; then
+  fail "release contamination matcher rejected ordinary code"
+else
+  pass "release contamination matcher accepts ordinary code"
+fi
 cp "${AETHER_TEST_PACKAGE_MAC:-scripts/package-mac.sh}" "$rollback_test/scripts/package-mac.sh"
 if [ -f scripts/package-rollback.sh ]; then cp scripts/package-rollback.sh "$rollback_test/scripts/"; fi
 python3 - "$rollback_test" <<'PY'

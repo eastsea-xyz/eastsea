@@ -60,6 +60,8 @@ pub fn registered_identity(dir: &Path) -> bool {
         crate::roster::KEY_FILE,
         crate::roster::PUBLIC_FILE,
         ACCOUNT_FILE,
+        crate::key_binding::BINDING_FILE,
+        crate::roster::CREATION_FILE,
         "network.json",
         "threshold.json",
     ];
@@ -99,29 +101,10 @@ impl CandidateKeys {
     /// identity is refused, not replaced (red team #5): the chain knows the
     /// registered key, and a fresh one would silently vote as someone else.
     pub fn load_or_create(dir: &Path) -> Result<Self, String> {
-        let (keys, first_install) = match LocalKeys::load(dir) {
-            Ok(k) => (k, false),
-            Err(e) => {
-                if registered_identity(dir) {
-                    return Err(format!(
-                        "{e}; this Mac already had an identity, so no new key is generated. \
-                         Voting stays off until {}/{} is restored from a backup (or this Mac \
-                         is unregistered and a new identity is registered on purpose)",
-                        dir.display(),
-                        crate::roster::KEY_FILE
-                    ));
-                }
-                let k = LocalKeys::generate();
-                k.save(dir)?;
-                (k, true)
-            }
-        };
+        let keys = LocalKeys::load_or_create_candidate(dir)?;
         let account_path = dir.join(ACCOUNT_FILE);
         if !account_path.exists() {
-            if !first_install {
-                return Err(format!("{} is missing from an existing identity; restore it from a backup instead of replacing it", account_path.display()));
-            }
-            Faucet::generate(&account_path)?;
+            return Err(format!("{} is missing from an existing identity; restore it from a backup instead of replacing it", account_path.display()));
         }
         let candidate = CandidateKeys { keys, account: Faucet::load(&account_path)?, dir: dir.to_path_buf() };
         // This sibling survives deletion of the entire node data directory.
@@ -133,10 +116,15 @@ impl CandidateKeys {
             Ok(saved) if saved == fingerprint => {}
             Ok(_) => return Err(format!("{} does not match this Mac's original identity; restore the original keys", marker.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if let Err(write) = crate::atomic::create(&marker, fingerprint.as_bytes(), 0o600) {
-                    if std::fs::read_to_string(&marker).ok().as_deref() != Some(fingerprint.as_str()) {
-                        return Err(format!("{}: {write}", marker.display()));
+                match crate::atomic::create_once(&marker, fingerprint.as_bytes(), 0o600) {
+                    Ok(()) => {}
+                    Err(crate::atomic::CreateError::AlreadyExists) => {
+                        if std::fs::read_to_string(&marker).ok().as_deref() != Some(fingerprint.as_str()) {
+                            return Err(format!("{} conflicts with this identity", marker.display()));
+                        }
+                        crate::atomic::sync_parent(&marker)?;
                     }
+                    Err(e) => return Err(format!("{}: {e}", marker.display())),
                 }
             }
             Err(e) => return Err(format!("{}: {e}", marker.display())),
@@ -158,12 +146,14 @@ impl CandidateKeys {
 
     /// The voting key's signature asking the registrar to register it for `operator`.
     pub fn ownership(&self, chain_id: u64, operator: Address) -> Vec<u8> {
+        self.keys.check_binding();
         let msg = registry::attestation_message(chain_id, operator, self.validator_key(), self.node_id(), self.beaconer());
         self.keys.signer.sign(crate::devicecheck::OWNERSHIP_NAMESPACE, &msg).encode().to_vec()
     }
 
     /// The voting key's request to be re-attested for `period`.
     pub fn reattest_request(&self, chain_id: u64, period: u64) -> Vec<u8> {
+        self.keys.check_binding();
         let msg = beacons::reattest_message(chain_id, &self.validator_key(), period);
         self.keys.signer.sign(crate::devicecheck::OWNERSHIP_NAMESPACE, &msg).encode().to_vec()
     }
@@ -271,7 +261,7 @@ async fn answer_slots(chain: &Chain, outbox: &Outbox, keys: &CandidateKeys, st: 
                 }
             }
         };
-        let answer = crate::beacons::sign(&keys.keys.signer, chain_id, c.index, &due, attest);
+        let answer = crate::beacons::sign_bound(&keys.keys, chain_id, c.index, &due, attest);
         match outbox.send_answer(chain, answer).await {
             Ok(()) => {
                 st.sent.insert((due.epoch, due.slot));
@@ -320,7 +310,7 @@ pub async fn beacon_loop(chain: Chain, outbox: Outbox, keys: CandidateKeys) {
                 if let Some(c) = registry::candidates(&state).into_iter().find(|c| c.validator_key == me) {
                     let on_chain = registry_v3::availability(&state, c.index).is_some_and(|(_, v)| v);
                     if on_chain != leaving {
-                        let signal = crate::beacons::sign_availability(&keys.keys.signer, cfg.chain_id, c.index, height + 1, leaving);
+                        let signal = crate::beacons::sign_availability_bound(&keys.keys, cfg.chain_id, c.index, height + 1, leaving);
                         if let Err(e) = outbox.send_answer(&chain, signal).await {
                             warn!(%e, leaving, "availability announcement not accepted");
                         }
@@ -477,7 +467,17 @@ mod tests {
         std::fs::write(data.join("node-account.key"), account).unwrap();
         assert_eq!(CandidateKeys::load_or_create(&data).unwrap().validator_key(), identity, "the original backup works");
         std::fs::remove_file(data.join(crate::roster::KEY_FILE)).unwrap();
-        crate::roster::LocalKeys::generate().save(&data).unwrap();
+        let refusal = crate::roster::LocalKeys::generate().save(&data).unwrap_err();
+        assert!(refusal.starts_with("key binding invalid:"),
+            "a different key on the same Mac is invalid identity, not proven hardware mismatch: {refusal}");
+        assert!(!data.join(crate::roster::KEY_FILE).exists());
+        // Restore a different backup with its own matching hardware binding:
+        // the sibling identity marker must still reject it on the same Mac.
+        let other = parent.join("another-identity");
+        crate::roster::LocalKeys::generate().save(&other).unwrap();
+        for name in [crate::roster::KEY_FILE, crate::key_binding::BINDING_FILE] {
+            std::fs::copy(other.join(name), data.join(name)).unwrap();
+        }
         let err = CandidateKeys::load_or_create(&data).expect_err("a different restored key is not the original");
         assert!(err.contains("original identity"), "{err}");
         let _ = std::fs::remove_dir_all(&parent);

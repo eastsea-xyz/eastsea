@@ -18,6 +18,7 @@ use aether_node::follow::{FinalityArchive, Upstream};
 use aether_node::prune::{self, Retention};
 use aether_node::rpc::{self, RpcState};
 use aether_node::store::Store;
+use aether_test_support::Port;
 use aether_state::mmr::ERA_LEN;
 use aether_types::{Address, Bytes, FeeVector, GasVector, TxEnvelope, U256};
 use commonware_consensus::types::{Round, View};
@@ -25,6 +26,9 @@ use commonware_cryptography::{ed25519, Digestible, Signer};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+#[path = "common/rpc.rs"]
+mod test_rpc;
 
 const CHAIN: u64 = 7_793;
 const GH_WEBSEED: &str = "https://github.com/pipln/eastsea-releases/releases/download/eras/~name~";
@@ -194,7 +198,7 @@ fn archive_node_exports_a_verifiable_set_and_pruned_peers_fetch_it() {
     let a = Node::reopen(&dir_a, blocks.clone(), nonce);
 
     // It exports: era files, manifests, torrents, an index.
-    let port = 22_000 + (std::process::id() % 20_000) as u16;
+    let port = Port::reserve().expect("reserve archive export RPC port");
     let http = format!("http://127.0.0.1:{port}");
     let args = ExportArgs {
         dir: out.clone(),
@@ -261,7 +265,7 @@ fn archive_node_exports_a_verifiable_set_and_pruned_peers_fetch_it() {
     // GET (a webseed).
     let rt = tokio::runtime::Runtime::new().unwrap();
     let st_a = rpc_state(a.chain.clone(), None);
-    rt.spawn(rpc::serve(std::net::SocketAddr::from(([127, 0, 0, 1], port)), st_a));
+    rt.spawn(test_rpc::serve(port, st_a));
     std::thread::sleep(std::time::Duration::from_millis(300));
     let name0 = era::file_name(0);
     let sealed0 = std::fs::read(dir_a.join("eras").join(&name0)).unwrap();

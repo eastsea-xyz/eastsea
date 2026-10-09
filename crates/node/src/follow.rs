@@ -8,11 +8,15 @@
 //! remote node; transactions they submit are forwarded upstream. Nothing a
 //! validator sends is trusted beyond the certificate.
 //!
-//! Catch-up: blocks are fetched in pipelined batches (many requests in flight,
-//! executed in order), and a Mac that slept for hours — more than
-//! `JUMP_BEHIND` blocks behind — jumps to the network's certified snapshot
-//! instead of replaying (checked against the certified block after it, as a
-//! checkpoint start is; the gap's blocks stay fetchable from era files).
+//! Catch-up: blocks are fetched in pipelined batches spread over every
+//! upstream (`spread`: a few requests in flight per validator, "server busy"
+//! waited out, block ranges where the validator serves them), executed in
+//! order. A Mac more than `JUMP_BEHIND` blocks behind jumps FIRST to the
+//! network's certified snapshot (checked against the certified block after
+//! it, as a checkpoint start is; the download is pinned to the validator that
+//! served the manifest and restarts when that snapshot moves on), and the
+//! gap's certified blocks are backfilled afterwards, newest first, in the
+//! background (`backfill`). Archive nodes never jump (audit 7 A7-1).
 //! `catch_up` runs the same machinery for a validator before it starts voting.
 
 use crate::block::Block;
@@ -28,8 +32,18 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 /// How far behind the network a node jumps to a certified snapshot instead of
-/// replaying (~30 min of 1 s blocks).
-pub const JUMP_BEHIND: u64 = 2_000;
+/// replaying (~5 min of 1 s blocks). The founder's rule (2026-10-07): a node
+/// that comes back far behind jumps first and backfills the gap after, so it
+/// is usable at the tip in minutes, not after hours of replay.
+pub const JUMP_BEHIND: u64 = 300;
+/// How many times one validator's snapshot download restarts on a fresh
+/// manifest after "snapshot moved on" before the next validator is tried.
+const SNAPSHOT_RESTARTS: usize = 3;
+/// How long the follower replays before trying a failed jump again (each try
+/// downloads a snapshot; one that fails every round only costs the replay).
+const JUMP_RETRY: Duration = Duration::from_secs(30);
+/// How long a validator whose snapshot is being built is waited for.
+const MANIFEST_WAITS: u32 = 30;
 /// A follower that cannot make verified progress for this long gives its
 /// supervisor a chance to rebuild the transport. This also covers a peer
 /// connection that never returns a height after a restart.
@@ -80,6 +94,10 @@ impl FinalityArchive {
         while g.len() > KEEP {
             g.pop_first();
         }
+    }
+
+    pub(crate) fn store(&self) -> Option<&crate::store::Store> {
+        self.store.as_deref()
     }
 
     pub fn get(&self, height: u64) -> Option<Value> {
@@ -314,6 +332,15 @@ impl Upstream {
                         false
                     }
                     Ok(None) => misses.fetch_add(1, Relaxed) + 1 >= 10,
+                    // A full validator is not a bad one (2026-10-07: every
+                    // busy answer rotated the shared connection, which moved
+                    // a snapshot download onto a validator with another
+                    // snapshot): keep it, the caller waits.
+                    Err(e) if crate::spread::is_busy(e) => false,
+                    // Nor is an older one: "method not found" (the prover's
+                    // `aether_proverProgram` on 7780, every 5 s) rotated the
+                    // shared connection under a snapshot download too.
+                    Err(e) if crate::spread::unknown_method(e) => false,
                     Err(_) => true,
                 };
                 if stale {
@@ -333,6 +360,58 @@ impl Upstream {
                 last
             }
         }
+    }
+
+    /// How many sources this upstream asks.
+    pub fn sources(&self) -> usize {
+        match self {
+            Upstream::Http(urls) => urls.len(),
+            Upstream::Iroh(c, _) => c.len(),
+        }
+    }
+
+    /// Requests one source may have in flight while catching up: iroh
+    /// validators admit 16 per peer (`aether_net`), so half of that; a
+    /// loopback HTTP source has no such gate.
+    pub fn per_source(&self) -> usize {
+        match self {
+            Upstream::Http(_) => 64,
+            Upstream::Iroh(..) => crate::spread::PER_SOURCE,
+        }
+    }
+
+    /// The source the shared calls are talking to now (where a download starts).
+    fn preferred(&self) -> usize {
+        match self {
+            Upstream::Http(_) => 0,
+            Upstream::Iroh(c, _) => c.preferred(),
+        }
+    }
+
+    /// A stable name for source `i` (its URL or node id).
+    pub fn source_key(&self, i: usize) -> String {
+        match self {
+            Upstream::Http(urls) => urls.get(i).cloned().unwrap_or_default(),
+            Upstream::Iroh(c, _) => c.node_key(i).unwrap_or_default(),
+        }
+    }
+
+    /// Ask source `i` alone — on its own connection for iroh, never moving the
+    /// shared one. A refusal ("server busy" included) is the answer; nothing
+    /// rotates. Catch-up spreads its requests with this (`spread`), and a
+    /// snapshot download pins every chunk to the source of its manifest.
+    pub async fn call_at(&self, i: usize, method: &str, params: Value) -> Result<Value, String> {
+        let answer = match self {
+            Upstream::Http(urls) => match urls.get(i) {
+                Some(url) => http_call(url, method, &params).await,
+                None => Err(format!("no source {i}")),
+            },
+            Upstream::Iroh(c, _) => c.call_at(i, method, params).await.map_err(|e| e.to_string()),
+        };
+        if answer.is_ok() {
+            crate::chain::tick();
+        }
+        answer
     }
 
     /// The first non-null answer (null when every source has none).
@@ -511,45 +590,112 @@ fn manifest_limits(v: &Value) -> Result<(u64, usize, String, usize), String> {
     Ok((height, size, want, chunk))
 }
 
-/// The upstream's snapshot, downloaded and checked against its BLAKE3
-/// (authenticity comes from the certified block after it, in `check`).
-/// `guard` runs with the advertised size before the first chunk is fetched:
-/// disk space, and the inbound memory budget against the worst-case
-/// decode/build peak. The chunks stream onto a workspace file under `dir`
-/// (never the whole snapshot in RAM) and are hash-checked incrementally.
-async fn download_with(
+/// Why a snapshot download from one source stopped.
+enum Stop {
+    /// That source's snapshot moved on mid-download: ask it again.
+    MovedOn(String),
+    /// That source cannot serve one now: try the next.
+    Source(String),
+}
+
+/// A source's manifest, waiting while it builds one (bounded).
+async fn manifest_at(upstream: &Upstream, i: usize) -> Result<Value, String> {
+    for _ in 0..MANIFEST_WAITS {
+        match crate::spread::call_patient(upstream, i, "aether_snapshot", &json!([])).await {
+            Err(e) if e.contains("already queued") || e.contains("already running") => {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            other => return other,
+        }
+    }
+    Err("the snapshot build did not finish".into())
+}
+
+/// One source's snapshot, every chunk from that same source (2026-10-07:
+/// chunks fetched through the shared, rotating connection landed on
+/// validators holding other snapshots — "snapshot moved on" every round).
+async fn download_from(
     upstream: &Upstream,
+    i: usize,
     dir: &std::path::Path,
+    above: Option<u64>,
     guard: &(dyn Fn(u64) -> Result<(), String> + Send + Sync),
-) -> Result<crate::snapshot::Snapshot, String> {
-    let v = upstream.first("aether_snapshot", json!([])).await?;
-    let (height, size, want, chunk) = manifest_limits(&v)?;
-    guard(size as u64)?;
+) -> Result<crate::snapshot::Snapshot, Stop> {
+    let v = manifest_at(upstream, i).await.map_err(Stop::Source)?;
+    if v.is_null() {
+        return Err(Stop::Source("no snapshot there".into()));
+    }
+    let (height, size, want, chunk) = manifest_limits(&v).map_err(Stop::Source)?;
+    // Too close to be worth a download: decided on the manifest, before any chunk.
+    if let Some(above) = above.filter(|a| height <= *a) {
+        return Err(Stop::Source(format!("the snapshot at {height} is not past {above}; replaying instead")));
+    }
+    // A smaller snapshot on another source may fit this host's budget.
+    guard(size as u64).map_err(Stop::Source)?;
     // The one stage whose work is not blocks: name it, so a frozen height
     // during the download reads as progress, not as a stall (red team #2).
     crate::chain::set_stage(Some("snapshot"));
     let bytes = download_streamed(dir, size, chunk, &want, |index, expected| async move {
-        let c = upstream
-            .first("aether_snapshotChunk", json!([height, index]))
-            .await?;
+        let c = crate::spread::call_patient(upstream, i, "aether_snapshotChunk", &json!([height, index])).await?;
         let data = decode_snapshot_chunk(&c, expected)?;
         crate::chain::tick();
         Ok::<Vec<u8>, String>(data)
     })
-    .await?;
-    let snap = crate::snapshot::Snapshot::from_bytes(&bytes)?;
+    .await
+    .map_err(|e| if e.contains("moved on") { Stop::MovedOn(e) } else { Stop::Source(e) })?;
+    let snap = crate::snapshot::Snapshot::from_bytes(&bytes).map_err(Stop::Source)?;
     if snap.summary.height != height {
-        return Err("snapshot height does not match".into());
+        return Err(Stop::Source("snapshot height does not match".into()));
     }
     Ok(snap)
+}
+
+/// The upstream's snapshot, downloaded and checked against its BLAKE3
+/// (authenticity comes from the certified block after it, in `check`).
+/// Every chunk comes from the source that served the manifest; when that
+/// source's snapshot moves on mid-download (a validator rebuilds every 120
+/// blocks when asked, and old validators serve only their current one), the
+/// download restarts there at the new height ([`SNAPSHOT_RESTARTS`] times),
+/// then moves to the next source. `above`: a snapshot at or below it is
+/// refused on its manifest (`None`: any). `guard` runs with the advertised size
+/// before the first chunk is fetched: disk space, and the inbound memory
+/// budget against the worst-case decode/build peak. The chunks stream onto a
+/// workspace file under `dir` (never the whole snapshot in RAM) and are
+/// hash-checked incrementally.
+async fn download_with(
+    upstream: &Upstream,
+    dir: &std::path::Path,
+    above: Option<u64>,
+    guard: &(dyn Fn(u64) -> Result<(), String> + Send + Sync),
+) -> Result<crate::snapshot::Snapshot, String> {
+    let n = upstream.sources();
+    let first = upstream.preferred();
+    let mut last = String::from("no upstream");
+    for k in 0..n {
+        let i = (first + k) % n;
+        for _ in 0..SNAPSHOT_RESTARTS {
+            match download_from(upstream, i, dir, above, guard).await {
+                Ok(snap) => return Ok(snap),
+                Err(Stop::MovedOn(e)) => {
+                    info!(source = i, %e, "the snapshot moved on mid-download; restarting at its new height");
+                    last = e;
+                }
+                Err(Stop::Source(e)) => {
+                    last = e;
+                    break;
+                }
+            }
+        }
+    }
+    Err(last)
 }
 
 /// [`download_with`] with the shipped guard: enough room for the recovery on
 /// the volume the database lives on (red team #7), and the measured inbound
 /// memory budget (A3-5) — a recently refused size is answered from the
 /// cooldown without re-measuring, so the loop cannot spin on one peer.
-async fn download(upstream: &Upstream, dir: &std::path::Path) -> Result<crate::snapshot::Snapshot, String> {
-    download_with(upstream, dir, &|size| {
+async fn download(upstream: &Upstream, dir: &std::path::Path, above: Option<u64>) -> Result<crate::snapshot::Snapshot, String> {
+    download_with(upstream, dir, above, &|size| {
         if refusal_blocks(last_refusal(), size, std::time::Instant::now()) {
             return Err(format!(
                 "snapshot of {size} bytes was already refused by the memory budget; replaying instead"
@@ -565,7 +711,7 @@ async fn download(upstream: &Upstream, dir: &std::path::Path) -> Result<crate::s
 /// Returns the snapshot height.
 pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::chain::ChainConfig, store: &crate::store::Store) -> Result<u64, String> {
     let dir = store.path().parent().unwrap_or_else(|| std::path::Path::new("."));
-    let snap = download(upstream, dir).await?;
+    let snap = download(upstream, dir, None).await?;
     let h = snap.summary.height;
     let next = wait_certified(upstream, set, h + 1).await?;
     let state = snap.check(&next, cfg, set.identity())?;
@@ -716,9 +862,9 @@ async fn wait_certified(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Resu
 /// jumped to.
 async fn jump(chain: &Chain, upstream: &Upstream, set: &ValidatorSet) -> Result<u64, String> {
     let store = chain.store().ok_or("no store to jump in")?;
-    let snap = download(upstream, store.path().parent().unwrap_or_else(|| std::path::Path::new("."))).await?;
-    let h = snap.summary.height;
     let ours = chain.finalized_height();
+    let snap = download(upstream, store.path().parent().unwrap_or_else(|| std::path::Path::new(".")), Some(ours + JUMP_BEHIND)).await?;
+    let h = snap.summary.height;
     if h <= ours + JUMP_BEHIND {
         return Err(format!(
             "snapshot at {h} is only {} blocks ahead of {ours}; replaying instead",
@@ -729,7 +875,9 @@ async fn jump(chain: &Chain, upstream: &Upstream, set: &ValidatorSet) -> Result<
     let state = snap.check(&next, &chain.cfg(), set.identity())?;
     // The old state's keys go with the swap, so the store ends up holding exactly the snapshot.
     let old: Vec<([u8; 32], [u8; 32])> = chain.lock().finalized.state.repo().entries().collect();
-    snap.install_over(&store, &state, old)?;
+    let gap = crate::backfill::merged(chain, ours + 1, h - 1);
+    let metadata = crate::backfill::encode(gap);
+    snap.install_over_with_meta(&store, &state, old, Some((crate::backfill::META, &metadata)))?;
     let (exec, summary) = snap.head(state);
     chain.adopt(exec, summary);
     chain.lock().upgrade_notices = snap.upgrade_notices;
@@ -823,6 +971,13 @@ struct AheadClaims {
     /// has now survived unsupported.
     claim: Option<(u64, u8)>,
     quarantined_until: Option<std::time::Instant>,
+    /// The same per-run evidence for jumps: no new jump attempt before this
+    /// (one failed jump costs [`JUMP_RETRY`] of replay, not a snapshot
+    /// download every round)…
+    jump_retry_at: Option<std::time::Instant>,
+    /// …and the last jump that succeeded (from, to), for the run loop to
+    /// backfill the heights it skipped.
+    jumped: Option<(u64, u64)>,
 }
 
 impl AheadClaims {
@@ -889,7 +1044,22 @@ pub async fn run(
     // One height per round while idle at the tip (as before); a full batch
     // while there is a backlog to fetch.
     let mut window = 1u64;
+    // The gap a jump skipped comes back in the background, newest first
+    // (`backfill`); an unfinished one resumes after a restart.
+    let mut backfilling: Option<Background> = None;
+    if !no_jump {
+        if let Some(gap) = crate::backfill::stored(&chain) {
+            backfilling = Some(spawn_backfill(&chain, &upstream, &set, &archive, gap));
+        }
+    }
     loop {
+        if claims.jumped.take().is_some() {
+            // The snapshot commit already folded in the unfinished plan.
+            drop(backfilling.take());
+            if let Some(gap) = crate::backfill::stored(&chain) {
+                backfilling = Some(spawn_backfill(&chain, &upstream, &set, &archive, gap));
+            }
+        }
         if !crate::resources::disk_ok() {
             // The disk guard has paused writes. Freeing space is recovery;
             // restarting the transport would only waste the restart budget.
@@ -983,6 +1153,26 @@ pub async fn run(
     }
 }
 
+fn spawn_backfill(
+    chain: &Chain,
+    upstream: &std::sync::Arc<Upstream>,
+    set: &ValidatorSet,
+    archive: &std::sync::Arc<FinalityArchive>,
+    gap: crate::backfill::Gap,
+) -> Background {
+    Background(tokio::spawn(crate::backfill::run(chain.clone(), upstream.clone(), set.clone(), archive.clone(), gap)))
+}
+
+/// A background task that ends with its owner: the follow loop's backfill
+/// never outlives the loop (a restarted loop resumes it from the store).
+struct Background(tokio::task::JoinHandle<u64>);
+
+impl Drop for Background {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// What a pending handoff that seats this Mac means for the follower.
 enum Hold {
     /// No handoff seats it: follow freely.
@@ -1060,9 +1250,12 @@ async fn advance(
         // source's real progress behind it.
         let net = claims.trusted(hint, ours, std::time::Instant::now());
         chain.lock().net_height = Some(net);
-        if allow_jump && net > ours + JUMP_BEHIND && adopted == 0 {
+        let may_jump = claims.jump_retry_at.is_none_or(|at| std::time::Instant::now() >= at);
+        if allow_jump && net > ours + JUMP_BEHIND && adopted == 0 && may_jump {
             match jump(chain, upstream, set).await {
                 Ok(to) => {
+                    claims.jump_retry_at = None;
+                    claims.jumped = Some((ours, to));
                     info!(from = ours, to, skipped = to - ours - 1, "jumped to a certified snapshot (the gap's blocks stay fetchable from era files)");
                     log_follow(chain, last_log);
                     chain.set_relaxed(false);
@@ -1073,7 +1266,8 @@ async fn advance(
                 }
                 Err(e) => {
                     crate::chain::set_stage(None);
-                    warn!(from = ours, %e, "could not jump to a certified snapshot; replaying instead")
+                    claims.jump_retry_at = std::time::Instant::now().checked_add(JUMP_RETRY);
+                    warn!(from = ours, %e, retry_in_s = JUMP_RETRY.as_secs(), "could not jump to a certified snapshot; replaying instead")
                 }
             }
         }
@@ -1131,58 +1325,75 @@ async fn pipeline(
     if to < from {
         return Ok(from - 1);
     }
-    let heights: Vec<u64> = (from..=to).collect();
-    let fetched = futures::future::join_all(heights.iter().map(|h| fetch(upstream, set, *h))).await;
+    // Spans dealt round-robin over every source, a few requests in flight
+    // per source (`spread`), adopted strictly in order as they arrive.
+    let n = upstream.sources().max(1);
+    let slots = crate::spread::Slots::new(n, upstream.per_source());
+    let slots = &slots;
+    let mut fetched = futures::stream::iter(crate::spread::spans(from, to).into_iter().enumerate())
+        .map(|(k, (a, b))| async move { (a, b, crate::spread::fetch_span(upstream, set, slots, k, a, b).await) })
+        .buffered(2 * n);
     let mut last = from - 1;
-    for (h, r) in heights.into_iter().zip(fetched) {
-        match r {
-            Ok(Some((block, proof))) => {
-                // A backlog replays without the per-block fsync (redb holds
-                // those commits until a durable one); the batch's last block
-                // commits durably and anchors it, so a crash mid-replay loses
-                // only the open batch — certified blocks, they replay again.
-                chain.set_relaxed(h != to);
-                match chain.finalize(&block) {
-                    Ok(()) => {
-                        if let Some(a) = archive {
-                            a.insert(h, proof);
-                        }
-                        last = h;
+    while let Some((a, b, r)) = fetched.next().await {
+        let blocks = match r {
+            Ok(blocks) => blocks,
+            // The source pruned this era (roadmap B4): replay it from an era file instead.
+            Err(e) if e.contains("pruned") => {
+                drop(fetched);
+                return match catch_up_era(chain, upstream, set, a).await {
+                    Ok(to) => {
+                        info!(from = a, to, "replayed a pruned era from its era file");
+                        Ok(to.max(last))
                     }
                     Err(e) => {
-                        // Storage is not a block that will not execute: say
-                        // what failed and let the caller heal the store
-                        // (2026-09-29: a full disk was logged as a bad block
-                        // and retried 288 times).
-                        if matches!(e, crate::chain::ChainError::Store(_)) {
-                            tracing::error!(height = h, ?e, "storage failed while committing a finalized block");
-                            return Err(format!("{STORE_FAILED}: {e:?}"));
-                        }
-                        warn!(
-                            height = h,
-                            ?e,
-                            "certified block did not execute to the same result; not adopting it"
-                        );
-                        return Ok(last);
+                        warn!(height = a, %e, "upstream pruned this era and it could not be fetched");
+                        Ok(last)
                     }
-                }
+                };
             }
-            Ok(None) => break,
-            // The source pruned this era (roadmap B4): replay it from an era file instead.
-            Err(e) if e.contains("pruned") => match catch_up_era(chain, upstream, set, h).await {
-                Ok(to) => {
-                    info!(from = h, to, "replayed a pruned era from its era file");
-                    return Ok(to.max(last));
-                }
-                Err(e) => {
-                    warn!(height = h, %e, "upstream pruned this era and it could not be fetched");
-                    return Ok(last);
-                }
-            },
             Err(e) => {
-                warn!(height = h, %e, "upstream");
+                warn!(height = a, %e, "upstream");
                 break;
             }
+        };
+        let full = blocks.len() as u64 == b - a + 1;
+        let count = blocks.len();
+        for (j, (block, proof)) in blocks.into_iter().enumerate() {
+            let h = block.height.get();
+            let batch_end = h == to || (!full && j + 1 == count);
+            // A backlog replays without the per-block fsync (redb holds
+            // those commits until a durable one); the batch's last block
+            // commits durably and anchors it, so a crash mid-replay loses
+            // only the open batch — certified blocks, they replay again.
+            chain.set_relaxed(!batch_end);
+            match chain.finalize(&block) {
+                Ok(()) => {
+                    if let Some(a) = archive {
+                        a.insert(h, proof);
+                    }
+                    last = h;
+                }
+                Err(e) => {
+                    // Storage is not a block that will not execute: say
+                    // what failed and let the caller heal the store
+                    // (2026-09-29: a full disk was logged as a bad block
+                    // and retried 288 times).
+                    if matches!(e, crate::chain::ChainError::Store(_)) {
+                        tracing::error!(height = h, ?e, "storage failed while committing a finalized block");
+                        return Err(format!("{STORE_FAILED}: {e:?}"));
+                    }
+                    warn!(
+                        height = h,
+                        ?e,
+                        "certified block did not execute to the same result; not adopting it"
+                    );
+                    return Ok(last);
+                }
+            }
+        }
+        // A short span is where the sources' tip is: nothing past it yet.
+        if !full {
+            break;
         }
     }
     Ok(last)
@@ -1653,7 +1864,7 @@ pub async fn fetch(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Result<Op
     upstream.ask("aether_getFinalized", json!([h]), |v| check(set, h, v)).await
 }
 
-fn check(set: &ValidatorSet, h: u64, v: Value) -> Result<Option<(Block, Value)>, String> {
+pub(crate) fn check(set: &ValidatorSet, h: u64, v: Value) -> Result<Option<(Block, Value)>, String> {
     if v.is_null() {
         return Ok(None);
     }
@@ -1693,6 +1904,138 @@ pub async fn forward(upstream: std::sync::Arc<Upstream>, mut rx: tokio::sync::mp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_test_support::Port;
+
+    /// A JSON-RPC source on loopback whose answers `answer` decides.
+    async fn mock_source(answer: impl Fn(&Value) -> Value + Send + Sync + 'static) -> String {
+        use axum::{extract::State, routing::post, Json, Router};
+        type Answer = std::sync::Arc<dyn Fn(&Value) -> Value + Send + Sync>;
+        async fn handle(State(f): State<Answer>, Json(req): Json<Value>) -> Json<Value> {
+            Json(f(&req))
+        }
+        let app = Router::new().route("/", post(handle)).with_state(std::sync::Arc::new(answer) as Answer);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// 2026-10-07, the founder's Mac: any failed chunk request moved the
+    /// rest of a snapshot download to the next validator, whose snapshot sat
+    /// at another height ("snapshot moved on" every round, for hours). The
+    /// download now stays on the source of its manifest: a busy answer is
+    /// waited out there, and a snapshot that moved on is restarted there at
+    /// its new height. The second source, holding another snapshot, is never
+    /// asked for a chunk.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_snapshot_download_stays_on_the_source_of_its_manifest() {
+        let config = crate::chain::ChainConfig {
+            chain_id: 7784,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: true, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        };
+        let (chain, _) = crate::chain::Chain::new(config);
+        let bytes = crate::snapshot::Snapshot::of(&chain).to_bytes();
+        let (height, size, digest) = (chain.finalized_height(), bytes.len(), blake3::hash(&bytes).to_hex().to_string());
+        let manifests = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let chunks = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let first = {
+            let (manifests, chunks, digest) = (manifests.clone(), chunks.clone(), digest.clone());
+            mock_source(move |req| {
+                use std::sync::atomic::Ordering::SeqCst;
+                let err = |m: String| json!({ "jsonrpc": "2.0", "id": req["id"], "error": { "code": -32000, "message": m } });
+                match req["method"].as_str() {
+                    Some("aether_snapshot") => {
+                        manifests.fetch_add(1, SeqCst);
+                        json!({ "jsonrpc": "2.0", "id": req["id"], "result": { "height": height, "size": size, "blake3": digest, "chunk": 1 << 20 } })
+                    }
+                    Some("aether_snapshotChunk") => match chunks.fetch_add(1, SeqCst) {
+                        // An old validator's busy answer (no hint), then its
+                        // snapshot moving on under the download.
+                        0 => err(aether_net::BUSY.to_string()),
+                        1 => err(format!("snapshot moved on to height {height}")),
+                        _ => json!({ "jsonrpc": "2.0", "id": req["id"], "result": { "data": hex::encode(&bytes) } }),
+                    },
+                    _ => err("method not found".into()),
+                }
+            })
+            .await
+        };
+        let asked_second = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let second = {
+            let asked = asked_second.clone();
+            mock_source(move |req| {
+                if req["method"] == "aether_snapshotChunk" {
+                    asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                if req["method"] == "aether_snapshot" {
+                    return json!({ "jsonrpc": "2.0", "id": req["id"], "result": { "height": height, "size": size, "blake3": digest, "chunk": 1 << 20 } });
+                }
+                json!({ "jsonrpc": "2.0", "id": req["id"], "error": { "code": -32000, "message": "snapshot moved on to height 99" } })
+            })
+            .await
+        };
+        let dir = std::env::temp_dir().join(format!("aether-pinned-download-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let up = Upstream::Http(vec![first, second]);
+        let snap = download_with(&up, &dir, None, &|_| Ok(())).await.expect("the download completes on its own source");
+        assert_eq!(snap.summary.height, height);
+        assert_eq!(manifests.load(std::sync::atomic::Ordering::SeqCst), 2, "restarted once on a fresh manifest");
+        assert_eq!(asked_second.load(std::sync::atomic::Ordering::SeqCst), 0, "no chunk went to another source");
+        // A manifest that is not past the floor is refused before any chunk.
+        let before = chunks.load(std::sync::atomic::Ordering::SeqCst);
+        let refused = download_with(&up, &dir, Some(height), &|_| Ok(())).await.unwrap_err();
+        assert!(refused.contains("not past"), "{refused}");
+        assert_eq!(chunks.load(std::sync::atomic::Ordering::SeqCst), before, "decided on the manifest alone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_snapshot_source_does_not_hide_a_usable_one() {
+        let cfg = crate::chain::ChainConfig {
+            chain_id: 7784,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: true, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        };
+        let (chain, _) = crate::chain::Chain::new(cfg);
+        // This test exercises download source selection only. Adoption still
+        // checks the decoded snapshot against the next certified block.
+        let mut snapshot = crate::snapshot::Snapshot::of(&chain);
+        snapshot.summary.height = 10;
+        let bytes = snapshot.to_bytes();
+        let (size, digest) = (bytes.len(), blake3::hash(&bytes).to_hex().to_string());
+        let stale_digest = digest.clone();
+        let stale = mock_source(move |req| {
+            assert_eq!(req["method"], "aether_snapshot", "stale manifest must not download chunks");
+            json!({ "id": req["id"], "result": { "height": 0, "size": size, "blake3": stale_digest, "chunk": 1 << 20 } })
+        }).await;
+        let fresh = mock_source(move |req| {
+            if req["method"] == "aether_snapshot" {
+                json!({ "id": req["id"], "result": { "height": 10, "size": size, "blake3": digest, "chunk": 1 << 20 } })
+            } else {
+                json!({ "id": req["id"], "result": { "data": hex::encode(&bytes) } })
+            }
+        }).await;
+        let dir = std::env::temp_dir().join(format!("aether-stale-snapshot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let snap = download_with(&Upstream::Http(vec![stale, fresh.clone()]), &dir, Some(1), &|_| Ok(())).await.expect("try the fresh source after a stale manifest");
+        assert_eq!(snap.summary.height, 10);
+        let oversized = mock_source(move |req| {
+            assert_eq!(req["method"], "aether_snapshot", "refused size must not download chunks");
+            json!({ "id": req["id"], "result": { "height": 10, "size": size * 2, "blake3": "00".repeat(32), "chunk": 1 << 20 } })
+        }).await;
+        let snap = download_with(&Upstream::Http(vec![oversized, fresh]), &dir, None, &|wire| {
+            if wire <= size as u64 { Ok(()) } else { Err("snapshot exceeds this host's budget".into()) }
+        }).await.expect("a smaller snapshot on another peer still fits");
+        assert_eq!(snap.summary.height, 10);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn repeated_upstream_timeouts_at_one_height_restart_the_follower() {
@@ -1808,11 +2151,15 @@ mod tests {
                 let id = v.get("id").cloned().unwrap_or(Value::Null);
                 axum::Json(json!({ "jsonrpc": "2.0", "id": id, "result": { "height": height } }))
             }));
-            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = probe.local_addr().unwrap();
-            drop(probe);
-            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-            tokio::spawn(async move { axum::serve(listener, app).await });
+            let port = Port::reserve().expect("reserve status RPC port");
+            let addr = port.addr();
+            let listener = port.bind_tcp().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            tokio::spawn(async move {
+                let _port = port;
+                axum::serve(listener, app).await
+            });
             format!("http://{addr}")
         };
         let (low, ahead) = (spawn_status(100).await, spawn_status(200).await);
@@ -1900,9 +2247,10 @@ mod tests {
         // corroborated at-tip answer…
         chain.lock().net_height = Some(0);
         // …then every status request fails (nothing listens there).
+        let upstream = Port::reserve().expect("reserve unreachable upstream RPC port");
         let err = advance(
             &chain,
-            &Upstream::Http(vec!["http://127.0.0.1:9".into()]),
+            &Upstream::Http(vec![format!("http://{}", upstream.addr())]),
             &aether_light::ValidatorSet::devnet(4),
             None,
             &mut AheadClaims::default(),
@@ -1949,11 +2297,15 @@ mod tests {
                 };
                 axum::Json(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
             }));
-            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = probe.local_addr().unwrap();
-            drop(probe);
-            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-            tokio::spawn(async move { axum::serve(listener, app).await });
+            let port = Port::reserve().expect("reserve status RPC port");
+            let addr = port.addr();
+            let listener = port.bind_tcp().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            tokio::spawn(async move {
+                let _port = port;
+                axum::serve(listener, app).await
+            });
             format!("http://{addr}")
         };
         // The lying source is listed first: its ahead answer is what

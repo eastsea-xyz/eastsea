@@ -62,10 +62,9 @@ enum DiagnosticReport {
 
     /// The text for the clipboard. Keys are layer 2's field names, so a
     /// developer reading a pasted copy maps it one to one.
-    static func text(_ s: Snapshot, ko: Bool = HealthCheck.korean) -> String {
+    static func text(_ s: Snapshot, locale: Locale = .current, bundle: Bundle = .main) -> String {
         var lines = [
-            ko ? "\(Brand.projectKo) 진단 정보 — 주소·잔액·노드 ID는 들어 있지 않아요. 이 글은 이 Mac 밖으로 보내지지 않았어요."
-                : "\(Brand.project) diagnostics — no address, balance or node ID inside. Nothing was sent from this Mac.",
+            String(localized: "EastSea diagnostics — no address, balance or node ID inside. Nothing was sent from this Mac.", bundle: bundle, locale: locale),
             "v: 1",
             "day: \(day(s.now))",
             "app: \(app(s))",

@@ -4,6 +4,8 @@
 //   swiftc -o ./tmp/health-check apps/wallet/Sources/Brand.swift apps/wallet/Sources/Clock.swift apps/wallet/Sources/NodeWatchdog.swift apps/wallet/Sources/HealthCheck.swift apps/wallet/Tests/health-check/main.swift && ./tmp/health-check
 import Foundation
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
+let enLocale = walletTestLocale("en"), enBundle = walletTestBundle("en")
+let koLocale = walletTestLocale("ko"), koBundle = walletTestBundle("ko")
 
 typealias O = HealthCheck.Observation
 let t0 = MonotonicInstant(1_000)
@@ -27,7 +29,7 @@ func resolves(_ events: [(TimeInterval, HealthCheck.Event)], _ issue: HealthChec
 // A healthy wallet says nothing.
 var calm = HealthCheck()
 check(run(&calm, O(), from: 0, to: 600).isEmpty, "a healthy wallet raises nothing")
-check(calm.alert(ko: true) == nil && calm.healthyBadgeAllowed, "no banner, the healthy badge may show")
+check(calm.alert(locale: koLocale, bundle: koBundle) == nil && calm.healthyBadgeAllowed, "no banner, the healthy badge may show")
 
 // Every row exists, in the design's numbering.
 check(Set(HealthCheck.Issue.allCases.map(\.row)) == Set((1...10).map { "L\($0)" }), "each of L1–L10 has an issue")
@@ -46,24 +48,24 @@ var l1 = HealthCheck()
 var ev = run(&l1, mismatch, from: 0, to: 60)
 check(raises(ev, .programMismatch) == 1 && ev.first?.0 == 0, "L1: a program mismatch is raised at once, once")
 check(raises(ev, .proofsRejected) == 0, "L1: the mismatch is one incident, not also a rejection")
-check(l1.alert(ko: true)?.sentence == "이 Mac은 지금 블록 증명을 쉬고 있어요. 네트워크가 이 버전의 증명을 아직 확인하지 못해서예요. 잃는 건 없어요.",
+check(l1.alert(locale: koLocale, bundle: koBundle)?.sentence == "이 Mac은 지금 블록 증명을 쉬고 있어요. 네트워크가 이 버전의 증명을 아직 확인하지 못해서예요. 잃는 건 없어요.",
       "L1 without an update: proving rests, plainly, nothing lost")
-check(l1.alert(ko: true)?.action == .checkForUpdates, "L1: [업데이트 확인]")
+check(l1.alert(locale: koLocale, bundle: koBundle)?.action == .checkForUpdates, "L1: [업데이트 확인]")
 mismatch.updateAvailable = true
 _ = l1.observe(mismatch, at: at(62))
-check(l1.alert(ko: true)?.sentence == "보상 증명이 거절되고 있어요. 앱을 업데이트하면 해결돼요.", "L1 with an update: update and it is fixed")
-check(l1.alert(ko: false)?.sentence == "Your reward proofs are being rejected. Updating the app fixes it.", "L1 in English")
+check(l1.alert(locale: koLocale, bundle: koBundle)?.sentence == "보상 증명이 거절되고 있어요. 앱을 업데이트하면 해결돼요.", "L1 with an update: update and it is fixed")
+check(l1.alert(locale: enLocale, bundle: enBundle)?.sentence == "Your reward proofs are being rejected. Updating the app fixes it.", "L1 in English")
 ev = run(&l1, proving, from: 64, to: 120)
 check(resolves(ev, .programMismatch) == 1, "L1: the match returning resolves the incident once")
 check(ev.first { $0.1 == .resolved(.programMismatch) }!.0 >= 64 + HealthCheck.resolveAfter, "…after the condition stayed gone for resolveAfter")
-check(HealthCheck.resolvedSentence(.programMismatch, ko: true).hasPrefix("해결됐어요"), "L1 resolution says 해결됐어요")
+check(HealthCheck.resolvedSentence(.programMismatch, locale: koLocale, bundle: koBundle).hasPrefix("해결됐어요"), "L1 resolution says 해결됐어요")
 
 var rejected = proving
 rejected.proofsFailing = true
 var l1b = HealthCheck()
 ev = run(&l1b, rejected, from: 0, to: 30)
 check(raises(ev, .proofsRejected) == 1, "L1: acceptance below the floor is a rejection")
-check(l1b.sentence(.proofsRejected, ko: true).contains("거절"), "L1 rejection sentence")
+check(l1b.sentence(.proofsRejected, locale: koLocale, bundle: koBundle).contains("거절"), "L1 rejection sentence")
 
 // L1's cross-check: six hours proving, no new reward, while layer 0 sees other
 // proofs paid. Measured on the monotonic clock, restarted by any new reward.
@@ -100,14 +102,14 @@ check(ev.map(\.1) == [.rediscover] && ev[0].0 == 90, "L2: at 90 s, one automatic
 ev = run(&l2, offlineWallet, from: 180, to: 400)
 check(raises(ev, .connectionStuck) == 1 && ev.first?.0 == 180, "L2: at 3 min, the sentence")
 check(!ev.contains { $0.1 == .rediscover }, "L2: the automatic re-discovery happens once per incident")
-check(l2.alert(ko: true)?.sentence == "네트워크를 찾지 못하고 있어요. 다시 시도해 볼게요. 잔액은 안전해요.", "L2 sentence says the balance is safe")
-check(l2.alert(ko: true)?.action == .retryConnection, "L2: [다시 시도]")
+check(l2.alert(locale: koLocale, bundle: koBundle)?.sentence == "네트워크를 찾지 못하고 있어요. 다시 시도해 볼게요. 잔액은 안전해요.", "L2 sentence says the balance is safe")
+check(l2.alert(locale: koLocale, bundle: koBundle)?.action == .retryConnection, "L2: [다시 시도]")
 check(l2.retry() == [.rediscover], "L2: [다시 시도] looks again at once")
 var online = offlineWallet
 online.walletConnected = true
 ev = run(&l2, online, from: 402, to: 460)
 check(resolves(ev, .connectionStuck) == 1, "L2: connecting resolves it, once")
-check(HealthCheck.resolvedSentence(.connectionStuck, ko: true) == "해결됐어요. 네트워크에 다시 연결됐어요.", "L2 resolution")
+check(HealthCheck.resolvedSentence(.connectionStuck, locale: koLocale, bundle: koBundle) == "해결됐어요. 네트워크에 다시 연결됐어요.", "L2 resolution")
 
 // No internet at all: no pointless re-discovery, and the sentence says it
 // reconnects by itself.
@@ -116,8 +118,8 @@ noInternet.internetReachable = false
 var l2b = HealthCheck()
 ev = run(&l2b, noInternet, from: 0, to: 300)
 check(!ev.contains { $0.1 == .rediscover }, "L2: no re-discovery without internet")
-check(l2b.alert(ko: true)?.sentence == "인터넷에 연결되지 않았어요. 연결되면 저절로 이어져요.", "L2: the no-internet sentence")
-check(l2b.alert(ko: true)?.action == nil, "L2: nothing to press without internet")
+check(l2b.alert(locale: koLocale, bundle: koBundle)?.sentence == "인터넷에 연결되지 않았어요. 연결되면 저절로 이어져요.", "L2: the no-internet sentence")
+check(l2b.alert(locale: koLocale, bundle: koBundle)?.action == nil, "L2: nothing to press without internet")
 
 // W3: right after a reboot the network attaches late — the internet comes up
 // at 40 s and the validators answer at 150 s. One re-discovery at 90 s, no
@@ -136,8 +138,8 @@ almost.diskAlmostFull = true
 var l3 = HealthCheck()
 ev = run(&l3, almost, from: 0, to: 30)
 check(raises(ev, .diskAlmostFull) == 1, "L3: the 3 GB warning")
-check(l3.alert(ko: true)?.sentence == "저장 공간이 곧 부족해요. 3 GB쯤 비워 주세요.", "L3 warning sentence")
-check(l3.alert(ko: true)?.action == .openStorage, "L3: [저장 공간 관리 열기]")
+check(l3.alert(locale: koLocale, bundle: koBundle)?.sentence == "저장 공간이 곧 부족해요. 3 GB쯤 비워 주세요.", "L3 warning sentence")
+check(l3.alert(locale: koLocale, bundle: koBundle)?.action == .openStorage, "L3: [저장 공간 관리 열기]")
 check(l3.healthyBadgeAllowed, "L3's warning alone does not hide the badge")
 
 var halfDead = almost
@@ -145,20 +147,20 @@ halfDead.diskPaused = true
 halfDead.nodeResponsive = true  // the RPC still answers: half dead
 ev = run(&l3, halfDead, from: 32, to: 80)
 check(raises(ev, .diskPaused) == 1, "L3/L4: the pause is raised once")
-check(l3.alert(ko: true)?.issue == .diskPaused, "L4 outranks the warning in the banner")
-check(l3.alert(ko: true)?.sentence == "저장 공간이 부족해 네트워크 참여를 잠시 멈췄어요. 남은 공간이 7 GB가 되면 저절로 다시 시작해요.", "L3 pause sentence (the node's 7 GB resume level)")
+check(l3.alert(locale: koLocale, bundle: koBundle)?.issue == .diskPaused, "L4 outranks the warning in the banner")
+check(l3.alert(locale: koLocale, bundle: koBundle)?.sentence == "저장 공간이 부족해 네트워크 참여를 잠시 멈췄어요. 남은 공간이 7 GB가 되면 저절로 다시 시작해요.", "L3 pause sentence (the node's 7 GB resume level)")
 check(!l3.healthyBadgeAllowed, "W2: never a healthy badge while L4 holds")
 check(!HealthCheck.healthyBadgeAllowed(halfDead), "W2: disk_low → no Verified/정상 badge, from the observation itself")
 var voter = halfDead
 voter.voting = true
 _ = l3.observe(voter, at: at(82))
-check(l3.alert(ko: true)?.sentence.hasSuffix("투표 노드라서 다른 검증자들이 기다리고 있어요.") == true, "L4 on a voting node adds the waiting validators")
-check(l3.alert(ko: false)?.sentence.contains("voting node") == true, "L4 voting sentence in English")
+check(l3.alert(locale: koLocale, bundle: koBundle)?.sentence.hasSuffix("투표 노드라서 다른 검증자들이 기다리고 있어요.") == true, "L4 on a voting node adds the waiting validators")
+check(l3.alert(locale: enLocale, bundle: enBundle)?.sentence.contains("voting node") == true, "L4 voting sentence in English")
 check(resolves(ev, .diskAlmostFull) == 0, "the warning growing into the pause is no 'resolved'")
 // Freed some space: above the floor, still short — the incident steps back
 // to the warning without a word; freed enough: one resolution in total.
 ev = run(&l3, almost, from: 84, to: 140)
-check(ev.isEmpty && l3.alert(ko: true)?.issue == .diskAlmostFull, "pause → warning: quietly back to the warning banner")
+check(ev.isEmpty && l3.alert(locale: koLocale, bundle: koBundle)?.issue == .diskAlmostFull, "pause → warning: quietly back to the warning banner")
 check(l3.healthyBadgeAllowed, "the badge may return once the pause is over")
 ev = run(&l3, O(), from: 142, to: 200)
 check(ev.map(\.1) == [.resolved(.diskAlmostFull)], "space freed: exactly one resolution for the whole disk incident")
@@ -182,11 +184,11 @@ _ = l5.observe(running, at: at(0))
 l5.stallRestarted(at: at(10))
 ev = run(&l5, running, from: 12, to: 100)
 check(raises(ev, .followerStuck) == 1, "L5: a stall restart is raised once")
-check(l5.alert(ko: true)?.sentence == "이 Mac이 네트워크를 따라가지 못해 다시 시작했어요.", "L5 first sentence")
+check(l5.alert(locale: koLocale, bundle: koBundle)?.sentence == "이 Mac이 네트워크를 따라가지 못해 다시 시작했어요.", "L5 first sentence")
 l5.stallRestarted(at: at(300))
 ev = run(&l5, running, from: 302, to: 400)
 check(raises(ev, .followerStuck) == 0, "L5: the second restart is the same incident — no new notification")
-check(l5.alert(ko: true)?.sentence == "계속 멈춰요. 앱을 업데이트하거나 Mac을 재시동해 주세요. 그동안 잔액은 다른 노드로 확인해요.", "L5 repeated sentence")
+check(l5.alert(locale: koLocale, bundle: koBundle)?.sentence == "계속 멈춰요. 앱을 업데이트하거나 Mac을 재시동해 주세요. 그동안 잔액은 다른 노드로 확인해요.", "L5 repeated sentence")
 ev = run(&l5, running, from: 402, to: 1_000)
 check(resolves(ev, .followerStuck) == 1, "L5: ten quiet minutes resolve it")
 
@@ -199,7 +201,7 @@ ev = run(&l6, silentRpc, from: 0, to: 28)
 check(ev.isEmpty, "L6: under 30 s of silence, wait")
 ev = run(&l6, silentRpc, from: 30, to: 200)
 check(ev.map(\.1) == [.raised(.nodeUnresponsive), .restartNode], "L6: at 30 s one sentence and one restart")
-check(l6.alert(ko: true)?.sentence == "이 Mac의 노드가 응답하지 않아 다시 시작할게요.", "L6 sentence")
+check(l6.alert(locale: koLocale, bundle: koBundle)?.sentence == "이 Mac의 노드가 응답하지 않아 다시 시작할게요.", "L6 sentence")
 var starting = silentRpc
 starting.nodeAnsweredSinceStart = false
 var l6b = HealthCheck()
@@ -212,8 +214,8 @@ crashed.stopped = .memory
 var l7 = HealthCheck()
 ev = run(&l7, crashed, from: 0, to: 20)
 check(raises(ev, .crashLoop) == 1, "L7: the watchdog's stop is raised once")
-check(l7.alert()?.sentence == NodeWatchdog.Failure.memory.sentence, "L7 reuses layer 4's sentence")
-check(l7.alert()?.action == .copyDiagnostics, "L7: [진단 정보 복사]")
+check(l7.alert(locale: enLocale, bundle: enBundle)?.sentence == NodeWatchdog.Failure.memory.sentence(locale: enLocale, bundle: enBundle), "L7 reuses layer 4's sentence")
+check(l7.alert(locale: enLocale, bundle: enBundle)?.action == .copyDiagnostics, "L7: [진단 정보 복사]")
 
 // MARK: L8 — update required
 
@@ -222,7 +224,7 @@ outdated.upgradeRequired = true
 var l8 = HealthCheck()
 ev = run(&l8, outdated, from: 0, to: 20)
 check(raises(ev, .upgradeRequired) == 1, "L8: raised once")
-check(l8.alert(ko: true)?.sentence == "네트워크 규칙이 바뀌어 업데이트가 필요해요. 업데이트 전까지 잔액은 다른 노드로 확인해요.", "L8 sentence")
+check(l8.alert(locale: koLocale, bundle: koBundle)?.sentence == "네트워크 규칙이 바뀌어 업데이트가 필요해요. 업데이트 전까지 잔액은 다른 노드로 확인해요.", "L8 sentence")
 var exit3 = O()
 exit3.stopped = .upgradeNeeded
 var l8b = HealthCheck()
@@ -236,7 +238,7 @@ rolled.rolledBack = true
 var l9 = HealthCheck()
 ev = run(&l9, rolled, from: 0, to: 20)
 check(raises(ev, .updateRolledBack) == 1, "L9: raised once")
-check(l9.alert(ko: true)?.sentence == "새 버전에서 노드가 잘 돌지 않아 이전 버전으로 돌아갔어요. 고친 버전이 오면 저절로 받아요.", "L9 sentence")
+check(l9.alert(locale: koLocale, bundle: koBundle)?.sentence == "새 버전에서 노드가 잘 돌지 않아 이전 버전으로 돌아갔어요. 고친 버전이 오면 저절로 받아요.", "L9 sentence")
 
 // Every row has an English sentence too, and no jargon in either language.
 var all = O()
@@ -245,16 +247,16 @@ all.nodeRunning = true; all.upgradeRequired = true; all.rolledBack = true
 var words = HealthCheck()
 _ = words.observe(all, at: at(0))
 for issue in HealthCheck.Issue.allCases {
-    for ko in [true, false] {
-        let s = words.sentence(issue, ko: ko)
-        check(!s.isEmpty, "\(issue) has a sentence (ko: \(ko))")
+    for language in ["en", "ko", "ja"] {
+        let s = words.sentence(issue, locale: walletTestLocale(language), bundle: walletTestBundle(language))
+        check(!s.isEmpty, "\(issue) has a sentence (language: \(language))")
         for jargon in ["guest", "ENOSPC", "RPC", "enospc"] {
-            check(!s.contains(jargon), "\(issue) avoids \(jargon) (ko: \(ko))")
+            check(!s.contains(jargon), "\(issue) avoids \(jargon) (language: \(language))")
         }
-        check(!HealthCheck.resolvedSentence(issue, ko: ko).isEmpty, "\(issue) has a resolution sentence")
+        check(!HealthCheck.resolvedSentence(issue, locale: walletTestLocale(language), bundle: walletTestBundle(language)).isEmpty, "\(issue) has a resolution sentence")
     }
 }
-check(words.sentence(.connectionStuck, ko: false).contains("balance is safe"), "English L2 says the balance is safe")
+check(words.sentence(.connectionStuck, locale: enLocale, bundle: enBundle).contains("balance is safe"), "English L2 says the balance is safe")
 
 // L1, the 0.7.0 case (docs .claude/team/prover-070-mismatch.md C): the node
 // cannot even confirm the validators' program (program_unknown) and pauses —
@@ -265,8 +267,8 @@ unknownProgram.proverPausedForProgram = true
 var l1u = HealthCheck()
 ev = run(&l1u, unknownProgram, from: 0, to: 30)
 check(raises(ev, .programMismatch) == 1, "L1: a pause for an unconfirmed program raises the alert")
-check(l1u.alert(ko: false)?.sentence == "This Mac is resting from proving blocks for now: the network cannot check this version's proofs yet. Nothing is lost.",
-      "L1 unknown in English: \(l1u.alert(ko: false)?.sentence ?? "nil")")
+check(l1u.alert(locale: enLocale, bundle: enBundle)?.sentence == "This Mac is resting from proving blocks for now: the network cannot check this version's proofs yet. Nothing is lost.",
+      "L1 unknown in English: \(l1u.alert(locale: enLocale, bundle: enBundle)?.sentence ?? "nil")")
 
 // MARK: L10 — the node is not running, and why (NodeStopReason)
 
@@ -278,8 +280,8 @@ stoppedNode.nodeStop = .otherNodeRunning
 var l10 = HealthCheck()
 ev = run(&l10, stoppedNode, from: 0, to: 60)
 check(raises(ev, .nodeStopped) == 1, "L10: a stopped node is raised once")
-check(l10.alert(ko: true)?.sentence == NodeStopReason.otherNodeRunning.copy(ko: true).paragraph, "L10 speaks the reason's own words")
-check(l10.alert(ko: true)?.action == .fixNode, "L10's button is the reason's")
+check(l10.alert(locale: koLocale, bundle: koBundle)?.sentence == NodeStopReason.otherNodeRunning.copy(locale: koLocale, bundle: koBundle).paragraph, "L10 speaks the reason's own words")
+check(l10.alert(locale: koLocale, bundle: koBundle)?.action == .fixNode, "L10's button is the reason's")
 ev = run(&l10, O(), from: 62, to: 120)
 check(resolves(ev, .nodeStopped) == 1, "L10 resolves when the node runs again")
 var resting = O()
@@ -290,22 +292,22 @@ var gone = O()
 gone.nodeStop = .diskMissing(volume: "Archive")
 var l10c = HealthCheck()
 _ = run(&l10c, gone, from: 0, to: 10)
-check(l10c.alert(ko: true)?.sentence.contains("‘Archive’") == false && l10c.alert(ko: true)?.sentence.contains("연결하면 저절로") == true,
-      "a missing disk says it resumes when connected: \(l10c.alert(ko: true)?.sentence ?? "nil")")
+check(l10c.alert(locale: koLocale, bundle: koBundle)?.sentence.contains("‘Archive’") == false && l10c.alert(locale: koLocale, bundle: koBundle)?.sentence.contains("연결하면 저절로") == true,
+      "a missing disk says it resumes when connected: \(l10c.alert(locale: koLocale, bundle: koBundle)?.sentence ?? "nil")")
 // The crash loop and the disk pause speak the reason's exact words too.
 var looping = O()
 looping.stopped = .other
 looping.nodeStop = .crashLoop(.other, retryInSeconds: 540)
 var l7s = HealthCheck()
 _ = run(&l7s, looping, from: 0, to: 10)
-check(l7s.alert(ko: true)?.issue == .crashLoop && l7s.alert(ko: true)?.sentence.contains("9분 뒤") == true,
-      "L7 says when it retries: \(l7s.alert(ko: true)?.sentence ?? "nil")")
+check(l7s.alert(locale: koLocale, bundle: koBundle)?.issue == .crashLoop && l7s.alert(locale: koLocale, bundle: koBundle)?.sentence.contains("9분 뒤") == true,
+      "L7 says when it retries: \(l7s.alert(locale: koLocale, bundle: koBundle)?.sentence ?? "nil")")
 var low = O()
 low.diskPaused = true
 low.nodeStop = .diskFull(freeBytes: 6 * 1_073_741_824, resumeBytes: 7 * 1_073_741_824, volume: nil)
 var l4s = HealthCheck()
 _ = run(&l4s, low, from: 0, to: 10)
-check(l4s.alert(ko: true)?.sentence.contains("6.0 GB 남음") == true, "L4 gives the exact numbers: \(l4s.alert(ko: true)?.sentence ?? "nil")")
+check(l4s.alert(locale: koLocale, bundle: koBundle)?.sentence.contains("6.0 GB 남음") == true, "L4 gives the exact numbers: \(l4s.alert(locale: koLocale, bundle: koBundle)?.sentence ?? "nil")")
 
 // MARK: one alert per incident
 
@@ -377,9 +379,9 @@ stalled.proverLag = 6_657
 ev = run(&l1stall, stalled, from: 2, to: 602)
 check(raises(ev, .proverStalled) == 1, "L1: a proving error with the lag growing is a stall, raised once")
 check(ev.first { $0.1 == .raised(.proverStalled) }!.0 >= HealthCheck.proverStallAfter, "…after ten minutes of it")
-check(l1stall.alert(ko: true)?.sentence == "보상 증명이 멈춰 있어요. 이 Mac이 저절로 다시 시도하고 있어요. 오래 계속되면 앱을 다시 열어 주세요.",
+check(l1stall.alert(locale: koLocale, bundle: koBundle)?.sentence == "보상 증명이 멈춰 있어요. 이 Mac이 저절로 다시 시도하고 있어요. 오래 계속되면 앱을 다시 열어 주세요.",
       "the stalled sentence says it plainly")
-check(l1stall.alert(ko: false)?.sentence == "Reward proofs have stopped. This Mac is retrying by itself; if it keeps up, please reopen the app.",
+check(l1stall.alert(locale: enLocale, bundle: enBundle)?.sentence == "Reward proofs have stopped. This Mac is retrying by itself; if it keeps up, please reopen the app.",
       "the English sentence too")
 check(l1stall.action(.proverStalled) == .copyDiagnostics, "L1 stall: [진단 복사]")
 check(l1stall.failureCounts()["prover_stalled"] == 1, "the stall counts as its own failure kind")
@@ -387,7 +389,7 @@ check(l1stall.failureCounts()["prover_stalled"] == 1, "the stall counts as its o
 stalled.proverError = false
 ev = run(&l1stall, stalled, from: 604, to: 640)
 check(resolves(ev, .proverStalled) == 1, "L1: the error clearing resolves the stall")
-check(HealthCheck.resolvedSentence(.proverStalled, ko: true).hasPrefix("해결됐어요"), "L1 stall resolution says 해결됐어요")
+check(HealthCheck.resolvedSentence(.proverStalled, locale: koLocale, bundle: koBundle).hasPrefix("해결됐어요"), "L1 stall resolution says 해결됐어요")
 // An error without a growing lag is not a stall (a quiet chain, or a retry
 // about to clear it)…
 var frozen = HealthCheck()

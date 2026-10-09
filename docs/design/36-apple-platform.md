@@ -451,21 +451,31 @@ solve it directly.
 1. When the node creates `validator.key` (and `node-account.key`), it writes
    `key-binding.json`: `{validator_pub, platform_uuid_hash, created_at}`.
    `platform_uuid_hash` is `sha256("eastsea.bind" ‖ IOPlatformUUID)`.
-   IOPlatformUUID can be read by any user process before login (IOKit,
-   public).
-2. On every start, and again before the first vote of every epoch, the node
-   compares the hash with this Mac's. If it differs, the node refuses to sign
-   anything with that key. It exits with a new code (`EXIT_KEY_ELSEWHERE`)
-   and the app says: "This validator belongs to another Mac. Retire it there
-   first, or start a new one here."
-3. Moving on purpose is an explicit command (`aether validator move-out` on
+   IOPlatformUUID uses public IOKit APIs. An unavailable read is not evidence
+   of another Mac, including before login or under a sandbox policy.
+2. On every start and before validator content signing, the node compares the
+   hash with this Mac's. Only a successfully read different hardware hash
+   exits 15 (`EXIT_KEY_ELSEWHERE`). Unavailable verification keeps the process
+   running, pauses content signing, and retries with bounded backoff, showing
+   "waiting to confirm this Mac". Raw transport identities have a bounded
+   lifecycle check; their TLS/DHT/handshake signatures authenticate transport,
+   not validator content (see `p2p.rs` for the pinned dependency limitation).
+3. In 0.7.3 the shipped owner recovery is `aether keys rebind --data <dir>`:
+   stopped node (`run.lock`), typed validator address, atomic durable binding
+   replacement, and old→new hash audit. The wallet requires its existing
+   Secure Enclave owner authentication and exposes this only for a proven
+   mismatch. Follow [moving a validator](../ops/moving-a-validator.md) to retire
+   the old signer and preserve the current share and vote journals.
+
+   A future automated move would use `aether validator move-out` on
    the old Mac writes a signed "retired at height H" record and stops; `move-in`
    on the new Mac accepts only a key with a retirement record, and only after
    H + a safety margin is finalized). This matches the manual move in the
-   testnet-validator-layout notes, and makes it safe. DeviceCheck's "one Mac,
+   testnet-validator-layout notes. These commands are not implemented.
+   DeviceCheck's "one Mac,
    one identity" (design 14) is enforced by the registrar too. Moving a seat
-   to a new Mac means a new registration anyway, so the common case is "start
-   a new one here".
+   to a new Mac can need registrar reconciliation. Rebinding preserves an
+   existing committee identity; registering a new key is not seat recovery.
 4. Exclude the data directory from Time Machine (`tmutil addexclusion` on
    the key files at least) and from any iCloud Drive path. Refuse to place the
    data directory under `~/Desktop` or `~/Documents` when "Desktop &
@@ -502,8 +512,8 @@ with "keys must stay on this Mac".
 
 ### 6.4 Genesis
 
-None. Binding is node-local. `move-out` / `move-in` are node commands. The
-retirement record is a local file, not a chain object.
+None. Binding and `keys rebind` are node-local. The proposed `move-out` /
+`move-in` retirement record would be a local file, not a chain object.
 
 ## 7. Other Apple-platform features
 

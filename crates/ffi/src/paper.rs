@@ -63,10 +63,15 @@ mod tests {
         let sig = paper_key_sign(words.clone(), b"recover".to_vec()).unwrap();
         let apk = aether_crypto::PublicKey { scheme: aether_types::SignerScheme::P256, bytes: pk.clone() };
         aether_crypto::verify(&apk, b"recover", &sig).unwrap();
-        // A different phrase is a different key; a mistyped word fails its checksum.
+        // A different phrase is a different key. Flip one checksum bit while
+        // retaining the entropy: replacing an arbitrary word can accidentally
+        // produce another valid phrase (24 words have an 8-bit checksum).
         assert_ne!(pk, paper_key_public(paper_key_new()).unwrap());
         let mut w: Vec<&str> = words.split_whitespace().collect();
-        w[0] = if w[0] == "abandon" { "ability" } else { "abandon" };
+        let list = bip39::Language::English.word_list();
+        let last = w.last_mut().unwrap();
+        let index = list.iter().position(|word| *word == *last).unwrap();
+        *last = list[index ^ 1];
         assert!(paper_key_public(w.join(" ")).is_err());
     }
 }

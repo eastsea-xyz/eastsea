@@ -167,20 +167,16 @@ impl Sidecar {
                 .map(|m| m.limits.prover_threads)
                 .unwrap_or_else(|| crate::resources::Limits::default().prover_threads);
             cmd.env("RAYON_NUM_THREADS", threads.to_string());
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt as _;
-                // Between fork and exec: one syscall, async-signal-safe.
-                unsafe {
-                    cmd.pre_exec(|| {
-                        libc::setpriority(libc::PRIO_PROCESS, 0, 15);
-                        Ok(())
-                    });
-                }
-            }
         }
+        // With no child-side customization, Command uses posix_spawn on macOS.
+        // Network.framework's child handlers make a forked node unsafe.
         let mut child = cmd.spawn().map_err(|e| format!("start {}: {e}", bin.display()))?;
         let pid = child.id();
+        #[cfg(unix)]
+        if tuned && unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, 15) } != 0 {
+            let error = std::io::Error::last_os_error();
+            tracing::warn!(pid, %error, "could not lower proving sidecar priority");
+        }
         let stdin = child.stdin.take().ok_or("no sidecar stdin")?;
         let stdout = BufReader::new(child.stdout.take().ok_or("no sidecar stdout")?);
         let (tx, lines) = std::sync::mpsc::channel();
@@ -497,7 +493,10 @@ impl ProofVerifier for Verifier {
 /// What the proving side has done, for `aether_proverStatus` and the app's menu bar.
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct Status {
+    /// The proving service is enabled, including while its sidecar recovers.
     pub running: bool,
+    /// The sidecar failed; progress is stale until a fresh proof succeeds.
+    pub stale: bool,
     pub program: String,
     /// The block being proven now.
     pub proving: Option<u64>,
@@ -691,6 +690,7 @@ impl Gate {
         status
             .lock()
             .map(|mut s| {
+                s.stale = true;
                 s.proving = None;
                 s.paused = Some("memory".into());
                 s.error = Some(format!("prover killed at {} bytes (cap {})", gbytes(memory), gbytes(self.cap)));
@@ -722,6 +722,7 @@ impl Gate {
         status
             .lock()
             .map(|mut s| {
+                s.stale = true;
                 s.proving = None;
                 s.paused = Some("stalled".into());
                 s.error = Some(
@@ -733,13 +734,17 @@ impl Gate {
 
     /// Critical system pressure: kill the running proof too, without a memory
     /// back-off (the monitor's own pause keeps new jobs from starting).
-    fn kill_running(&self) {
+    fn kill_running(&self, status: &SharedStatus) {
         let sidecar = self.current();
         if self.dead.swap(true, std::sync::atomic::Ordering::Relaxed) {
             return;
         }
         tracing::warn!("critical memory pressure: killing the running proof");
         sidecar.kill_hard();
+        status.lock().map(|mut s| {
+            s.stale = true;
+            s.proving = None;
+        }).ok();
     }
 
     /// A proof came back: the next memory kill backs off from a minute again.
@@ -857,7 +862,7 @@ pub fn spawn_service(
             .spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 if crate::resources::monitor().is_some_and(|m| m.critical()) {
-                    gate.kill_running();
+                    gate.kill_running(&status);
                 }
                 gate.check_hang(&status);
                 gate.check(&status);
@@ -977,14 +982,22 @@ pub fn spawn_service(
                         s.last_seconds = seconds;
                         s.proofs += 1;
                         s.error = None;
+                        // A concurrent watchdog death still needs recovery,
+                        // even if this proof came back just before the kill.
+                        s.stale = gate.dead.load(std::sync::atomic::Ordering::Relaxed);
                     })
                     .ok();
                 tracing::info!(height, txs, seconds, "proved block");
             }
             Err(e) => {
-                status.lock().map(|mut s| (s.proving, s.error) = (None, Some(e.clone()))).ok();
+                let unusable = sidecar_unusable(&e);
+                status.lock().map(|mut s| {
+                    s.proving = None;
+                    s.error = Some(e.clone());
+                    s.stale |= unusable;
+                }).ok();
                 tracing::warn!(height, %e, "proving failed");
-                if sidecar_unusable(&e) {
+                if unusable {
                     // The sidecar, not the block, failed: stop it (a broken
                     // pipe can leave the process alive), let the next round
                     // replace it, and give the height back — the incident's
@@ -1065,6 +1078,138 @@ pub(crate) fn next_job(chain: &Chain, prover: Address) -> Result<Option<Job>, (u
         return Err((height, "the prover input does not restate the block's recorded statement".to_string()));
     }
     Ok(Some((height, payload.txs.len(), input)))
+}
+
+/// Initialize the macOS network runtime before either spawn path's smoke test.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn initialize_network_for_spawn_smoke_test() {
+    #[repr(C)]
+    #[derive(Default, Debug)]
+    struct CFStreamError {
+        domain: isize,
+        error: i32,
+    }
+    #[link(name = "Network", kind = "framework")]
+    extern "C" {
+        fn nw_endpoint_create_host(host: *const libc::c_char, port: *const libc::c_char) -> *mut libc::c_void;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFStringCreateWithCString(
+            allocator: *const libc::c_void,
+            text: *const libc::c_char,
+            encoding: u32,
+        ) -> *const libc::c_void;
+        fn CFRelease(object: *const libc::c_void);
+    }
+    #[link(name = "CFNetwork", kind = "framework")]
+    extern "C" {
+        fn CFHostCreateWithName(allocator: *const libc::c_void, name: *const libc::c_void) -> *mut libc::c_void;
+        fn CFHostStartInfoResolution(host: *mut libc::c_void, info: libc::c_int, error: *mut CFStreamError) -> u8;
+    }
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(|| unsafe {
+        let endpoint = nw_endpoint_create_host(c"localhost".as_ptr(), c"0".as_ptr());
+        assert!(!endpoint.is_null(), "initialize Network.framework endpoint");
+        // Keep the passive endpoint alive for this test process. CFHost below
+        // initializes the resolver without a long-lived path-monitor callback.
+        let name = CFStringCreateWithCString(std::ptr::null(), c"localhost".as_ptr(), 0x0800_0100);
+        assert!(!name.is_null(), "create local hostname");
+        let host = CFHostCreateWithName(std::ptr::null(), name);
+        assert!(!host.is_null(), "create CFHost");
+        let mut error = CFStreamError::default();
+        let resolved = CFHostStartInfoResolution(host, 0, &mut error);
+        CFRelease(host);
+        CFRelease(name);
+        assert_ne!(resolved, 0, "resolve localhost through CFHost: {error:?}");
+    });
+}
+
+#[cfg(all(test, unix))]
+mod spawn_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn scratch() -> PathBuf {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tmp")
+            .join(format!("aether-prover-spawn-{}", unique()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn fake_prover(dir: &Path) -> PathBuf {
+        let program = PROGRAM.unwrap_or("any-program");
+        let path = dir.join("fake-prover");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho '{{\"guest_elf_sha256\":\"{program}\"}}'\n\
+                 while IFS= read -r line; do\n\
+                   printf '{{\"ok\":true,\"threads\":\"%s\"}}\\n' \"${{RAYON_NUM_THREADS-}}\"\n\
+                 done\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn priority(pid: u32) -> i32 {
+        unsafe { libc::getpriority(libc::PRIO_PROCESS, pid as libc::id_t) }
+    }
+
+    #[test]
+    fn proving_priority_is_lowered_from_parent_and_thread_limit_is_preserved() {
+        let dir = scratch();
+        let parent_priority = priority(std::process::id());
+        let threads = crate::resources::monitor()
+            .map(|m| m.limits.prover_threads)
+            .unwrap_or_else(|| crate::resources::Limits::default().prover_threads);
+        let sidecar = Sidecar::spawn_prover(&fake_prover(&dir), &dir).unwrap();
+        assert_eq!(priority(sidecar.pid), 15, "only the proving child gets nice 15");
+        assert_eq!(priority(std::process::id()), parent_priority, "node priority is unchanged");
+        let answer = sidecar.request(json!({"cmd": "threads"}), VERIFY_TIMEOUT).unwrap();
+        assert_eq!(answer["threads"].as_str(), Some(threads.to_string().as_str()));
+        drop(sidecar);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn consensus_verifier_keeps_normal_priority_and_inherited_thread_environment() {
+        let dir = scratch();
+        let parent_priority = priority(std::process::id());
+        let threads = std::env::var("RAYON_NUM_THREADS").unwrap_or_default();
+        let sidecar = Sidecar::spawn(&fake_prover(&dir), &dir).unwrap();
+        assert_eq!(priority(sidecar.pid), parent_priority, "verifier inherits the node's priority");
+        assert_eq!(priority(std::process::id()), parent_priority);
+        let answer = sidecar.request(json!({"cmd": "threads"}), VERIFY_TIMEOUT).unwrap();
+        assert_eq!(answer["threads"].as_str(), Some(threads.as_str()));
+        drop(sidecar);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn network_initialized_prover_spawn_200_times_smoke() {
+        initialize_network_for_spawn_smoke_test();
+        let dir = scratch();
+        let bin = fake_prover(&dir);
+        // The old Network.framework crash depends on framework/OS timing.
+        // This exercises the real spawn path, rather than asserting that an
+        // unsafe spawn would fail deterministically on every supported Mac.
+        for attempt in 0..200 {
+            let sidecar = Sidecar::spawn_prover(&bin, &dir)
+                .unwrap_or_else(|error| panic!("proving spawn {attempt}: {error}"));
+            // Priority is best effort and has its own focused regression.
+            // This smoke checks that the warmed network runtime permits a
+            // working sidecar, including its request/response pipes.
+            sidecar.request(json!({"cmd": "threads"}), VERIFY_TIMEOUT)
+                .unwrap_or_else(|error| panic!("proving request {attempt}: {error}"));
+            drop(sidecar);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -1275,6 +1420,7 @@ mod tests {
         let sc = Arc::new(Sidecar::spawn(&bin, &dir).expect("the fake sidecar starts"));
         let pid = sc.pid;
         let status = SharedStatus::default();
+        status.lock().unwrap().running = true;
         // A second, uncapped gate over the same sidecar: the under-cap path
         // (sample and no kill) without racing the hog's growth.
         let lenient = gate(bin.clone(), dir.clone(), sc.clone(), u64::MAX);
@@ -1289,6 +1435,7 @@ mod tests {
         lenient.check(&status);
         assert!(!lenient.dead.load(std::sync::atomic::Ordering::Relaxed));
         assert!(status.lock().unwrap().memory_bytes.is_some_and(|m| m > CAP));
+        assert!(!status.lock().unwrap().stale, "a healthy sidecar's status is current");
 
         // The kill: past the cap the process dies, the status says why, and a
         // back-off blocks the next start.
@@ -1297,6 +1444,8 @@ mod tests {
         assert!(g.blocked().is_some(), "a memory kill waits out its back-off");
         assert_eq!(g.blocked(), Some("memory"), "the wait says why");
         let s = status.lock().unwrap();
+        assert!(s.running, "the proving service stays enabled during recovery");
+        assert!(s.stale, "a watchdog kill makes the prover status stale");
         assert_eq!(s.paused.as_deref(), Some("memory"));
         assert!(s.memory_bytes.unwrap() > CAP);
         drop(s);
@@ -1315,6 +1464,7 @@ mod tests {
         g.ensure();
         assert!(!g.dead.load(std::sync::atomic::Ordering::Relaxed));
         assert!(crate::resources::footprint(g.current().pid).is_some(), "a fresh sidecar is running");
+        assert!(status.lock().unwrap().stale, "restarting alone does not make progress current");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -1668,11 +1818,21 @@ done
         let bin = fake(&dir, "kill -9 $$", "");
         let sidecar = Sidecar::spawn_prover(&bin, &dir).expect("the fake prover starts");
         let (status, claims) = service(&chain, bin, sidecar, dir.clone());
-        wait_for("the kill to be reported", 30, || status.lock().unwrap().error.is_some());
+        wait_for("the kill to be reported", 30, || {
+            let s = status.lock().unwrap();
+            if s.error.is_none() { return false }
+            assert!(s.running, "the proving service stays enabled during recovery");
+            assert!(s.stale, "a dead sidecar makes progress stale");
+            assert_eq!(s.proving, None);
+            true
+        });
         wait_for("the same block proven after the kill", 30, || {
-            claims.lock().unwrap().contains(&1)
+            status.lock().unwrap().proofs == 1
         });
         let s = status.lock().unwrap();
+        assert!(claims.lock().unwrap().contains(&1));
+        assert!(s.running);
+        assert!(!s.stale, "a successful proof makes progress current again");
         assert_eq!(s.proofs, 1);
         assert_eq!(s.last_height, Some(1));
         assert_eq!(s.error, None, "a successful proof clears the status error");
@@ -1692,14 +1852,22 @@ done
         let bin = fake(&dir, "", "exec 0<&-; sleep 300");
         let sidecar = Sidecar::spawn_prover(&bin, &dir).expect("the fake prover starts");
         let (status, claims) = service(&chain, bin, sidecar, dir.clone());
-        wait_for("the first proof", 30, || !claims.lock().unwrap().is_empty());
+        wait_for("the first proof", 30, || status.lock().unwrap().proofs >= 1);
         wait_for("the broken pipe to be reported", 30, || {
-            status.lock().unwrap().error.as_deref().is_some_and(|e| e.contains("pipe"))
+            let s = status.lock().unwrap();
+            if !s.error.as_deref().is_some_and(|e| e.contains("pipe")) { return false }
+            assert!(s.running, "the proving service stays enabled during recovery");
+            assert!(s.stale, "a broken pipe makes progress stale");
+            assert_eq!(s.proving, None);
+            true
         });
         wait_for("proving to resume past the broken pipe", 30, || {
-            claims.lock().unwrap().len() >= 2
+            status.lock().unwrap().proofs == 2
         });
         let s = status.lock().unwrap();
+        assert_eq!(claims.lock().unwrap().len(), 2);
+        assert!(s.running);
+        assert!(!s.stale, "a successful proof makes progress current again");
         assert_eq!(s.proofs, 2);
         assert_eq!(s.error, None, "a successful proof clears the status error");
         assert_eq!(s.paused, None);
@@ -1729,13 +1897,21 @@ done
         }
         // Proving waits out the kill's back-off (paused says why)…
         wait_for("proving paused while the replacement waits out its back-off", 30, || {
-            status.lock().unwrap().paused.as_deref() == Some("stalled")
+            let s = status.lock().unwrap();
+            if s.paused.as_deref() != Some("stalled") { return false }
+            assert!(s.running, "the proving service stays enabled during recovery");
+            assert!(s.stale, "a hung sidecar makes progress stale");
+            assert_eq!(s.proving, None);
+            true
         });
         // …then the same block is proven and the error clears.
         wait_for("the hung block proven after the watchdog kill", 120, || {
-            claims.lock().unwrap().contains(&1)
+            status.lock().unwrap().proofs == 1
         });
         let s = status.lock().unwrap();
+        assert!(claims.lock().unwrap().contains(&1));
+        assert!(s.running);
+        assert!(!s.stale, "a successful proof makes progress current again");
         assert_eq!(s.proofs, 1);
         assert_eq!(s.error, None);
         assert_eq!(s.paused, None);

@@ -121,12 +121,12 @@ struct AgentWalletPanel: View {
     #if DEBUG
     /// Design preview: one payee waiting and two past payments.
     static let previewRows: [String: [[String: Any]]] = [
-        "payee-requests.json": [["address": "0x4be1c0de00000000000000000000000000009a7f", "purpose": AppLanguage.korean ? "서버 호스팅" : "Server hosting",
+        "payee-requests.json": [["address": "0x4be1c0de00000000000000000000000000009a7f", "purpose": String(localized: "Server hosting"),
                                  "amount": "3", "asset": Brand.networkCoinTicker]],
         "history.json": [
             ["hash": "0x9f2c41d7aa00000000000000000000000000000000000000000000000000beef", "status": "confirmed",
              "amount": "1.5", "asset": Brand.networkCoinTicker, "date": Date().addingTimeInterval(-7_200).timeIntervalSince1970,
-             "to": ["0x12ab00000000000000000000000000000000090ab"], "payeeNames": ["Shop"], "purpose": AppLanguage.korean ? "API 사용료" : "API credits"],
+             "to": ["0x12ab00000000000000000000000000000000090ab"], "payeeNames": ["Shop"], "purpose": String(localized: "API credits")],
             ["hash": "0x1c0ffee000000000000000000000000000000000000000000000000000000042", "status": "failed",
              "amount": "0.2", "asset": Brand.networkCoinTicker, "date": Date().addingTimeInterval(-90_000).timeIntervalSince1970,
              "to": ["0x12ab00000000000000000000000000000000090ab"], "payeeNames": ["Shop"]],

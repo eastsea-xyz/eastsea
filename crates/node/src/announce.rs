@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 /// The `aether_announceWalletServer` params: `[validatorKey (hex),
 /// signature (hex)]`, the voting key's signature over this endpoint's own id.
 pub fn signed(keys: &CandidateKeys, endpoint: &EndpointId) -> Vec<String> {
+    keys.keys.check_binding();
     let sig = keys.keys.signer.sign(WALLET_SERVER_NAMESPACE, endpoint.as_bytes());
     vec![hex::encode(keys.validator_key()), hex::encode(commonware_codec::Encode::encode(&sig))]
 }

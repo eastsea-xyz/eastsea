@@ -167,6 +167,9 @@ final class UnattendedDaemon: ObservableObject {
     /// single source of what the daemon runs: the same argv the app's own node
     /// takes (minus `--exit-with-parent`), so a restart changes nothing.
     func syncMarker() {
+        // An aborted update must not start background work from recovery.
+        // The saved preference is applied again on normal startup/retry.
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         #if WALLET_SCREENS
         return
         #endif

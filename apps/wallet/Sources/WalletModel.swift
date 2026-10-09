@@ -32,6 +32,9 @@ final class WalletModel: ObservableObject {
     @Published private(set) var contacts: [WalletContact] = []
 
     init(accountStore: AccountStore? = nil) {
+        #if os(macOS)
+        _ = LaunchRecovery.shared
+        #endif
         self.accountStore = accountStore ?? AccountStore.wallet()
         self.accountStore.canChangeAccount = { [weak self] in
             guard let self else { return false }
@@ -264,6 +267,9 @@ final class WalletModel: ObservableObject {
     private var timer: Timer?
 
     func start() {
+        #if os(macOS)
+        guard !LaunchRecovery.shared.isSafeMode else { return }
+        #endif
         guard timer == nil else { return }
         #if DEBUG
         if DesignPreview.on { return loadPreview() }
@@ -293,6 +299,9 @@ final class WalletModel: ObservableObject {
     }
 
     private func activateAccount() {
+        #if os(macOS)
+        guard !LaunchRecovery.shared.isSafeMode else { return }
+        #endif
         #if DEBUG
         if DesignPreview.on { loadPreview(); return }
         #endif

@@ -7,6 +7,9 @@ import Sparkle
 
 @main
 struct AetherWalletApp: App {
+    #if os(macOS)
+    @StateObject private var recovery = LaunchRecovery.shared
+    #endif
     @StateObject private var model = WalletModel()
     #if os(macOS)
     @StateObject private var node = NodeController()
@@ -23,7 +26,17 @@ struct AetherWalletApp: App {
     var body: some Scene {
         WindowGroup(Brand.name, id: "main") {
             #if os(macOS)
-            ContentView()
+            Group {
+                if recovery.isSafeMode {
+                    VStack(spacing: 0) {
+                        safeModeBanner
+                        Spacer()
+                    }
+                    .frame(minWidth: 380, minHeight: 300)
+                } else {
+                    ContentView()
+                }
+            }
                 .environmentObject(model)
                 .environmentObject(node)
                 .environmentObject(unattended)
@@ -32,7 +45,7 @@ struct AetherWalletApp: App {
                 .environmentObject(earnings)
                 .onAppear {
                     appDelegate.start(node: node, model: model, unattended: unattended)
-                    earnings.attach(node, operatorAddress: { model.payoutAddress })
+                    if !recovery.isSafeMode { earnings.attach(node, operatorAddress: { model.payoutAddress }) }
                     NSApp.setActivationPolicy(.regular)
                     #if DEBUG
                     if ResizeBenchmark.on { ResizeBenchmark.run() }
@@ -40,10 +53,12 @@ struct AetherWalletApp: App {
                 }
                 .environment(\.liveResize, resizeMonitor.active)
                 // The Aether → EastSea data move, while it runs (M1).
-                .overlay { MigrationOverlay(status: appDelegate.migration) }
+                .overlay {
+                    if !recovery.isSafeMode { MigrationOverlay(status: appDelegate.migration) }
+                }
                 // Closing the window keeps Aether in the menu bar (the node keeps running).
                 .onDisappear { NSApp.setActivationPolicy(.accessory) }
-                .onOpenURL { model.open(url: $0) }
+                .onOpenURL { if !recovery.isSafeMode { model.open(url: $0) } }
                 // aether:// links go to the open window instead of opening another one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
             #else
@@ -87,15 +102,25 @@ struct AetherWalletApp: App {
         #endif
         #if os(macOS)
         Settings {
-            SettingsView().environmentObject(node).environmentObject(model).environmentObject(unattended).environmentObject(appDelegate.updates)
+            if recovery.isSafeMode {
+                safeModeBanner.frame(minWidth: 380)
+            } else {
+                SettingsView().environmentObject(node).environmentObject(model).environmentObject(unattended).environmentObject(appDelegate.updates)
+            }
         }
         // Always in the menu bar: balance, node and prover at a glance; the window opens from here.
         MenuBarExtra {
-            MenuBarPanel().environmentObject(model).environmentObject(node).environmentObject(earnings).environmentObject(unattended)
-                .environmentObject(appDelegate.health)
+            Group {
+                if recovery.isSafeMode {
+                    safeModeBanner.frame(width: 340)
+                } else {
+                    MenuBarPanel().environmentObject(model).environmentObject(node).environmentObject(earnings).environmentObject(unattended)
+                        .environmentObject(appDelegate.health)
+                }
+            }
                 .onAppear {
                     appDelegate.start(node: node, model: model, unattended: unattended)
-                    earnings.attach(node, operatorAddress: { model.payoutAddress })
+                    if !recovery.isSafeMode { earnings.attach(node, operatorAddress: { model.payoutAddress }) }
                 }
         } label: {
             Image(systemName: node.prover?.proving != nil ? "cube.transparent.fill" : "cube.transparent")
@@ -103,6 +128,15 @@ struct AetherWalletApp: App {
         .menuBarExtraStyle(.window)
         #endif
     }
+
+    #if os(macOS)
+    private var safeModeBanner: some View {
+        SafeModeBanner {
+            appDelegate.retryNormal(node: node, model: model, unattended: unattended)
+            if !recovery.isSafeMode { earnings.attach(node, operatorAddress: { model.payoutAddress }) }
+        }
+    }
+    #endif
 }
 
 #if os(macOS)
@@ -123,13 +157,14 @@ struct PageCommands: View {
 /// Aether lives in the menu bar: closing the window keeps it (and its node)
 /// running; Quit stops both.
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// First, before anything below calls `DataMigration.ensure()` (the
-    /// tracker does, during this object's own initialisation): the move's
-    /// progress and outcome must reach the window (release-070 review, M1).
-    let migration = MigrationStatus.shared
+    private let recovery = LaunchRecovery.shared
+    /// Normal startup wires the move's progress before migration begins;
+    /// recovery leaves the data move dormant until an explicit normal retry.
+    lazy var migration = MigrationStatus.shared
     weak var node: NodeController?
     weak var model: WalletModel?
     private let releaseGate = ReleaseUpdateGate()
+    private var launchUpdateItem: SUAppcastItem?
     /// Sparkle: checks the signed appcast on GitHub Releases and installs updates.
     lazy var updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
     /// What the Network page shows: when updates were last checked, and a Check button.
@@ -138,11 +173,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the banner, the notifications, the 90 s re-discovery.
     @MainActor lazy var health = HealthMonitor()
     private var started = false
+    private var normalWorkStarted = false
     /// Tells a validator Mac when the network pauses and resumes.
     private var pauseWatch: AnyCancellable?
     /// Update failures, persisted and retried by cause (red team #11):
     /// discover → download → verify → install → health, across relaunches.
-    private var tracker = UpdateTracker()
+    private lazy var tracker: UpdateTracker = {
+        if !recovery.isSafeMode {
+            _ = migration
+            DataMigration.ensure()
+        }
+        // Keep the update record in its existing place, but reading it in
+        // recovery must not start the unrelated node/wallet data migration.
+        let record = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("EastSea/update-state.json")
+        return UpdateTracker(recordURL: record)
+    }()
     /// 30 s: the post-update health window and the scheduled retries.
     private var updateTickTimer: Timer?
     /// Sparkle's install-and-relaunch block for a downloaded, verified update,
@@ -156,7 +202,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static let updateLog = Logger(subsystem: "com.pipln.eastsea", category: "update")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        if DesignPreview.on { return }
+        #endif
         MainActor.assumeIsolated {
+            recovery.startHealthWindow()
+            _ = updater
             // Whether the last update landed is a fact about the running
             // binary, not about what Sparkle last said (red team #11): resolve
             // the persisted record before the first check runs.
@@ -167,11 +218,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if case .awaitingHealth(let version, let build, _) = tracker.state {
                 Self.updateLog.notice("relaunched as \(version, privacy: .public) (\(build, privacy: .public)); the node starts through the normal start path")
             }
+            if recovery.isSafeMode { updater.updater.checkForUpdatesInBackground() }
         }
-        #if DEBUG
-        if DesignPreview.on { return }
-        #endif
-        _ = updater  // start checking right away (hourly, and when the chain schedules a newer protocol)
     }
 
     /// Once per launch, from whichever appears first (window or menu-bar panel).
@@ -201,23 +249,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
         self.node = node
         self.model = model
+        defer {
+            // An immediate recovery check may finish before the first
+            // window appears. Run its approval once the committee is pinned.
+            if let item = launchUpdateItem {
+                launchUpdateItem = nil
+                startReleasePreflight(item)
+            }
+        }
+        unattended.nodeEnabled = node.enabled
+        unattended.wrongLocation = node.wrongLocation
+        node.unattended = unattended
         let check: () -> Void = { [weak self] in self?.updater.updater.checkForUpdatesInBackground() }
         node.onUpgradeNeeded = check
         node.onUpdateMomentChanged = { [weak self] in self?.installIfSafe() }
+        model.onOutdated = check
+        updateTickTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updateTick() }
+        }
+        if recovery.isSafeMode {
+            // Release approval still needs the bundled committee and chain;
+            // this opens no key and starts no periodic wallet/node work.
+            model.pinCommittee()
+            return
+        }
+        startNormalWork(node: node, model: model, unattended: unattended)
+    }
+
+    @MainActor func retryNormal(node: NodeController, model: WalletModel, unattended: UnattendedDaemon) {
+        guard recovery.isSafeMode, updateShutdownTask == nil, !updateShutdownReady, !node.updateInProgress else { return }
+        start(node: node, model: model, unattended: unattended)
+        recovery.retryNormal()
+        startNormalWork(node: node, model: model, unattended: unattended)
+    }
+
+    @MainActor private func startNormalWork(node: NodeController, model: WalletModel, unattended: UnattendedDaemon) {
+        guard !normalWorkStarted else { return }
+        normalWorkStarted = true
+        node.prepareNormalLaunch()
         node.authorizeKeyRebind = { [weak model] address, typed, directory in
             guard let model else { throw NodeKeyRebind.Refusal.ownerKeyUnavailable }
             return try await model.authorizeNodeKeyRebind(validatorAddress: address, typedAddress: typed,
                                                          dataDirectory: directory)
         }
-        model.onOutdated = check
         pauseWatch = model.$chainPausedSince
             .removeDuplicates { ($0 == nil) == ($1 == nil) }
             .sink { [weak node] since in
                 MainActor.assumeIsolated { node?.networkPaused(since: since) }
             }
-        updateTickTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.updateTick() }
-        }
         // Open at login by default (Settings can turn it off). Not from a
         // wrong place (red team #10): a login item pointing into a DMG or a
         // translocated copy is gone at the next unmount, and the "applied"
@@ -231,10 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // switch, this owns the daemon. Wire them before the node resumes,
         // so its first start already writes the marker — and if a daemon node
         // survived the reboot, the node's run.lock exit turns into attach.
-        unattended.nodeEnabled = node.enabled
-        unattended.wrongLocation = node.wrongLocation
         unattended.storageShards = node.storageShards
-        node.unattended = unattended
         unattended.refreshStatus()
         unattended.refreshPower()
         node.restore()
@@ -273,7 +349,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateTickTimer?.invalidate()
             // Update termination was approved only after the async shutdown
             // acquired run.lock. Ordinary quit retains the daemon's behavior.
-            node?.stop()
+            if !recovery.isSafeMode || node?.updateInProgress == true { node?.stop() }
+            recovery.cleanShutdown()
         }
     }
 
@@ -319,7 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             inOwnSlot: nil,
             sendSheetOpen: model.sendSheetOpen,
             signing: model.busy,
-            migrating: migration.moving,
+            migrating: !recovery.isSafeMode && migration.moving,
             // The block-data move (claude/node-status-storage) wires in here.
             storageMoving: node.storageMovePercent != nil)
     }
@@ -328,7 +405,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// bypass the same storage/signing/membership gate merely because we quit.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
-            guard !migration.moving, node?.storageMovePercent == nil, model?.busy != true else {
+            guard (recovery.isSafeMode || !migration.moving), node?.storageMovePercent == nil, model?.busy != true else {
                 if updateShutdownReady {
                     updateShutdownReady = false
                     self.node?.abortUpdatePreparation()
@@ -415,7 +492,8 @@ extension AppDelegate: SPUUpdaterDelegate {
     }
 
     @MainActor private func startReleasePreflight(_ item: SUAppcastItem) {
-        releaseGate.inspect(item, validators: model?.validators ?? 0) { [weak self] pending, issue, ready in
+        guard let model else { launchUpdateItem = item; return }
+        releaseGate.inspect(item, validators: model.validators) { [weak self] pending, issue, ready in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.updates.pendingRelease = pending

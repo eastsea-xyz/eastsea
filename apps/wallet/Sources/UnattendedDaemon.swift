@@ -20,15 +20,8 @@ final class UnattendedDaemon: ObservableObject {
     /// bundle, so per-user choices travel in the marker instead.
     static let plistName = "com.pipln.eastsea.node.plist"
 
-    /// One of these, in the user's words (Settings).
-    enum Status: Equatable {
-        case off
-        /// Registered, but the user has not allowed it in System Settings ▸
-        /// Login Items yet — the daemon does not run until they do.
-        case needsApproval
-        case approved
-        case failed(String)
-    }
+    /// The same pure state drives Settings and node-status.log.
+    typealias Status = UnattendedDecision.Status
 
     @Published private(set) var status: Status = .off
     /// The honest power facts (`pmset -g`, `fdesetup status`). The app reads,
@@ -77,22 +70,45 @@ final class UnattendedDaemon: ObservableObject {
     var storageShards: Int?
 
     private var service: SMAppService { SMAppService.daemon(plistName: Self.plistName) }
+    private var registrationFailure: String?
+
+    /// Status is a registration lookup, not a bundle/notarization check.
+    /// Validate the two packaged inputs separately before interpreting it.
+    private var bundledServiceAvailable: Bool {
+        let root = Bundle.main.bundleURL
+        let plist = root.appendingPathComponent("Contents/Library/LaunchDaemons/\(Self.plistName)")
+        guard let data = try? Data(contentsOf: plist),
+              let values = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
+              values["Label"] as? String == "com.pipln.eastsea.node",
+              values["BundleProgram"] as? String == "Contents/Resources/eastsea-node-daemon.sh" else { return false }
+        return FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("Contents/Resources/eastsea-node-daemon.sh").path)
+    }
+
+    private func registrationStatus(_ value: SMAppService.Status) -> UnattendedDecision.ServiceStatus {
+        switch value {
+        case .notRegistered: return .notRegistered
+        case .enabled: return .enabled
+        case .requiresApproval: return .requiresApproval
+        case .notFound: return .notFound
+        @unknown default: return .unknown
+        }
+    }
+
+    /// AppStorage restores the choice without invoking its didSet. Reconcile
+    /// a saved opt-in once at startup, including a service never seen by macOS.
+    func restore() {
+        if enabled { applyEnabledChange() } else { refreshStatus() }
+    }
 
     /// Re-read the approval state (called on Settings appearance and after
     /// register/unregister — the user approves outside the app, so the state
     /// changes while we are not looking).
     func refreshStatus() {
         let before = status
-        if !enabled {
-            status = .off
-        } else {
-            switch service.status {
-            case .enabled: status = .approved
-            case .requiresApproval, .notRegistered: status = .needsApproval
-            case .notFound: status = .failed(String(localized: "This build of the app cannot keep the node running after restarts."))
-            default: status = .off
-            }
-        }
+        status = UnattendedDecision.status(enabled: enabled, bundledService: bundledServiceAvailable,
+                                          service: registrationStatus(service.status),
+                                          registrationFailure: registrationFailure)
+        if status == .off || status == .approved || status == .needsApproval { registrationFailure = nil }
         // Every change of the daemon's state goes to node-status.log: the app
         // node keeps running whatever this says (it never hands over to a
         // daemon that is not answering — the app only attaches to a node
@@ -102,6 +118,9 @@ final class UnattendedDaemon: ObservableObject {
             NodeStatusLog.append(NodeStatusLog.line(at: Date(), event: "unattended", detail: "\(before) -> \(status)", facts: nil),
                                  in: NodeController.dataDir)
         }
+        // Approval can arrive outside the app after a registration error
+        // removed the marker. Reconcile it even if our own node stayed up.
+        syncMarker()
     }
 
     /// The block data lives on a disk the daemon cannot open.
@@ -141,15 +160,23 @@ final class UnattendedDaemon: ObservableObject {
         // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
         return 
         #endif
+        registrationFailure = nil
         if enabled {
+            let service = self.service
             do {
-                if service.status == .notRegistered { try service.register() }
+                if UnattendedDecision.shouldRegister(enabled: enabled, bundledService: bundledServiceAvailable,
+                                                      service: registrationStatus(service.status)), !wrongLocation {
+                    try service.register()
+                }
             } catch {
-                NodeStatusLog.append(NodeStatusLog.line(at: Date(), event: "unattended_registration_failed",
-                                                       detail: error.localizedDescription, facts: nil),
-                                     in: NodeController.dataDir)
-                status = .failed(String(localized: "Could not keep the node running after restarts."))
-                return
+                // Withheld consent is an expected approval step. An actual
+                // registration error stays visible until a retry or approval.
+                if service.status != .requiresApproval && service.status != .enabled {
+                    NodeStatusLog.append(NodeStatusLog.line(at: Date(), event: "unattended_registration_failed",
+                                                           detail: error.localizedDescription, facts: nil),
+                                         in: NodeController.dataDir)
+                    registrationFailure = String(localized: "Could not keep the node running after restarts.")
+                }
             }
         } else {
             try? service.unregister()
@@ -157,7 +184,6 @@ final class UnattendedDaemon: ObservableObject {
             stopDaemonNode()
         }
         refreshStatus()
-        syncMarker()
     }
 
     /// The default-on rule (a Mac in or entering the voting set keeps running
@@ -183,7 +209,7 @@ final class UnattendedDaemon: ObservableObject {
         #endif
         // The marker makes the root daemon run the node — past the app's own
         // start gate — so it obeys the same gate (release-070 review, B4).
-        guard respawnSuspensions == 0, enabled, nodeEnabled, !wrongLocation, DataMigration.mayStartNode() == nil else {
+        guard respawnSuspensions == 0, enabled, status.allowsMarker, nodeEnabled, !wrongLocation, DataMigration.mayStartNode() == nil else {
             Marker.remove()
             return
         }

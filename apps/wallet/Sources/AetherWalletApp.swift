@@ -235,7 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         unattended.wrongLocation = node.wrongLocation
         unattended.storageShards = node.storageShards
         node.unattended = unattended
-        unattended.refreshStatus()
+        unattended.restore()
         unattended.refreshPower()
         node.restore()
         // A slow data move finishing in the background (M1) lets the node

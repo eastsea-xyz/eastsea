@@ -13,6 +13,7 @@ final class WalletModel: ObservableObject {
     let accountStore: AccountStore
     private var accountSubscription: AnyCancellable?
     private var operationGate = WalletOperationGate()
+    private var migrationReview: UUID?
     private struct Operation {
         let token: WalletOperationGate.Token
         let generation: UInt64
@@ -37,6 +38,7 @@ final class WalletModel: ObservableObject {
             guard let self else { return false }
             return !self.busy && !self.sendSheetOpen && self.paymentRequest == nil
                 && self.callRequest == nil && self.connectRequest == nil && self.registration != .working
+                && self.migrationReview == nil
                 && !self.operationGate.blocksAccountChange
         }
         // No cached zero can destroy a key. A fresh verified native balance
@@ -174,6 +176,23 @@ final class WalletModel: ObservableObject {
               context.matches(account: now.account, chainId: now.chainId, port: now.port, generation: now.generation,
                               permissionGeneration: now.permissionGeneration) else { return false }
         return origin.map { connectedSiteAddress(origin: $0)?.lowercased() == context.account.lowercased() } ?? true
+    }
+
+    var migrationReviewOpen: Bool { migrationReview != nil }
+
+    func beginMigrationReview(context: DappRequestContext) -> UUID? {
+        guard !busy, !sendSheetOpen, migrationReview == nil, isCurrentDappContext(context) else { return nil }
+        let review = UUID()
+        migrationReview = review
+        return review
+    }
+
+    func isCurrentMigrationReview(_ review: UUID, context: DappRequestContext) -> Bool {
+        migrationReview == review && isCurrentDappContext(context)
+    }
+
+    func endMigrationReview(_ review: UUID) {
+        if migrationReview == review { migrationReview = nil }
     }
 
     func simulatePageTransaction(_ tx: PageTransaction, context: DappRequestContext) async throws -> SimulatedPageTransaction {

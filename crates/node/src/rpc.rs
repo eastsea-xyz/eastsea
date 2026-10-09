@@ -3185,9 +3185,17 @@ async fn execute_rpc_call(st: &RpcState, p: &Value, gas_cap: u64, mode: CallMode
     tokio::task::spawn_blocking(move || -> RpcResult {
         let _held = budget;
         let data: aether_types::Bytes = data.into();
+        if matches!(mode, CallMode::Output) {
+            let r = aether_execution::call(&exec.state, &ctx, from, to, data, value, gas)
+                .map_err(|e| (-32000, e))?;
+            if !r.success {
+                return Err((3, format!("execution reverted: 0x{}", hex::encode(&r.output))));
+            }
+            return Ok(json!(format!("0x{}", hex::encode(&r.output))));
+        }
         let r = match mode {
-            CallMode::Simulation => aether_execution::simulate(&exec.state, &ctx, from, to, data.clone(), value, gas),
-            _ => aether_execution::call(&exec.state, &ctx, from, to, data.clone(), value, gas),
+            CallMode::Simulation => crate::simulation::simulate(&exec.state, &ctx, from, to, data.clone(), value, gas),
+            _ => crate::simulation::call(&exec.state, &ctx, from, to, data.clone(), value, gas),
         }.map_err(|e| (-32000, e))?;
         if matches!(mode, CallMode::Simulation) {
             return Ok(json!({
@@ -3209,9 +3217,6 @@ async fn execute_rpc_call(st: &RpcState, p: &Value, gas_cap: u64, mode: CallMode
             }));
         }
         if !r.success {
-            if matches!(mode, CallMode::Output) {
-                return Err((3, format!("execution reverted: 0x{}", hex::encode(&r.output))));
-            }
             return Err((3, r.failure_reason.unwrap_or_else(|| "Execution reverted.".into())));
         }
         if matches!(mode, CallMode::Estimate) {
@@ -3221,7 +3226,7 @@ async fn execute_rpc_call(st: &RpcState, p: &Value, gas_cap: u64, mode: CallMode
             let mut lower = r.gas_used.saturating_sub(1);
             while upper.saturating_sub(lower) > 1 {
                 let middle = lower + (upper - lower) / 2;
-                match aether_execution::call(&exec.state, &ctx, from, to, data.clone(), value, middle) {
+                match crate::simulation::call(&exec.state, &ctx, from, to, data.clone(), value, middle) {
                     Ok(result) if result.success => upper = middle,
                     Ok(_) => lower = middle,
                     Err(reason) if reason.contains("gas limit") || reason.contains("gas floor") => lower = middle,

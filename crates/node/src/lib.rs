@@ -33,6 +33,7 @@ pub mod roster;
 pub mod rewards_view;
 pub mod rotation;
 pub mod rpc;
+mod simulation;
 pub mod shards;
 pub mod spread;
 pub mod shadow;

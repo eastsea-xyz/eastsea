@@ -34,8 +34,8 @@ struct DappSimulationView: View {
             if simulation.nativeDeltaWei == "0" && simulation.changes.isEmpty {
                 Text("No balance changes were observed.").font(.aeBody)
             }
-            if !simulation.balancesMeasured && !simulation.changes.isEmpty {
-                Text("Token movements reported by the contract; balances could not be measured.").font(.aeFootnote).foregroundStyle(Color.warn)
+            if !simulation.balancesMeasured {
+                Text("Some token balances could not be measured. Changes may be missing.").font(.aeFootnote).foregroundStyle(Color.warn)
             }
             Text("Approvals").font(.aeFootnote).foregroundStyle(.secondary)
             if simulation.approvals.isEmpty {
@@ -116,6 +116,8 @@ struct AccountMigrationPanel: View {
     @State private var notice: String?
     @State private var destination = ""
     @State private var sendSheet = false
+    @State private var migrationReview: UUID?
+    @State private var migrationContext: DappRequestContext?
     @State private var supportGeneration: UInt64 = 0
 
     var body: some View {
@@ -166,12 +168,24 @@ struct AccountMigrationPanel: View {
         .task(id: model.status?.chainId) { await checkSupport() }
         .task(id: model.account?.certifiedBlock) { await checkSupport() }
         .onChange(of: model.address) { _, _ in support = nil; confirmUpgrade = false; Task { await checkSupport() } }
-        .sheet(isPresented: $sendSheet) { SendSheet().environmentObject(model) }
+        .onChange(of: model.dappContext) { _, current in
+            if let context, context != current { confirmUpgrade = false; self.context = nil }
+            if let migrationContext, migrationContext != current { sendSheet = false; endMigration() }
+        }
+        .onDisappear { confirmUpgrade = false; endMigration() }
+        .sheet(isPresented: $sendSheet, onDismiss: endMigration) {
+            let approvedReview = migrationReview
+            let approvedContext = migrationContext
+            SendSheet(stillApproved: {
+                guard sendSheet, let approvedReview, let approvedContext else { return false }
+                return model.isCurrentMigrationReview(approvedReview, context: approvedContext)
+            }).environmentObject(model)
+        }
     }
 
     private var canMove: Bool {
         AccountMigration.validDestination(destination.trimmingCharacters(in: .whitespacesAndNewlines), current: model.address)
-            && !model.busy && !busy
+            && !model.busy && !busy && !model.sendSheetOpen && !model.migrationReviewOpen
     }
 
     private func checkSupport() async {
@@ -186,7 +200,6 @@ struct AccountMigrationPanel: View {
             let result = try await Task.detached { try accountSigningSupport(address: snapshot.account) }.value
             guard !Task.isCancelled, turn == supportGeneration, model.isCurrentDappContext(snapshot) else { return }
             support = result
-            context = snapshot
         } catch {
             guard !Task.isCancelled, turn == supportGeneration, model.isCurrentDappContext(snapshot) else { return }
             support = nil
@@ -207,7 +220,7 @@ struct AccountMigrationPanel: View {
     }
 
     private func beginMigration(_ token: TokenHolding?) {
-        guard canMove else { return }
+        guard canMove, let snapshot = model.dappContext else { return }
         let to = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         if let token {
             guard let decimals = TokenDenomination.of(chainId: model.status?.chainId ?? 0, address: token.token.address, claimed: token.token).decimals else { return }
@@ -220,9 +233,18 @@ struct AccountMigrationPanel: View {
             }
             model.sendAmount = Wei.exact(WeiMath.subtract(balance, fee))
         }
+        guard let review = model.beginMigrationReview(context: snapshot) else { return }
+        migrationReview = review
+        migrationContext = snapshot
         model.sendTo = to
         model.sendToken = token
         model.paymentRequest = nil
         sendSheet = true
+    }
+
+    private func endMigration() {
+        if let migrationReview { model.endMigrationReview(migrationReview) }
+        migrationReview = nil
+        migrationContext = nil
     }
 }

@@ -21227,6 +21227,40 @@
         }
       }
     },
+    "Some token balances could not be measured. Changes may be missing." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Some token balances could not be measured. Changes may be missing."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一部のトークン残高を測定できませんでした。残高の変化が一部表示されない場合があります。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "일부 토큰 잔액은 확인할 수 없었어요. 잔액 변화가 빠져 있을 수 있어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "部分代币的余额无法测量。可能遗漏余额变化。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "部分代幣的餘額無法測量。可能遺漏餘額變化。"
+          }
+        }
+      }
+    },
     "Someone sent these to you. Nothing you signed ever touched them — anyone can create a token, so check the contract address before trusting one." : {
       "localizations" : {
         "en" : {

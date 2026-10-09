@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Wallet } from '../src/lib/wallet.js';
+import { STRINGS } from '../src/lib/i18n.js';
 
 // Import after the test definitions are loaded so the old wallet reports a
 // separate red result for every newly covered behavior, rather than one
@@ -236,6 +237,43 @@ test('typed requests reject wrong chain, absent chain, malformed domain and acco
   }
   assert.throws(() => normalize([OTHER, data()], OWN, CHAIN), (e) => e.key === 'wrongAccount');
   assert.equal(normalize([OWN, JSON.stringify(data())], OWN, CHAIN).message.value, '900719925474099300000');
+});
+
+// These two mock-encoder regressions check that the adapter preserves raw
+// JSON for the shared Rust parser; they do not execute the real WASM parser.
+for (const [label, literal] of [
+  ['duplicate-key', '"value":"1","value":"2"'],
+  ['fractional-token', '"value":1.0000000000000001'],
+]) {
+  test(`typed adapter preserves original ${label} JSON for shared-core refusal (mock encoder)`, async () => {
+    const f = fixture();
+    const typed = data(); typed.message.value = '1';
+    const raw = JSON.stringify(typed).replace('"value":"1"', literal);
+    const encode = f.wasm.prepareTypedMessage;
+    let forwarded;
+    f.wasm.prepareTypedMessage = (publicKey, json, chain) => {
+      forwarded = json;
+      if (json.includes(literal)) throw new Error('mock shared-core strict input refusal');
+      return encode(publicKey, json, chain);
+    };
+    await assert.rejects(f.signer().prepareTyped('https://dapp.test', [OWN, raw]), (e) => e.key === 'malformedTyped');
+    assert.equal(forwarded, raw, 'the shared encoder must receive the original source tokens');
+    assert.equal(f.signed, 0);
+  });
+}
+
+test('readable typed fields retain empty nested structs with a translated no-fields row', () => {
+  const typed = data();
+  typed.types.Permit.push({ name: 'authorization', type: 'Authorization' });
+  typed.types.Authorization = [];
+  typed.message.authorization = {};
+  assert.deepEqual(feature('typedFieldView')(typed).find((row) => row.path === 'authorization'), {
+    path: 'authorization', type: 'Authorization', value: '', displayKey: 'noFields',
+  });
+  for (const locale of ['en', 'ko', 'ja', 'zh-Hans', 'zh-Hant']) {
+    assert.equal(typeof STRINGS[locale].noFields, 'string', `${locale} must translate the visible empty-struct row`);
+    assert.ok(STRINGS[locale].noFields.trim());
+  }
 });
 
 test('readable typed fields preserve exact integers and nested paths while putting bytes in details', () => {

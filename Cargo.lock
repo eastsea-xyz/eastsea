@@ -245,6 +245,7 @@ dependencies = [
  "rand_chacha 0.10.0",
  "redb",
  "reqwest 0.12.28",
+ "revm",
  "serde",
  "serde_json",
  "sha1 0.10.7",

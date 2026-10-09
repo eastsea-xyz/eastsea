@@ -22,6 +22,7 @@ aether-proving.workspace = true
 aether-consensus.workspace = true
 aether-net.workspace = true
 alloy-primitives.workspace = true
+revm = { version = "=43.0.3", default-features = false, features = ["std"] }
 serde.workspace = true
 serde_json.workspace = true
 blake3.workspace = true

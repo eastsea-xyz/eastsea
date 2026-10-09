@@ -1420,6 +1420,7 @@ private struct ActivityList: View {
 // MARK: - Sheets
 
 struct SendSheet: View {
+    var stillApproved: () -> Bool = { true }
     @EnvironmentObject var model: WalletModel
     @Environment(\.dismiss) private var dismiss
     /// The send flow's checks (docs/research/token-spam-2026.md §6.3). Nothing
@@ -1735,6 +1736,10 @@ struct SendSheet: View {
     /// parsed once, under the decimals this sheet showed it under — and the
     /// confirm card signs exactly that, never a re-read of the form.
     private func send() {
+        guard stillApproved() else {
+            refusal = String(localized: "This approval is no longer valid. Ask the site to try again.")
+            return
+        }
         guard valid, risk.poisoningMatch == nil || ackPoison else { return }
         refusal = nil
         let dry = recipients.count == 1
@@ -1760,6 +1765,10 @@ struct SendSheet: View {
         Task { @MainActor in
             let outcome = dry ? await WalletModel.dryRun(from: model.address, to: callTo, valueWei: value, data: data) : .unchecked
             checking = false
+            guard stillApproved() else {
+                refusal = String(localized: "This approval is no longer valid. Ask the site to try again.")
+                return
+            }
             if case .reverted(let why) = outcome {
                 model.note("Dry run refused: \(why)")
                 refusal = String(localized: "This transaction could not run. Nothing was sent.")
@@ -1824,6 +1833,11 @@ struct SendSheet: View {
                 }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button {
+                    guard stillApproved() else {
+                        refusal = String(localized: "This approval is no longer valid. Ask the site to try again.")
+                        intent = nil
+                        return
+                    }
                     if let why = model.sendTokenTx(frozen.with(acknowledged: ackUnits)) {
                         // Refused at signing time (something moved): back to the
                         // form with the reason, so the send is confirmed afresh.

@@ -207,6 +207,7 @@ export function typedFieldView(typed, rootType = typed.primaryType, rootValue = 
       if (!Array.isArray(fields) || !object(value) || fields.length > 128) throw refusal('malformedTyped', -32602);
       const names = fields.map((f) => f.name);
       if (new Set(names).size !== names.length || Object.keys(value).some((key) => !names.includes(key))) throw refusal('malformedTyped', -32602);
+      if (!fields.length) row({ path, type, value: '', displayKey: 'noFields' });
       for (const field of fields) {
         if (!object(field) || typeof field.name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(field.name) || typeof field.type !== 'string' || !Object.hasOwn(value, field.name)) throw refusal('malformedTyped', -32602);
         visit(field.type, value[field.name], path ? `${path}.${field.name}` : field.name, depth + 1);
@@ -307,7 +308,10 @@ export class DappSigning {
 
   prepared(typed, context) {
     let result;
-    try { result = JSON.parse(this.wasm.prepareTypedMessage(hex.dec(context.publicKey), JSON.stringify(typed), BigInt(context.chainId))); }
+    try {
+      const json = typeof typed === 'string' ? typed : JSON.stringify(typed);
+      result = JSON.parse(this.wasm.prepareTypedMessage(hex.dec(context.publicKey), json, BigInt(context.chainId)));
+    }
     catch { throw refusal('malformedTyped', -32602); }
     if (!ADDRESS.test(result.account) || result.account.toLowerCase() !== context.account.toLowerCase() || Number(result.chain_id) !== context.chainId || !object(result.typed_data) || !/^0x[0-9a-fA-F]{64}$/.test(result.digest_hex)) throw refusal('malformedTyped', -32602);
     return result;
@@ -315,9 +319,11 @@ export class DappSigning {
 
   async prepareTyped(origin, params) {
     const context = await this.context(origin), typed = normalizeTypedRequest(params, context.account, context.chainId);
+    // Preserve source tokens for the shared parser's duplicate/integer checks.
+    const input = typeof params[1] === 'string' ? params[1] : typed;
     const request = { origin, kind: 'typed', context };
     await this.supported(request);
-    const prepared = this.prepared(typed, context);
+    const prepared = this.prepared(input, context);
     const canonical = normalizeTypedRequest([context.account, prepared.typed_data], context.account, context.chainId);
     return { ...request, typed_data: canonical, fields: typedFieldView(canonical), domainFields: typedFieldView(canonical, 'EIP712Domain', canonical.domain),
       typedKey: stable(canonical), digest: prepared.digest_hex, previewId: crypto.randomUUID() };

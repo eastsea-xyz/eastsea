@@ -66,6 +66,7 @@ const rows = {
   callData: ['Call data', '호출 데이터', '呼び出しデータ', '调用数据', '呼叫資料'],
   byteCount: ['{count} bytes', '{count}바이트', '{count}バイト', '{count} 字节', '{count} 位元組'],
   emptyList: ['Empty list', '빈 목록', '空の一覧', '空列表', '空清單'],
+  noFields: ['No fields', '필드 없음', '項目なし', '无字段', '沒有欄位'],
   yes: ['Yes', '예', 'はい', '是', '是'],
   no: ['No', '아니요', 'いいえ', '否', '否'],
   unrecognizedLogs: ['Some contract effects could not be decoded.', '일부 컨트랙트 결과를 해석할 수 없습니다.', '一部のコントラクトの効果は読み取れませんでした。', '部分合约效果无法解码。', '部分合約效果無法解碼。'],

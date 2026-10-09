@@ -259,6 +259,20 @@ enum NodeLogTail {
         let want = UInt64(max(0, wanted))
         return size > want ? size - want : 0
     }
+
+    /// Read only the snapshot's tail window, even if a writer grows the log.
+    /// Failed seeks/reads throw instead of falling back to the whole file.
+    static func read(_ url: URL, wanted: Int) throws -> Data {
+        guard wanted > 0 else { return Data() }
+        return try autoreleasepool {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            let size = try handle.seekToEnd()
+            let start = offset(size: size, wanted: wanted)
+            try handle.seek(toOffset: start)
+            return try handle.read(upToCount: Int(size - start)) ?? Data()
+        }
+    }
 }
 
 enum NodeMacConfirmation {
@@ -533,7 +547,9 @@ enum NodeStatusLog {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { return }
         let url = dir.appendingPathComponent(fileName)
-        let existing = (try? Data(contentsOf: url)) ?? Data()
+        // The extra byte preserves half-on-overflow trimming for a log that
+        // was already oversized, including an empty appended line.
+        let existing = (try? NodeLogTail.read(url, wanted: cap + 1)) ?? Data()
         try? appending(existing, line: line).write(to: url, options: .atomic)
     }
 }

@@ -311,6 +311,41 @@ try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: t
 NodeStatusLog.append("a\n", in: dir)
 NodeStatusLog.append("b\n", in: dir)
 check((try? String(contentsOf: dir.appendingPathComponent("node-status.log"), encoding: .utf8)) == "a\nb\n", "append-only on disk")
+// Oversized logs keep the same half-on-overflow and whole-line trimming.
+// A disk reader must not load their entire old contents before enforcing cap.
+for oldSize in [0, NodeStatusLog.cap, NodeStatusLog.cap + 1, 4 * NodeStatusLog.cap] {
+    let old = Data(String(repeating: "older line\n", count: (oldSize + 10) / 11).utf8.prefix(oldSize))
+    for addition in ["", "newest line\n"] {
+        let url = dir.appendingPathComponent(NodeStatusLog.fileName)
+        try old.write(to: url)
+        NodeStatusLog.append(addition, in: dir)
+        check(try Data(contentsOf: url) == NodeStatusLog.appending(old, line: addition),
+              "disk log cap preserves trimming for \(oldSize) bytes, addition \(addition.count)")
+    }
+}
+// Read windows from a sparse database-sized log without loading its prefix.
+let sparseLog = dir.appendingPathComponent("node.log")
+FileManager.default.createFile(atPath: sparseLog.path, contents: Data())
+let logHandle = try FileHandle(forWritingTo: sparseLog)
+try logHandle.truncate(atOffset: (2 << 30) + 73)
+try logHandle.seekToEnd()
+try logHandle.write(contentsOf: Data("last log line\n".utf8))
+try logHandle.close()
+check(try NodeLogTail.read(sparseLog, wanted: 8_192).count == 8_192, "a >=2 GiB log reads only its 8 KiB window")
+check(try NodeLogTail.read(sparseLog, wanted: 65_536).count == 65_536, "Mac confirmation reads only its 64 KiB window")
+check(try NodeLogTail.read(sparseLog, wanted: 0).isEmpty && NodeLogTail.read(sparseLog, wanted: -1).isEmpty,
+      "zero and negative log windows read nothing")
+check(try NodeLogTail.read(sparseLog, wanted: 14) == Data("last log line\n".utf8), "the latest log line survives")
+NodeStatusLog.append("latest status\n", in: dir, fileName: "node.log")
+check(try NodeLogTail.read(sparseLog, wanted: NodeStatusLog.cap + 1).count <= NodeStatusLog.cap,
+      "an oversized status/migration log is trimmed with a bounded read")
+try Data().write(to: sparseLog)
+check(try NodeLogTail.read(sparseLog, wanted: 65_536).isEmpty, "empty logs have an empty tail")
+try Data("short log\n".utf8).write(to: sparseLog)
+check(try NodeLogTail.read(sparseLog, wanted: 65_536) == Data("short log\n".utf8), "short logs read from zero")
+check((try? NodeLogTail.read(dir.appendingPathComponent("missing"), wanted: 8_192)) == nil,
+      "a missing log fails closed")
+check((try? NodeLogTail.read(dir, wanted: 8_192)) == nil, "failed log seeks/reads fail closed")
 try? FileManager.default.removeItem(at: dir)
 // 0.7.3 crashed on every Mac whose node.log was shorter than the 64 KB tail.
 check(NodeLogTail.offset(size: 0, wanted: 65_536) == 0, "an empty log reads from the start")

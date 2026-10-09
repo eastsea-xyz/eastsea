@@ -26,6 +26,8 @@
 #    invalid signatures, dependencies or platform compatibility refuse packaging.
 #    Its installer background, Finder layout and Applications shortcut survive
 #    writable mounting and conversion to the final compressed DMG.
+# 6. A release remains a draft until the shipped DMG passes both launch gates;
+#    local doubles cover failure/retry paths and dry runs never contact hosts.
 set -eu
 cd "$(dirname "$0")/.."
 mkdir -p "$PWD/tmp"
@@ -35,8 +37,8 @@ good=0
 fail() { echo "FAIL: $*" >&2; bad=$((bad + 1)); }
 pass() { echo "ok: $*"; good=$((good + 1)); }
 
-echo "=== [1/5] empty arrays under bash 3.2 set -u ==="
-for f in scripts/build-wallet.sh scripts/package-mac.sh scripts/release-mac.sh scripts/build-bridge.sh scripts/release-bridge.sh; do
+echo "=== [1/6] empty arrays under bash 3.2 set -u ==="
+for f in scripts/build-wallet.sh scripts/package-mac.sh scripts/release-mac.sh scripts/release-vm-smoke.sh scripts/release-canary.sh scripts/build-bridge.sh scripts/release-bridge.sh; do
   [ -f "$f" ] || continue
   /bin/bash -n "$f" || fail "$f does not parse under /bin/bash $BASH_VERSION"
   for name in $(grep -oE '(^|[^A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*=\(\)' "$f" | sed -E 's/^[^A-Za-z_]//; s/=\(\)$//' | sort -u); do
@@ -52,7 +54,7 @@ out=$(/bin/bash -c 'set -u; a=(); f() { echo $#; }; f ${a[@]+"${a[@]}"}; a=(x "y
 [ "$out" = "0 2 " ] && pass "guarded expansion: empty -> 0 args, two -> 2 args" || fail "guarded expansion gave '$out'"
 [ "$bad" -eq 0 ] && pass "no unguarded empty-array expansion in the release scripts"
 
-echo "=== [2/5] daemon BundleProgram ==="
+echo "=== [2/6] daemon BundleProgram ==="
 plist=apps/wallet/Daemons/com.pipln.eastsea.node.plist
 prog=$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$plist")
 case "$prog" in
@@ -69,7 +71,7 @@ grep -q 'wrapper="$bundle/Contents/Resources/eastsea-node-wrapper.sh"' apps/wall
   && pass "the root stub looks for the wrapper in Contents/Resources" \
   || fail "the root stub looks for the wrapper somewhere the build does not put it"
 
-echo "=== [3/5] Sparkle feeds ==="
+echo "=== [3/6] Sparkle feeds ==="
 feed() { /usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$1"; }
 east=$(feed apps/wallet/Info-mac.plist)
 case "$east" in
@@ -90,7 +92,7 @@ grep -q 'cat > dist/eastsea-appcast.xml' scripts/release-mac.sh \
   && pass "release-mac.sh writes EastSea items only to eastsea-appcast.xml" \
   || fail "release-mac.sh must write EastSea items to eastsea-appcast.xml, never to appcast.xml"
 
-echo "=== [4/5] release identity gate ==="
+echo "=== [4/6] release identity gate ==="
 grep -q 'scripts/release-identity-gate.sh release "$dmg" "$tag" "$repo"' scripts/release-mac.sh \
   && pass "release-mac.sh runs the identity gate after packaging" \
   || fail "release-mac.sh does not run the identity gate"
@@ -153,7 +155,7 @@ out=$(scripts/release-identity-gate.sh check --app "$g/adhoc.app" --prev-app "$g
   && pass "gate refuses a real ad-hoc signature (team not set)" || fail "ad-hoc signature not refused (rc $rc): $out"
 # R12: exercise the real packaging script with a clean-build fixture and tool
 # doubles. No node builds, network calls, real DMGs or installed apps are used.
-echo "=== [5/5] R12 clean package rollback ==="
+echo "=== [5/6] R12 clean package rollback ==="
 mkdir -p "$PWD/tmp"
 rollback_test=$(mktemp -d "$PWD/tmp/package-rollback-test.XXXXXX")
 trap 'rm -rf "${rollback_test:?}"' EXIT
@@ -337,7 +339,7 @@ cat > "$rollback_test/bin/hdiutil" <<'SH'
 set -eu
 command=$1; shift
 dmg=${!#}
-source="" mount="" format="" output="" readonly=0 readwrite=0
+source="" mount="" format="" output="" readonly=0 readwrite=0 plist=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -srcfolder) source=$2; shift 2 ;;
@@ -346,6 +348,7 @@ while [ $# -gt 0 ]; do
     -o) output=$2; shift 2 ;;
     -readonly) readonly=1; shift ;;
     -readwrite) readwrite=1; shift ;;
+    -plist) plist=1; shift ;;
     *) shift ;;
   esac
 done
@@ -360,6 +363,11 @@ case "$command" in
     # Keep the previous one-step packager usable as the regression control.
     if [ "$format" = UDZO ]; then cp -R "$dmg.contents" "$R12_OUTPUT"; fi ;;
   attach)
+    if [ -z "$mount" ]; then
+      case "$dmg" in
+        */EastSea-previous.dmg) mount=$R12_PREVIOUS_MOUNT; mkdir -p "$mount" ;;
+      esac
+    fi
     [ -d "$mount" ] && [ -f "$dmg" ] && [ "$((readonly + readwrite))" = 1 ] || exit 1
     case "$dmg" in
       */EastSea-previous.dmg)
@@ -376,7 +384,13 @@ case "$command" in
     esac
     if [ "$readwrite" = 1 ]; then mode="readwrite"; else mode="readonly"; fi
     printf '%s\n%s\n' "$mode" "$dmg" > "$mount.fixture-image"
-    printf 'attach:%s\n' "$mode" >> "$R12_DMG_LOG" ;;
+    printf 'attach:%s\n' "$mode" >> "$R12_DMG_LOG"
+    if [ "$plist" = 1 ]; then
+      python3 - "$mount" <<'PY'
+import plistlib, sys
+plistlib.dump({'system-entities': [{'mount-point': sys.argv[1]}]}, sys.stdout.buffer)
+PY
+    fi ;;
   detach)
     mount=$dmg
     mode=$(sed -n '1p' "$mount.fixture-image")
@@ -765,6 +779,7 @@ if (cd "$rollback_test" && PATH="$rollback_test/bin:$PATH" TMPDIR="$rollback_tes
   R12_TRUST_LOG="$rollback_test/release.trust.log" \
   R12_DMG_LOG="$rollback_test/release.dmg.log" \
   R12_EVENTS="$rollback_test/events.log" R12_PREVIOUS_APP="$previous" \
+  R12_PREVIOUS_MOUNT="$rollback_test/tmp/previous-mount" \
   /bin/bash scripts/release-mac.sh --prepare) > "$rollback_test/release.log" 2>&1; then
   if python3 - "$rollback_test/events.log" <<'PY'
 import pathlib, sys
@@ -783,6 +798,23 @@ PY
   fi
 else
   fail "R12 release fixture failed: $(cat "$rollback_test/release.log")"
+fi
+
+echo "=== [6/6] launch smoke release gates ==="
+if PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_release_smoke.py; then
+  pass "release smoke wiring, draft retries, failure handling and safe dry runs"
+else
+  fail "release smoke regression tests failed"
+fi
+if PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_release_vm_smoke.py; then
+  pass "VM guest monitoring rejects crashes, stalled heads and incomplete observations"
+else
+  fail "VM guest monitoring regression tests failed"
+fi
+if PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_release_canary.py; then
+  pass "canary observer rejects crashes and exits, preserves backups and cleans up mounts"
+else
+  fail "canary observer regression tests failed"
 fi
 
 printf 'release script checks: %s passed, %s failed\n' "$good" "$bad"

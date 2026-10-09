@@ -63,6 +63,11 @@ if [ "$dry" = 1 ]; then
   echo "dry run: writing converted plists under $daemons and printing the rest"
 fi
 mkdir -p "$daemons"
+wrapper="$daemons/aether-launchd-wrapper.sh"
+if [ "$uninstall" = 0 ]; then
+  cp -f "$(dirname "$0")/aether-launchd-wrapper.sh" "$wrapper" || exit 1
+  chmod 755 "$wrapper" || exit 1
+fi
 
 # One element per line from a plist array, exactly as PlistBuddy prints it
 # ("Array {" first, "}" last; trim before dropping the brace so indented
@@ -93,22 +98,36 @@ for src in "$agents"/com.pipln.aether.testnet.*.plist; do
     continue
   fi
 
-  # The whole plist is kept — ports, data, log paths, KeepAlive,
-  # ThrottleInterval, EnvironmentVariables, resource limits — with the one
-  # key a daemon needs (UserName) added and the one login-session idea
-  # removed from the arguments (--exit-with-parent: the daemon has no parent
-  # that dies; the agent copy did).
+  # Keep ports, data, logs, throttle, environment and limits. Replace the
+  # outer restart policy and wrapper so exit 15 stays terminal, then drop the
+  # login-session lifetime (--exit-with-parent) and add the daemon's UserName.
   cp "$src" "$dst"
   "$pb" -c "Delete :ProgramArguments" "$dst" 2>/dev/null
+  "$pb" -c "Add :ProgramArguments array" "$dst" || exit 1
+  "$pb" -c "Delete :KeepAlive" "$dst" 2>/dev/null || true
+  "$pb" -c "Add :KeepAlive dict" -c "Add :KeepAlive:SuccessfulExit bool false" "$dst" || exit 1
   if ! "$pb" -c "Add :UserName string $me" "$dst" 2>/dev/null; then
     "$pb" -c "Set :UserName $me" "$dst"
   fi
-  i=0
+  args=()
   while IFS= read -r a; do
-    [ "$a" = "--exit-with-parent" ] && { echo "  dropping --exit-with-parent from $label"; continue; }
-    "$pb" -c "Add :ProgramArguments:$i string $a" "$dst"
-    i=$((i + 1))
+    args+=("$a")
   done < <(print_array ProgramArguments "$src")
+  offset=0
+  if [ "${args[0]:-}" = /usr/bin/caffeinate ] && [ "${args[1]:-}" = -s ]; then
+    offset=2
+  elif [ "${args[0]:-}" = /bin/bash ]; then
+    case "${args[1]:-}" in */aether-launchd-wrapper.sh) offset=2 ;; esac
+  fi
+  "$pb" -c 'Add :ProgramArguments:0 string /bin/bash' \
+    -c "Add :ProgramArguments:1 string $wrapper" "$dst" || exit 1
+  i=2
+  for ((j=offset; j<${#args[@]}; j++)); do
+    a=${args[$j]}
+    [ "$a" = "--exit-with-parent" ] && { echo "  dropping --exit-with-parent from $label"; continue; }
+    "$pb" -c "Add :ProgramArguments:$i string $a" "$dst" || exit 1
+    i=$((i + 1))
+  done
   plutil -lint "$dst" >/dev/null || { echo "converted plist is invalid: $dst" >&2; exit 1; }
 
   echo "converted: $src"

@@ -147,6 +147,8 @@ function tile(label, value, sub, extra = '') {
 function proverTile(prover) {
   if (!prover?.running) return tile('Prover', 'not running', 'this node proves nothing');
   const last = prover.last_height;
+  if (prover.stale) return tile('Prover', 'stale',
+    `restarting · ${last == null ? 'no proof yet' : `last proven ≤ ${formatInt(last)}`} · lag ${formatInt(prover.lag ?? 0)} · ${formatInt(prover.proofs)} proofs`);
   return tile('Prover', last == null ? 'starting' : `proven ≤ ${formatInt(last)}`,
     `lag ${formatInt(prover.lag ?? 0)} · ${formatInt(prover.proofs)} proofs${prover.error ? ' · error' : ''}`);
 }
@@ -215,6 +217,9 @@ function proofCard(height, prover) {
     return card('Proof', message('plain', 'This node runs no prover; nothing is known here about proofs of this block.'));
   }
   const last = prover.last_height;
+  if (prover.stale) return card('Proof',
+    message('warn', 'Prover status is stale. The prover is restarting.'),
+    h('p', { class: 'small muted' }, `Last reported proof height: ${last == null ? 'none' : formatInt(last)} · ${formatInt(prover.proofs)} proofs this session.`));
   const state = last != null && height <= last
     ? dot('done', `Proven — this node's prover is at ${formatInt(last)} (${formatInt(prover.proofs)} proofs in total)`)
     : prover.proving === height

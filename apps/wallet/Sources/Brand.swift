@@ -2,12 +2,13 @@ import Foundation
 
 enum Brand {
     static let project = "EastSea"
-    static let projectKo = "동해"
     /// The project's name in the language the app is shown in (its bundle
     /// localization): 동해 inside Korean sentences, EastSea inside English ones.
     /// User-visible text interpolates this, never `project` directly.
-    static var name: String {
-        (Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false) ? projectKo : project
+    static var name: String { localizedName() }
+
+    static func localizedName(locale: Locale = .current, bundle: Bundle = .main) -> String {
+        String(localized: "EastSea", bundle: bundle, locale: locale)
     }
     static let coinName = "Doubloon"
     static let coinTicker = "DBLN"
@@ -42,8 +43,8 @@ enum Brand {
     /// The coin's name on the network this build runs on, in the app's
     /// language (더블룬 in Korean).
     static var networkCoinName: String {
-        guard Bundle.main.preferredLocalizations.first?.hasPrefix("ko") ?? false else { return coinName(chainId: networkChainId) }
-        return networkChainId == legacyTestnetChainId ? "테스트 더블룬" : coinNameKo
+        networkChainId == legacyTestnetChainId
+            ? String(localized: "Test Doubloon")
+            : String(localized: "Doubloon")
     }
-    static let coinNameKo = "더블룬"
 }

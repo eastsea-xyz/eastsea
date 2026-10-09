@@ -351,6 +351,7 @@ impl Ceremony {
             for (dealer, (commitment, dealing)) in &journal.accepted {
                 let pub_msg = DealerPubMsg::<MinSig>::decode_cfg(commitment.as_slice(), &self.n).map_err(|e| DkgError::Setup(format!("persisted commitment: {e:?}")))?;
                 let priv_msg = DealerPrivMsg::decode(dealing.as_slice()).map_err(|e| DkgError::Setup(format!("persisted dealing: {e:?}")))?;
+                crate::key_binding::check_process();
                 let ack = player.dealer_message::<N3f1>(dealer.clone(), pub_msg, priv_msg).map_err(|e| DkgError::Setup(format!("persisted dealing invalid: {e:?}")))?;
                 if let Some(ack) = ack {
                     if dealer == &self.me { self.self_ack(ack); }
@@ -394,6 +395,7 @@ impl Ceremony {
     /// Start `round` in whatever roles `key` has in it (dealer, player or both).
     /// `share` is our current share when we deal in a reshare.
     pub fn start(rng: impl CryptoRng, key: ed25519::PrivateKey, round: Round, share: Option<Share>) -> Result<(Self, Vec<(To, Msg)>), DkgError> {
+        crate::key_binding::check_process();
         let setup = |e: &dyn std::fmt::Debug| DkgError::Setup(format!("{e:?}"));
         let expected = round.identity();
         let namespace = round.namespace();
@@ -480,6 +482,7 @@ impl Ceremony {
     /// Stop dealing (all acks in, or timed out): sign and broadcast our log.
     pub fn close_dealing(&mut self) -> Vec<(To, Msg)> {
         let Some(dealer) = self.dealer.take() else { return vec![] };
+        crate::key_binding::check_process();
         let signed = dealer.finalize::<N3f1>();
         let bytes = signed.encode().to_vec();
         if let Some(journal) = self.deal_journal.as_mut() {
@@ -547,6 +550,7 @@ impl Ceremony {
                 else {
                     return vec![];
                 };
+                crate::key_binding::check_process();
                 match player.dealer_message::<N3f1>(from.clone(), commitment, dealing) {
                     Ok(Some(ack)) if *from == self.me => {
                         if !self.persist_accepted_deal(from, &commitment_bytes, &dealing_bytes) { return vec![]; }
@@ -756,6 +760,7 @@ impl Ceremony {
         for (dealer, (commitment, dealing)) in &self.accepted_deals {
             let pub_msg = DealerPubMsg::<MinSig>::decode_cfg(commitment.as_slice(), &self.n).map_err(|e| DkgError::Finalize(format!("stored commitment: {e:?}")))?;
             let priv_msg = DealerPrivMsg::decode(dealing.as_slice()).map_err(|e| DkgError::Finalize(format!("stored dealing: {e:?}")))?;
+            crate::key_binding::check_process();
             player.dealer_message::<N3f1>(dealer.clone(), pub_msg, priv_msg).map_err(|e| DkgError::Finalize(format!("replay dealing: {e:?}")))?;
         }
         let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(self.info.clone());

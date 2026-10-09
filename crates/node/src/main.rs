@@ -315,6 +315,11 @@ enum Cmd {
         #[arg(long)]
         data: String,
     },
+    /// Owner-only key recovery (never runs automatically).
+    Keys {
+        #[command(subcommand)]
+        command: KeysCmd,
+    },
     /// Follow the chain without being a validator: verify every certificate,
     /// re-execute every block, and serve wallets on this machine.
     Follow {
@@ -807,6 +812,16 @@ fn fixture_key_directory_is_internal(data: &std::path::Path, requested: Option<&
         if name.to_str().is_some_and(|name| name.starts_with("aether-")))
 }
 
+#[derive(Subcommand)]
+enum KeysCmd {
+    /// Bind existing validator keys to this Mac after an intentional move.
+    /// Requires a stopped node and typing its validator address in a terminal.
+    Rebind {
+        #[arg(long)]
+        data: String,
+    },
+}
+
 fn main() {
     // Adopt before CLI dispatch or any unrelated helper can spawn. The guard
     // lives until main exits, including parent death during writer startup.
@@ -846,23 +861,22 @@ fn main() {
             if exit_with_parent {
                 exit_with_parent_process(_writer_lease.as_ref().map(|lease| lease.expected_parent()));
             }
+            let _direct_lock = aether_node::supervisor::lock_or_inherit_data_dir(std::path::Path::new(&data), _writer_lease.as_ref()).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(aether_node::supervisor::EXIT_LOCKED);
+                });
             // A seated validator whose key file is gone or unreadable stops
             // with its own exit code (red team #5): it must not be replaced by
             // a devnet stand-in or a fresh identity.
             {
                 let dir = std::path::Path::new(&data);
-                if network.is_some()
-                    && dir.join("threshold.json").exists()
-                    && aether_node::roster::LocalKeys::load(dir).is_err()
-                {
-                    eprintln!(
-                        "this Mac's validator key cannot be read but it holds a committee \
-                         share: no new identity is generated. Restore {}/{} from a backup, or \
-                         unregister this Mac and register a new one on purpose",
-                        dir.display(),
-                        aether_node::roster::KEY_FILE
-                    );
-                    std::process::exit(aether_node::candidate::EXIT_IDENTITY);
+                if dir.join(aether_node::roster::KEY_FILE).exists()
+                    || (network.is_some() && dir.join("threshold.json").exists()) {
+                    if let Err(e) = load_signing_keys(dir) {
+                        aether_node::key_binding::exit_if_refusal(&e);
+                        eprintln!("this Mac's validator key cannot be read: {e}. Restore {}/{} from a backup; no new identity is generated", dir.display(), aether_node::roster::KEY_FILE);
+                        std::process::exit(aether_node::candidate::EXIT_IDENTITY);
+                    }
                 }
             }
             let with_file = network.is_some();
@@ -941,8 +955,10 @@ fn main() {
                 })
         }
         Cmd::Keygen { data } => keygen(&data),
+        Cmd::Keys { command: KeysCmd::Rebind { data } } => aether_node::key_binding::rebind_interactive(std::path::Path::new(&data)),
         Cmd::UpgradeSign { data, network, upgrade } => (|| {
             use aether_node::upgrade::{sign_emergency_partial, sign_partial, Upgrade};
+            let keys = load_signing_keys(std::path::Path::new(&data))?;
             let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&network))?;
             let key: aether_node::dkg::KeyFile =
                 serde_json::from_slice(&std::fs::read(std::path::Path::new(&data).join("threshold.json")).map_err(|e| e.to_string())?)
@@ -953,7 +969,6 @@ fn main() {
                 return Err(format!("upgrade is for chain {}, network.json for {}", u.chain_id, file.chain_id));
             }
             let partial = if u.emergency {
-                let keys = aether_node::roster::LocalKeys::load(std::path::Path::new(&data))?;
                 sign_emergency_partial(&u, &share, &keys.signer)
             } else {
                 sign_partial(&u, &share)
@@ -996,6 +1011,10 @@ fn main() {
                 exit_with_parent_process(_writer_lease.as_ref().map(|lease| lease.expected_parent()));
             }
             let keys = candidate.then(|| keys.unwrap_or_else(|| data.clone()));
+            let _direct_lock = keys.as_deref().map(|keys| aether_node::supervisor::lock_or_inherit_data_dir(std::path::Path::new(keys), _writer_lease.as_ref()).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(aether_node::supervisor::EXIT_LOCKED);
+                }));
             let export = follow_export(archive_export, &data);
             if let Some(e) = &export {
                 if let Err(err) = std::fs::create_dir_all(&e.dir) {
@@ -1014,6 +1033,7 @@ fn main() {
                 // A lost identity is its own exit code (red team #5): the app
                 // shows the one sentence instead of a generic failure.
                 Err(e) if aether_node::candidate::registered_identity(dir) => {
+                    aether_node::key_binding::exit_if_refusal(&e);
                     eprintln!("{e}");
                     std::process::exit(aether_node::candidate::EXIT_IDENTITY);
                 }
@@ -1084,6 +1104,7 @@ fn main() {
                 // identity refuses instead (red team #5) — and `aether run`
                 // goes on as a follower without them, never a new identity.
                 if let Err(e) = aether_node::candidate::CandidateKeys::load_or_create(&dir) {
+                    aether_node::key_binding::exit_if_refusal(&e);
                     tracing::error!(%e, "aether run: this Mac's identity cannot be loaded; running as a follower");
                 }
                 let chain_dir = chain_data.as_deref().map(std::path::Path::new);
@@ -1224,6 +1245,9 @@ fn main() {
             if exit_with_parent {
                 exit_with_parent_process(_writer_lease.as_ref().map(|lease| lease.expected_parent()));
             }
+            let _run_lock = aether_node::supervisor::lock_or_inherit_data_dir(std::path::Path::new(&data), _writer_lease.as_ref()).unwrap_or_else(|e| {
+                eprintln!("{e}"); std::process::exit(aether_node::supervisor::EXIT_LOCKED);
+            });
             let boundary = match (stage, epoch_end, epoch_end_hash) {
                 (true, _, _) => None,
                 (false, Some(h), Some(parent)) => Some(aether_node::roster::EpochStart { height: h + 1, parent }),
@@ -1429,15 +1453,25 @@ fn main() {
         Cmd::Balance { address, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_balance(&rpc, address, &set)),
         Cmd::Storage { address, slot, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_storage(&rpc, address, slot, &set)),
         Cmd::Dkg { index, validators, network, port, data, peers, link_base, offline, round } => {
+            let _run_lock = aether_node::supervisor::lock_or_inherit_data_dir(std::path::Path::new(&data), _writer_lease.as_ref()).unwrap_or_else(|e| {
+                eprintln!("{e}"); std::process::exit(aether_node::supervisor::EXIT_LOCKED);
+            });
             p2p_args(index, validators, network, &data, port, peers, link_base, offline)
                 .map(|(p2p, chain_id, _, _, genesis)| run_dkg(p2p, chain_id, data, round, genesis))
         }
         Cmd::Receipt { hash, rpc } => call(&rpc, "aether_getReceipt", json!([hash])).map(|v| println!("{}", pretty(&v))),
     };
     if let Err(e) = res {
+        aether_node::key_binding::exit_if_refusal(&e);
         eprintln!("error: {e}");
         std::process::exit(1);
     }
+}
+
+fn load_signing_keys(dir: &std::path::Path) -> Result<aether_node::roster::LocalKeys, String> {
+    let keys = aether_node::roster::LocalKeys::load(dir)?;
+    aether_node::key_binding::install_process_guard(keys.binding.clone());
+    Ok(keys)
 }
 
 /// The public dev registrar key (x‖y hex): the key `aether run --dev-registrar`
@@ -1561,7 +1595,7 @@ fn p2p_args(
         Some(path) => {
             let file = NetworkFile::load(std::path::Path::new(&path))?;
             let roster = Roster::from_file(&file)?;
-            let keys = LocalKeys::load(std::path::Path::new(data))?;
+            let keys = load_signing_keys(std::path::Path::new(data))?;
             let index = roster
                 .index_of(&keys.signer.public_key())
                 .ok_or("this machine's validator key is not in network.json")?;
@@ -1635,7 +1669,7 @@ fn reshare(
     offline: bool,
     via_node: bool,
 ) -> Result<(), String> {
-    use aether_node::roster::{LocalKeys, NetworkFile, Roster};
+    use aether_node::roster::{NetworkFile, Roster};
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -1661,7 +1695,7 @@ fn reshare(
         return Err("current committee output reveals a seated player's threshold share".into());
     }
     let dir = std::path::PathBuf::from(&data);
-    let keys = LocalKeys::load(&dir)?;
+    let keys = load_signing_keys(&dir)?;
     let share = match std::fs::read(dir.join("threshold.json")) {
         Ok(b) if old.index_of(&keys.signer.public_key()).is_some() => {
             let f: aether_node::dkg::KeyFile =
@@ -1876,17 +1910,9 @@ fn load_anchor(
 
 fn keygen(data: &str) -> Result<(), String> {
     let dir = std::path::Path::new(data);
-    let keys = aether_node::roster::LocalKeys::generate();
-    keys.save(dir)?;
-    // The identity is both secrets: the voting key and the node account that
-    // pays for and sends beacons. A directory with one but not the other is a
-    // *lost* identity and never runs (candidate.rs, red team #5), so keygen —
-    // the documented first install — writes both, exactly as `aether run` does
-    // on a fresh directory. An existing account key is never replaced.
-    let account = dir.join(aether_node::candidate::ACCOUNT_FILE);
-    if !account.exists() {
-        aether_node::faucet::Faucet::generate(&account)?;
-    }
+    let keys = aether_node::roster::LocalKeys::create_candidate(dir)?;
+    // The staged first-install transaction durably carries both secrets and
+    // the hardware binding; an interrupted keygen resumes the same identity.
     println!(
         "{}",
         serde_json::to_string_pretty(&keys.public()).expect("json")
@@ -1894,7 +1920,7 @@ fn keygen(data: &str) -> Result<(), String> {
     println!(
         "secret keys in {} and {} (mode 600); share only {}",
         dir.join(aether_node::roster::KEY_FILE).display(),
-        account.display(),
+        dir.join(aether_node::candidate::ACCOUNT_FILE).display(),
         dir.join(aether_node::roster::PUBLIC_FILE).display()
     );
     Ok(())
@@ -2197,6 +2223,7 @@ fn run_node(a: NodeArgs) {
     let faucet_service = match (&faucet_key, faucet) {
         (Some(path), expected) => {
             let f = aether_node::faucet::Faucet::load(std::path::Path::new(path))
+                .inspect_err(|e| aether_node::key_binding::exit_if_refusal(e))
                 .expect("load --faucet-key");
             if let Some(e) = expected {
                 assert_eq!(
@@ -2218,6 +2245,7 @@ fn run_node(a: NodeArgs) {
         "--offline needs --peers"
     );
     let signer = p2p.keys.signer.clone();
+    let key_binding = p2p.keys.binding.clone();
     let (roster_keys, validator_set) = (p2p.roster.keys.clone(), p2p.validators());
     let roster_members: Vec<(String, String)> = p2p
         .roster
@@ -2487,6 +2515,7 @@ fn run_node(a: NodeArgs) {
                 provider: oracle.clone(),
                 partition_prefix: partition_prefix(&data),
                 journal_dir: Some(std::path::PathBuf::from(&data)),
+                key_binding,
                 me: signer.public_key(),
                 scheme,
                 identity: *polynomial_identity,
@@ -2583,7 +2612,10 @@ fn run_node(a: NodeArgs) {
                     shard_me = Some(keys.node_id());
                     tokio::spawn(aether_node::candidate::beacon_loop(chain.clone(), aether_node::candidate::Outbox::Local(gossip_tx.clone()), keys));
                 }
-                Err(e) => tracing::warn!(%e, "no node account: this validator sends no liveness beacons"),
+                Err(e) => {
+                    aether_node::key_binding::exit_if_refusal(&e);
+                    tracing::warn!(%e, "no node account: this validator sends no liveness beacons");
+                }
             }
         }
 
@@ -3045,7 +3077,8 @@ fn run_follow(
         }
         let joining = candidate_keys
             .as_ref()
-            .and_then(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)).ok())
+            .map(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)))
+            .transpose()?
             .map(|k| hex::encode(k.validator_key()));
         let follow_task = tokio::spawn(follow::run(chain.clone(), upstream.clone(), set, archive.clone(), joining, no_jump));
         tokio::spawn(async move {

@@ -6,16 +6,10 @@
 //! held directory is refused, and the lock frees when the holder dies, so
 //! the next run goes through (and then says what a bare directory misses).
 
-use std::net::TcpListener;
+use aether_test_support::{Port, TestChild};
 use std::path::PathBuf;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
-
-/// A port nothing is listening on (the node opens its own; the test only
-/// needs two that will not collide with anything on this Mac).
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
 
 /// Temp directory removed however the test ends.
 struct TmpDir(PathBuf);
@@ -38,17 +32,15 @@ impl Drop for TmpDir {
 /// everything it printed. Output goes to a file, not a pipe: a refused run
 /// must be observable even under load, without a 64 KB pipe ever holding it.
 fn run_once(data: &std::path::Path, secs: u64) -> (Option<ExitStatus>, String) {
+    let rpc_port = Port::reserve().expect("reserve RPC port");
+    let p2p_port = Port::reserve().expect("reserve P2P port");
     let log_path = data.join("second-run.log");
-    let log = std::fs::OpenOptions::new().create(true).write(true).truncate(true)
-        .open(&log_path).expect("open the run's log");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_aether"))
-        .arg("run")
+    let mut command = Command::new(env!("CARGO_BIN_EXE_aether"));
+    command.arg("run")
         .arg("--data").arg(data)
-        .arg("--rpc-port").arg(free_port().to_string())
-        .arg("--port").arg(free_port().to_string())
-        .stdout(Stdio::from(log.try_clone().expect("clone the log handle")))
-        .stderr(Stdio::from(log))
-        .spawn()
+        .arg("--rpc-port").arg(rpc_port.to_string())
+        .arg("--port").arg(p2p_port.to_string());
+    let child = TestChild::spawn(command, &log_path)
         .expect("spawn the aether binary");
     let deadline = Instant::now() + Duration::from_secs(secs);
     loop {

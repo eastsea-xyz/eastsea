@@ -131,6 +131,7 @@ struct DeveloperView: View {
     private var accountCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 8) {
+                AccountSwitcherButton(store: model.accountStore, compact: true)
                 HStack {
                     Text(model.address.isEmpty ? "—" : model.address).font(.callout.monospaced()).textSelection(.enabled)
                         .lineLimit(1).truncationMode(.middle)

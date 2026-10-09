@@ -6,8 +6,6 @@ mkdir -p tmp
 root=$(pwd -P)
 export TMPDIR="$root/tmp"
 work=$(mktemp -d "$root/tmp/R11-listener.XXXXXX")
-gate="$HOME/.claude/playbooks/aether-team/wait-compile.sh"
-[ -x "$gate" ] || { echo "FAIL R11 compile gate missing: $gate" >&2; exit 1; }
 cat > "$work/R11-helper.c" <<'C'
 #include <arpa/inet.h>
 #include <errno.h>
@@ -65,11 +63,8 @@ int main(int argc, char **argv) {
     for (;;) pause();
 }
 C
-"$gate"
 /usr/bin/clang -DR11_LABEL='"A"' "$work/R11-helper.c" -o "$work/R11-A"
-"$gate"
 /usr/bin/clang -DR11_LABEL='"B"' "$work/R11-helper.c" -o "$work/R11-B"
 /usr/bin/codesign --force --sign - --identifier com.pipln.eastsea.R11.listener "$work/R11-A" "$work/R11-B"
-"$gate"
 swiftc -o "$work/R11-listener-check" apps/wallet/Sources/NodeReleaseIdentity.swift apps/wallet/Tests/update-daemon-tree/main.swift
 "$work/R11-listener-check" "$work/R11-A" "$work/R11-B" "$work"

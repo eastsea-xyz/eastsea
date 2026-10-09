@@ -133,7 +133,6 @@ final class MoveProcessStub {
     }
     func syncMarker() { markerEnabled = suspensions == 0 }
 }
-enum HealthCheck { static let korean = false }
 #endif
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
 let GiB: UInt64 = 1_073_741_824
@@ -154,18 +153,30 @@ check(BlockDataLocation.validate(vol("apfs", ro: true), dataBytes: 1) == .readOn
 check(BlockDataLocation.validate(vol("apfs", free: 26 * GiB), dataBytes: 20 * GiB) == .notEnoughSpace(freeBytes: 26 * GiB, neededBytes: 27 * GiB),
       "the data plus the node's 7 GB resume margin must fit")
 check(BlockDataLocation.validate(vol("apfs", free: 27 * GiB), dataBytes: 20 * GiB) == nil, "exactly enough is enough")
-check(BlockDataLocation.sentence(.unsupportedFormat("exfat"), ko: true)
+check(BlockDataLocation.sentence(.unsupportedFormat("exfat"), locale: walletTestLocale("ko"), bundle: walletTestBundle("ko"))
       == "이 디스크는 블록 저장에 안전하지 않은 형식(exFAT)이에요. 디스크 유틸리티에서 APFS로 지우면 쓸 수 있어요 (디스크 안의 파일은 지워져요).",
       "exFAT: why, and how to fix it in Disk Utility")
-check(BlockDataLocation.sentence(.unsupportedFormat("exfat"), ko: false)
+check(BlockDataLocation.sentence(.unsupportedFormat("exfat"), locale: walletTestLocale("en"), bundle: walletTestBundle("en"))
       == "This disk's format (exFAT) is not safe for block data. Erase it as APFS in Disk Utility to use it (this deletes the files on the disk).",
       "exFAT in English")
 check(BlockDataLocation.Problem.unsupportedFormat("msdos").fixInDiskUtility && !BlockDataLocation.Problem.readOnly.fixInDiskUtility,
       "only a format problem offers Disk Utility")
-check(BlockDataLocation.sentence(.notEnoughSpace(freeBytes: 26 * GiB, neededBytes: 27 * GiB), ko: false) == "Not enough space: 26.0 GB free, 27.0 GB needed.",
+check(BlockDataLocation.sentence(.notEnoughSpace(freeBytes: 26 * GiB, neededBytes: 27 * GiB), locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == "Not enough space: 26.0 GB free, 27.0 GB needed.",
       "exact numbers")
 for p in [BlockDataLocation.Problem.networkShare, .unsupportedFormat("ntfs"), .readOnly, .notEnoughSpace(freeBytes: 1, neededBytes: 2), .inUse] {
-    for ko in [true, false] { check(!BlockDataLocation.sentence(p, ko: ko).isEmpty, "\(p) has words") }
+    for language in ["en", "ko", "ja", "zh-Hans", "zh-Hant"] { check(!BlockDataLocation.sentence(p, locale: walletTestLocale(language), bundle: walletTestBundle(language)).isEmpty, "\(p) has words in \(language)") }
+}
+
+// The former language branches resolve from the same catalog in Japanese.
+let japaneseProblems: [(BlockDataLocation.Problem, String)] = [
+    (.networkShare, "ネットワークの共有フォルダにはブロックデータを保存できません。このMacに直接接続したディスクを選んでください。"),
+    (.readOnly, "このディスクは読み取り専用です。書き込めるディスクを選んでください。"),
+    (.notEnoughSpace(freeBytes: 26 * GiB, neededBytes: 27 * GiB), "空き容量が足りません。空きは26.0 GB、必要な容量は27.0 GBです。"),
+    (.inUse, "ブロックデータはすでにこの場所にあります。"),
+]
+for (problem, expected) in japaneseProblems {
+    check(BlockDataLocation.sentence(problem, locale: walletTestLocale("ja"), bundle: walletTestBundle("ja")) == expected,
+          "Japanese block-data sentence: \(problem)")
 }
 
 // MARK: the folder and the flags
@@ -810,16 +821,16 @@ check(ArchiveRequirements.bytesPerBlock > 0 && ArchiveRequirements.bytesPerDay >
 let req = ArchiveRequirements(height: 500_000)
 check(req.sizeNowBytes == UInt64(500_000 * ArchiveRequirements.bytesPerBlock), "size scales with the height")
 check(req.recommendedFreeBytes == req.sizeNowBytes + req.perYearBytes + 7 * GiB, "now + a year + the resume margin")
-for ko in [true, false] {
-    let lines = req.lines(ko: ko)
+for language in ["en", "ko", "ja", "zh-Hans", "zh-Hant"] {
+    let lines = req.lines(locale: walletTestLocale(language), bundle: walletTestBundle(language))
     check(lines.count == 4, "size, disk, first sync, no reward")
     check(lines[0].contains(NodeStopReason.gb(req.sizeNowBytes)) && lines[0].contains(NodeStopReason.gb(req.perMonthBytes)), "real numbers: \(lines[0])")
     check(lines[1].contains(NodeStopReason.gb(req.recommendedFreeBytes)), "the recommended disk size")
     let all = lines.joined(separator: " ")
-    for promise in ["earn", "벌", "수익", "APY", "%"] { check(!all.contains(promise), "no reward promise (\(promise)) ko=\(ko)") }
+    for promise in ["earn", "벌", "수익", "APY", "%"] { check(!all.contains(promise), "no reward promise (\(promise)) language=\(language)") }
 }
-check(req.lines(ko: true)[3].contains("보상은 없어요"), "says plainly there is no reward")
-check(req.lines(ko: true)[2].contains("몇 시간에서 며칠"), "hours to days")
+check(req.lines(locale: walletTestLocale("ko"), bundle: walletTestBundle("ko"))[3].contains("보상은 없어요"), "says plainly there is no reward")
+check(req.lines(locale: walletTestLocale("ko"), bundle: walletTestBundle("ko"))[2].contains("몇 시간에서 며칠"), "hours to days")
 #if os(macOS)
 Task { @MainActor in
     do { try await runMoveFixtureTests(); print("OK block-data"); exit(0) }

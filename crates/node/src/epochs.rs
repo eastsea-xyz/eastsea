@@ -5,7 +5,7 @@
 //! the same key: that is what lets wallets pin one key forever, and lets a
 //! newly joined validator verify old blocks while it catches up.
 
-use aether_light::Scheme;
+use crate::key_binding::signing::Scheme;
 use commonware_consensus::types::{Epoch, EpochInfo, Epocher, Height};
 use commonware_cryptography::certificate::{Provider, Scoped};
 use std::sync::Arc;

@@ -9,6 +9,16 @@ enum Terms {
     // line without TERMS_BUMP_REASON.)
     static let version = isTestnet ? 5 : 6
     static let disclaimerURL = URL(string: "https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md")!
+
+    // The legal body has only reviewed English and Korean versions.
+    static var legalLanguage: String { ["ko": "ko"][AppLanguage.identifier] ?? "en" }
+    static var legalBundle: Bundle { AppLanguage.bundle(for: legalLanguage) }
+    static var legalLocale: Locale { Locale(identifier: legalLanguage) }
+    static var referenceNotice: String? {
+        let notice = String(localized: "This translation is for reference; the English text governs.")
+        return ["ja": notice, "zh-Hans": notice, "zh-Hant": notice][AppLanguage.identifier]
+    }
+
 }
 
 /// The chain's voting-set rules, as shown to the user (registry params and
@@ -22,12 +32,14 @@ enum VotingRules {
     static let mainnetIssuanceOperators = 16
     /// Said the same way everywhere an early participant looks.
     /// README.md "Planned mainnet rules" quotes this word for word.
-    static var mainnetRewardsRule: String {
+    static var mainnetRewardsRule: String { mainnetRewardsRule() }
+
+    static func mainnetRewardsRule(locale: Locale = .current, bundle: Bundle = .main) -> String {
         let timing = Terms.isTestnet
-            ? String(localized: "Planned for the future mainnet, which is not live: the rules may change before launch, and after it only by a committee-signed upgrade.")
-            : String(localized: "These rules run from mainnet genesis and can change only by a committee-signed upgrade.")
-        let testnet = Terms.isTestnet ? String(localized: "Testnet \(Brand.networkCoinTicker) does not carry over.") + " " : ""
-        return timing + " " + String(localized: "No token sale, no premine and no founder allocation; the founder's Macs follow the same rules as everyone's. Half of each block's reward goes to registered Macs that stay online, shared every hour, and half to registered Macs that prove blocks. One operator gets at most 1/\(mainnetIssuanceOperators) of each half, and the rest is never issued; once \(mainnetIssuanceOperators) operators are online, all of it is shared. The reward starts at 1 \(Brand.networkCoinTicker) a block and shrinks 15% a year, down to a floor of 0.1 \(Brand.networkCoinTicker) a block.") + " " + testnet + String(localized: "Nothing here promises a price, a return or a way to cash out.")
+            ? String(localized: "Planned for the future mainnet, which is not live: the rules may change before launch, and after it only by a committee-signed upgrade.", bundle: bundle, locale: locale)
+            : String(localized: "These rules run from mainnet genesis and can change only by a committee-signed upgrade.", bundle: bundle, locale: locale)
+        let testnet = Terms.isTestnet ? String(localized: "Testnet \(Brand.networkCoinTicker) does not carry over.", bundle: bundle, locale: locale) + " " : ""
+        return timing + " " + String(localized: "No token sale, no premine and no founder allocation; the founder's Macs follow the same rules as everyone's. Half of each block's reward goes to registered Macs that stay online, shared every hour, and half to registered Macs that prove blocks. One operator gets at most 1/\(mainnetIssuanceOperators) of each half, and the rest is never issued; once \(mainnetIssuanceOperators) operators are online, all of it is shared. The reward starts at 1 \(Brand.networkCoinTicker) a block and shrinks 15% a year, down to a floor of 0.1 \(Brand.networkCoinTicker) a block.", bundle: bundle, locale: locale) + " " + testnet + String(localized: "Nothing here promises a price, a return or a way to cash out.", bundle: bundle, locale: locale)
     }
     /// The founder's one exception (docs/design/12-launch-plan.md "창업자 Mac 안전망").
     /// README.md "Planned mainnet rules" quotes this word for word.
@@ -61,14 +73,18 @@ struct TermsSheet: View {
                 }
                 Image(systemName: "exclamationmark.shield.fill").font(.system(size: 34)).foregroundStyle(Color.warn)
                 Text("Before you use \(Brand.name)").font(.title2.bold())
+                if let notice = Terms.referenceNotice {
+                    Text(notice).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Bullet(icon: "hammer", text: Terms.isTestnet
-                       ? String(localized: "\(Brand.name) is built for production. Mainnet has not launched yet; the network running today is the public testnet, and its \(Brand.networkCoinTicker) does not carry over. It is provided as is, without warranty, and has not had an independent security audit yet.")
-                       : String(localized: "\(Brand.name) is on mainnet. It is provided as is, without warranty, and has not had an independent security audit yet."))
-                Bullet(icon: "chart.line.uptrend.xyaxis", text: String(localized: "There is no token sale. The value of \(Brand.networkCoinTicker) is set by the market; nothing here promises a price, a return, a listing or a way to cash out."))
-                Bullet(icon: "person.fill.checkmark", text: String(localized: "You use \(Brand.name), and run its node, at your own risk and responsibility, including power and hardware costs, taxes, and following the laws where you live."))
-                Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule)
-                Bullet(icon: "network", text: String(localized: "Running \(Brand.name) shows your IP address to other nodes and the public DHT. Joining as a voting node sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks it with Apple. Addresses and transactions are public on chain."))
-                Bullet(icon: "key.fill", text: String(localized: "Your key stays on this device. If you lose the device and have not set up a recovery key, nobody can restore the account."))
+                       ? String(localized: "\(Brand.name) is built for production. Mainnet has not launched yet; the network running today is the public testnet, and its \(Brand.networkCoinTicker) does not carry over. It is provided as is, without warranty, and has not had an independent security audit yet.", bundle: Terms.legalBundle, locale: Terms.legalLocale)
+                       : String(localized: "\(Brand.name) is on mainnet. It is provided as is, without warranty, and has not had an independent security audit yet.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
+                Bullet(icon: "chart.line.uptrend.xyaxis", text: String(localized: "There is no token sale. The value of \(Brand.networkCoinTicker) is set by the market; nothing here promises a price, a return, a listing or a way to cash out.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
+                Bullet(icon: "person.fill.checkmark", text: String(localized: "You use \(Brand.name), and run its node, at your own risk and responsibility, including power and hardware costs, taxes, and following the laws where you live.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
+                Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule(locale: Terms.legalLocale, bundle: Terms.legalBundle))
+                Bullet(icon: "network", text: String(localized: "Running \(Brand.name) shows your IP address to other nodes and the public DHT. Joining as a voting node sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks it with Apple. Addresses and transactions are public on chain.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
+                Bullet(icon: "key.fill", text: String(localized: "Your key stays on this device. If you lose the device and have not set up a recovery key, nobody can restore the account.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
                 Link("Read the full terms and disclaimer", destination: Terms.disclaimerURL).font(.callout)
                 HStack {
                     #if os(macOS)

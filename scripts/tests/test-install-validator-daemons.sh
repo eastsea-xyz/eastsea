@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # scripts/install-validator-daemons.sh's --dry-run conversion, end to end
 # against a fixture LaunchAgent: the converted plist must land in the given
-# directory, keep the label/args/ports/log paths/KeepAlive/limits, drop
-# --exit-with-parent, name the user it will run as, and only *print* the
+# directory, keep the label/ports/log paths/limits, wrap terminal exit 15,
+# drop --exit-with-parent, name the user it will run as, and only *print* the
 # launchctl steps. No sudo, no real LaunchAgents touched.
 set -u
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 S=scripts/install-validator-daemons.sh
 pb=/usr/libexec/PlistBuddy
-work=$(mktemp -d "${TMPDIR:-/tmp}/validator-daemons-test.XXXXXX")
+mkdir -p "$PWD/tmp"
+export TMPDIR="$PWD/tmp"
+work=$(mktemp -d "$TMPDIR/validator-daemons-test.XXXXXX")
 agents="$work/agents"
 out="$work/out"
 mkdir -p "$agents" "$out"
@@ -76,13 +78,17 @@ case "$args" in
   *) bad "ports lost from ProgramArguments: $args" ;;
 esac
 n=$("$pb" -c 'Print :ProgramArguments' "$dst" 2>/dev/null | grep -c .)
-# 12 fixture elements, one dropped, minus the "Array {" and "}" lines PlistBuddy prints.
-[ "$n" -eq 12 ] && ok "exactly the --exit-with-parent element left the array" || bad "array now has $((n - 2)) elements, expected 11"
+# 11 fixture elements, one dropped, two wrapper elements, plus Array { and }.
+[ "$n" -eq 14 ] && ok "wrapper added and only --exit-with-parent dropped" || bad "array now has $((n - 2)) elements, expected 12"
+[ "$("$pb" -c 'Print :ProgramArguments:0' "$dst")" = /bin/bash ] \
+  && [ "$("$pb" -c 'Print :ProgramArguments:1' "$dst")" = "$out/aether-launchd-wrapper.sh" ] \
+  && [ -x "$out/aether-launchd-wrapper.sh" ] \
+  && ok "installed terminal-status wrapper is the daemon entry point" || bad "missing terminal-status wrapper"
 
 [ "$("$pb" -c 'Print :Label' "$dst" 2>/dev/null)" = "com.pipln.aether.testnet.v1" ] \
   && ok "Label kept" || bad "Label changed"
-[ "$("$pb" -c 'Print :KeepAlive' "$dst" 2>/dev/null)" = "true" ] \
-  && ok "KeepAlive kept" || bad "KeepAlive changed"
+[ "$("$pb" -c 'Print :KeepAlive:SuccessfulExit' "$dst" 2>/dev/null)" = "false" ] \
+  && ok "terminal successful exit disables KeepAlive" || bad "KeepAlive can replay terminal refusal"
 [ "$("$pb" -c 'Print :ThrottleInterval' "$dst" 2>/dev/null)" = "10" ] \
   && ok "ThrottleInterval kept" || bad "ThrottleInterval changed"
 [ "$("$pb" -c 'Print :StandardOutPath' "$dst" 2>/dev/null)" = "/Users/tester/aether-testnet/node1.log" ] \

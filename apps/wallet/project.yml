@@ -1,9 +1,9 @@
 name: AetherWallet
 options:
   bundleIdPrefix: com.pipln.eastsea
-  # English is the source language; Korean is a full localization
-  # (Resources/Localizable.xcstrings). The app shows one of the two per Mac,
-  # by its bundle localization (AppLanguage), never a mix.
+  # English is the source language. The catalog covers Korean, Japanese and
+  # both Chinese scripts. macOS chooses the bundle localization, including
+  # its per-application Language & Region setting.
   developmentLanguage: en
   deploymentTarget:
     macOS: "14.0"
@@ -39,14 +39,14 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: EastSea
         # Localization: every SwiftUI literal and String(localized:) goes to
-        # Resources/Localizable.xcstrings (en + ko); scripts/check-wallet-l10n.sh
-        # fails the build when a user-visible string has no Korean.
+        # Resources/Localizable.xcstrings (all five languages); the localization
+        # gate rejects missing translations and keys.
         SWIFT_EMIT_LOC_STRINGS: YES
         LOCALIZATION_PREFERS_STRING_CATALOGS: YES
-        MARKETING_VERSION: 0.7.2
+        MARKETING_VERSION: 0.7.3
         # Build numbers never repeat across the product line: Aether 0.6.6 shipped
         # build 11 and the Aether 0.6.7 bridge (apps/bridge) ships build 12.
-        CURRENT_PROJECT_VERSION: 15
+        CURRENT_PROJECT_VERSION: 16
         # Sparkle keys (feed URL, EdDSA public key) merged into the generated Info.plist.
         INFOPLIST_FILE: Info-mac.plist
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
@@ -64,11 +64,11 @@ targets:
         OTHER_SWIFT_FLAGS: -file-prefix-map $(SRCROOT)=/aether-node -debug-prefix-map $(SRCROOT)=/aether-node
         ARCHS: arm64
     postCompileScripts:
-      - name: Check Korean translations
+      - name: Check wallet translations
         basedOnDependencyAnalysis: false
         script: |
           # Every string the compiler extracted from this target's sources must
-          # be in Resources/Localizable.xcstrings with a Korean translation.
+          # be in Resources/Localizable.xcstrings with all five languages.
           "$SRCROOT/../../scripts/check-wallet-l10n.sh" --stringsdata "$OBJECT_FILE_DIR_normal/$NATIVE_ARCH_ACTUAL"
     postBuildScripts:
       - name: Embed node and agent
@@ -142,8 +142,8 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: EastSea
         # Localization: every SwiftUI literal and String(localized:) goes to
-        # Resources/Localizable.xcstrings (en + ko); scripts/check-wallet-l10n.sh
-        # fails the build when a user-visible string has no Korean.
+        # Resources/Localizable.xcstrings (all five languages); the localization
+        # gate rejects missing translations and keys.
         SWIFT_EMIT_LOC_STRINGS: YES
         LOCALIZATION_PREFERS_STRING_CATALOGS: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -195,6 +195,7 @@ targets:
         MARKETING_VERSION: 0.7.0
         CURRENT_PROJECT_VERSION: 13
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Info-mac.plist
         INFOPLIST_KEY_LSUIElement: YES
         SWIFT_EMIT_LOC_STRINGS: YES
         LOCALIZATION_PREFERS_STRING_CATALOGS: YES

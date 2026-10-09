@@ -1,39 +1,62 @@
 //! Phase-0 security regression tests. Each test boots a real `aether-node`
 //! process on a free loopback port with an isolated HOME.
 
+use aether_test_support::{Port, TestChild};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 struct Node {
-    child: Child,
-    port: u16,
+    child: TestChild,
+    port: Port,
     home: PathBuf,
+    // The legacy binary silently tries the next nine ports on bind failure.
+    // Hold those listeners so it can only use the leased requested port;
+    // otherwise it could hop into another test's not-yet-bound TCP port.
+    _fallback_ports: Vec<Port>,
+    _fallback_listeners: Vec<TcpListener>,
 }
 
 impl Node {
     fn start() -> Node {
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let home = std::env::temp_dir().join(format!("aether-sec-{}-{}", std::process::id(), port));
+        let mut ports = Port::reserve_block(10).expect("reserve legacy node port block");
+        let port = ports.remove(0);
+        let fallback_listeners = ports.iter().map(|port| port.bind_tcp().expect("block legacy fallback port")).collect();
+        let tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("tmp");
+        let home = tmp.join(format!("aether-sec-{}-{}", std::process::id(), port));
         std::fs::create_dir_all(&home).unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_aether-node"))
+        let log_path = home.join("node.log");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_aether-node"));
+        command
             .args(["--port", &port.to_string(), "--no-open"])
             .env("HOME", &home)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn aether-node");
-        let node = Node { child, port, home };
+            .env("TMPDIR", &tmp);
+        let child = TestChild::spawn(command, &log_path).expect("spawn aether-node");
+        let node = Node { child, port, home, _fallback_ports: ports, _fallback_listeners: fallback_listeners };
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {
-            if TcpStream::connect(("127.0.0.1", port)).is_ok() && node.home.join(".aether/token").exists() {
+            if let Some(status) = node.child.try_wait().expect("check legacy node startup") {
+                panic!(
+                    "legacy node exited before readiness ({status}) on port {}; log {}:\n{}",
+                    node.port,
+                    log_path.display(),
+                    std::fs::read_to_string(&log_path).unwrap_or_else(|err| format!("could not read startup log: {err}")),
+                );
+            }
+            if TcpStream::connect(node.port.addr()).is_ok() && node.home.join(".aether/token").exists() {
+                node.child.mark_started();
                 return node;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        panic!("node did not start on port {port}");
+        panic!(
+            "legacy node did not start on port {}; log {}:\n{}",
+            node.port,
+            log_path.display(),
+            std::fs::read_to_string(&log_path).unwrap_or_else(|err| format!("could not read startup log: {err}")),
+        );
     }
 
     fn token(&self) -> String {
@@ -46,7 +69,7 @@ impl Node {
 
     /// Raw HTTP/1.1 exchange; returns (status code, full response text).
     fn send(&self, method: &str, path: &str, headers: &[(&str, String)], body: &str) -> (u16, String) {
-        let mut s = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
+        let mut s = TcpStream::connect(self.port.addr()).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut req = format!("{method} {path} HTTP/1.1\r\n");
         for (k, v) in headers {

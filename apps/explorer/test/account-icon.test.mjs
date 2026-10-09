@@ -16,7 +16,7 @@ test('the served explorer module matches every shared canonical vector and SVG h
     assert.equal(createHash('sha256').update(accountIconSVG(spec)).digest('hex'), vector.svg64Sha256);
   }
   for (const address of ['', 'alice.eth', `${fixture.vectors[0].address}\n`, `${fixture.vectors[0].address}\r\n`, `${fixture.vectors[0].address}\u2028`]) assert.equal(deriveAccountIcon(address), null);
-  assert.equal(deriveAccountIcon(fixture.vectors[0].address, 2), null);
+  assert.equal(deriveAccountIcon(fixture.vectors[0].address, 1), null);
 });
 
 test('the independently served module is byte-identical to extension and site', async () => {
@@ -90,7 +90,8 @@ test('actual explorer account header shows a 64 px icon beside the full address 
     assert.equal(svg.attrs.width, '64');
     assert.equal(svg.attrs.height, '64');
     assert.equal(svg.attrs['aria-hidden'], 'true');
-    assert.equal(svg.children[0].attrs.fill, fixture.palettes[fixture.vectors[8].features.palette]);
+    assert.equal(svg.children[1].attrs.fill, `url(#eastsea-island-v2-${fixture.vectors[8].features.palette})`);
+    assert.equal(svg.children[0].children[0].children[0].attrs['stop-color'], fixture.palettes[fixture.vectors[8].features.palette].start);
     assert.ok(all(heading).some((node) => node.tagName === 'button' && node.attrs['aria-label'] === 'Copy to clipboard'));
     assert.ok(requests.every(({ method }) => !method.includes('send')));
     assert.deepEqual(requests.find(({ method }) => method === 'aether_getAccount').params, [address]);

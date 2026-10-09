@@ -1,11 +1,13 @@
 {
-  "score": 98,
+  "score": 94,
   "verdict": "pass",
   "category_match": true,
   "differences": [
-    "SwiftUI and Chrome use slightly different edge antialiasing on tiny curves and triangles; flat colors, occupancy, silhouettes and clockwise rotations match.",
-    "The menu-bar NSImage bridge adds at most one channel value of rasterization rounding compared with the direct Canvas."
+    "SwiftUI and Chromium differ slightly at curve antialiasing: average RGB channel difference 1.4200/255; worst image 2.8359/255.",
+    "The original To/From pair now has sea/dawn hues, opposite ink polarity and different hook orientations; both still share the unrotated hook class."
   ],
-  "suggestions": [],
-  "reasoning": "All sixteen frozen vectors match the canonical SVG geometry at 16, 32 and 64 pixels in both appearances. The verified menu-bar Image bridge preserves the same drawing and its 16-point logical size."
+  "suggestions": [
+    "Founder can select the visual direction from the three-study sheet; only Islands ships."
+  ],
+  "reasoning": "The final coastal palette and large coastlines meet the design brief across native16/32/64 and eight product surfaces; actual16px weak-pair proxies both remain below1%."
 }

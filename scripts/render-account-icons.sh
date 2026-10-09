@@ -18,6 +18,7 @@ compiler="$(xcrun --find swiftc)"
 sdk="$(xcrun --show-sdk-path)"
 binary="$TMPDIR/account-icon-snapshots"
 scripts/compile-gate.sh "$compiler" -Onone -parse-as-library -sdk "$sdk" \
+  -target "$(uname -m)-apple-macos14.0" \
   -module-cache-path "$TMPDIR/module-cache" \
   apps/wallet/Sources/AccountIconSpec.swift \
   apps/wallet/Sources/AccountIconView.swift \

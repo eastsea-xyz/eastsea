@@ -27,8 +27,8 @@ site/
 
 ## 재생성
 
-`account-icon.js`는 지갑 확장·탐색기와 같은 Archipelago v1 계정 아이콘 모듈이다.
-`deriveAccountIcon(address, version = 1)`은 20바이트 주소에서 로컬로 특징을 만들고,
+`account-icon.js`는 지갑 확장·탐색기와 같은 Archipelago v2 계정 아이콘 모듈이다.
+`deriveAccountIcon(address, version = 2)`은 20바이트 주소에서 로컬로 특징을 만들고,
 `accountIconSVG(spec, size = 64)`는 고정 SVG를 반환한다. DOM에 붙일 때는
 `createAccountIcon(address, size = 32)`를 써서 SVG DOM API로 만들고, 옆에 주소를 표시한다.
 잘못된 주소는 중립 자리표시자로 표시하며, 아이콘은 주소 인증 수단이 아니다.

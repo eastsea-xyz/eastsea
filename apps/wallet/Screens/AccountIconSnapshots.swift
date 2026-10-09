@@ -13,8 +13,13 @@ enum AccountIconSnapshots {
 
     @MainActor
     static func main() throws {
+        if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--dominants" {
+            NSApplication.shared.setActivationPolicy(.prohibited)
+            try writeDominantPixels(addressesFile: CommandLine.arguments[2], outputFile: CommandLine.arguments[3])
+            return
+        }
         guard CommandLine.arguments.count == 3 else {
-            fputs("usage: account-icon-snapshots VECTORS_JSON OUTPUT_DIRECTORY\n", stderr)
+            fputs("usage: account-icon-snapshots VECTORS_JSON OUTPUT_DIRECTORY\n       account-icon-snapshots --dominants ADDRESSES_JSON OUTPUT_JSON\n", stderr)
             exit(2)
         }
         NSApplication.shared.setActivationPolicy(.prohibited)
@@ -60,15 +65,56 @@ enum AccountIconSnapshots {
 
     private enum SnapshotError: Error { case invalidVector, renderFailed }
 
+    private struct Raster: Encodable {
+        let address: String
+        let width: Int
+        let height: Int
+        let rgba: [UInt8]
+    }
+
+    /// Bounded 16px raster input for offline measurements. The caller clusters
+    /// opaque pixels; alpha-edge pixels remain available for explicit filtering.
+    @MainActor
+    private static func writeDominantPixels(addressesFile: String, outputFile: String) throws {
+        let addresses = try JSONDecoder().decode([String].self, from: Data(contentsOf:
+            URL(fileURLWithPath: addressesFile)))
+        guard !addresses.isEmpty, addresses.count <= 1024 else { throw SnapshotError.invalidVector }
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        var rasters: [Raster] = []
+        rasters.reserveCapacity(addresses.count)
+        for address in addresses {
+            guard let spec = AccountIconSpec.of(address: address) else { throw SnapshotError.invalidVector }
+            let renderer = ImageRenderer(content: AccountIcon(spec: spec, size: 16))
+            renderer.scale = 1
+            renderer.isOpaque = false
+            guard let image = renderer.cgImage, image.width == 16, image.height == 16 else {
+                throw SnapshotError.renderFailed
+            }
+            var rgba = [UInt8](repeating: 0, count: 16 * 16 * 4)
+            try rgba.withUnsafeMutableBytes { bytes in
+                guard let context = CGContext(data: bytes.baseAddress, width: 16, height: 16,
+                    bitsPerComponent: 8, bytesPerRow: 16 * 4, space: colorSpace,
+                    bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue) else {
+                    throw SnapshotError.renderFailed
+                }
+                context.draw(image, in: CGRect(x: 0, y: 0, width: 16, height: 16))
+            }
+            rasters.append(Raster(address: address, width: 16, height: 16, rgba: rgba))
+        }
+        let data = try JSONEncoder().encode(rasters)
+        try data.write(to: URL(fileURLWithPath: outputFile), options: .atomic)
+        print("Rendered \(rasters.count) static 16px RGBA rasters")
+    }
+
     private static func surface(dark: Bool) -> Color {
-        dark ? Color(.sRGB, red: 16.0 / 255, green: 24.0 / 255, blue: 32.0 / 255, opacity: 1)
-             : Color(.sRGB, red: 247.0 / 255, green: 245.0 / 255, blue: 240.0 / 255, opacity: 1)
+        dark ? Color(.sRGB, red: 7.0 / 255, green: 19.0 / 255, blue: 32.0 / 255, opacity: 1)
+             : Color(.sRGB, red: 244.0 / 255, green: 239.0 / 255, blue: 230.0 / 255, opacity: 1)
     }
 
     @MainActor
     private static func sheet(_ vectors: [Fixture.Vector], dark: Bool) -> some View {
         VStack(alignment: .leading, spacing: 24) {
-            Text(verbatim: "Archipelago v1 · SwiftUI · \(dark ? "dark" : "light")")
+            Text(verbatim: "Archipelago v2 · SwiftUI · \(dark ? "dark" : "light")")
                 .font(.system(size: 24, weight: .semibold))
             Text(verbatim: "Frozen address vectors · 16 / 32 / 64 px at natural size")
                 .font(.system(size: 14)).foregroundStyle(.secondary)

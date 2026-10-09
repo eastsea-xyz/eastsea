@@ -1,0 +1,51 @@
+{
+  "host": "Jayui-MacBookPro-2.local",
+  "runs": [
+    {
+      "host": "Jayui-MacBookPro-2.local",
+      "workingDirectory": "/Users/kjaylee/eastsea-lab/account-icon/tmp/palette-work-6cd6fee-round2",
+      "initial": {
+        "availableRamGiB": 10.14776611328125,
+        "freeDiskGiB": 99.60060501098633,
+        "ownedResidentGiB": 0
+      },
+      "samples": 10,
+      "minAvailableRamGiB": 10.068145751953125,
+      "minFreeDiskGiB": 99.60049057006836,
+      "maxOwnedResidentGiB": 0.119110107421875,
+      "nice": 15,
+      "memoryCapGiB": 12,
+      "nodeHeapCapGiB": 1,
+      "processStopped": true,
+      "ownedSubdirectoryRemoved": true,
+      "elapsedSeconds": 4.6420159339904785
+    },
+    {
+      "host": "Jayui-MacBookPro-2.local",
+      "workingDirectory": "/Users/kjaylee/eastsea-lab/account-icon/tmp/palette-work-restrained-round2",
+      "initial": {
+        "availableRamGiB": 12.16607666015625,
+        "freeDiskGiB": 99.59492111206055,
+        "ownedResidentGiB": 0
+      },
+      "samples": 30,
+      "minAvailableRamGiB": 11.130706787109375,
+      "minFreeDiskGiB": 99.5931625366211,
+      "maxOwnedResidentGiB": 0.15301513671875,
+      "nice": 15,
+      "memoryCapGiB": 12,
+      "nodeHeapCapGiB": 1,
+      "processStopped": true,
+      "ownedSubdirectoryRemoved": true,
+      "elapsedSeconds": 14.937359094619751
+    }
+  ],
+  "nice": 15,
+  "memoryCapGiB": 12,
+  "nodeHeapCapGiB": 1,
+  "minAvailableRamGiB": 10.068145751953125,
+  "minFreeDiskGiB": 99.5931625366211,
+  "maxOwnedResidentGiB": 0.15301513671875,
+  "processesStopped": true,
+  "ownedSubdirectoriesRemoved": true
+}

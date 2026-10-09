@@ -1,13 +1,106 @@
-// Archipelago v1. This is the canonical module; mirror it with
+// Archipelago v2. This is the canonical module; mirror it with
 // `node scripts/sync-account-icons.mjs`. See docs/design/46-account-icon.md.
-export const ACCOUNT_ICON_VERSION = 1;
+export const ACCOUNT_ICON_VERSION = 2;
 export const ACCOUNT_ICON_PALETTES = Object.freeze([
-  '#4e8dad', '#368f8b', '#73864a', '#a77a45',
-  '#b36c5c', '#96749e', '#758694', '#958130',
-]);
-export const ACCOUNT_ICON_INK = '#101820';
+  {
+    "name": "tidal",
+    "start": "#209792",
+    "end": "#1d8781",
+    "ink": "#0d2135"
+  },
+  {
+    "name": "coral",
+    "start": "#ca2b2b",
+    "end": "#b92727",
+    "ink": "#eed7a0"
+  },
+  {
+    "name": "cove",
+    "start": "#2f62da",
+    "end": "#2558d0",
+    "ink": "#eed7a0"
+  },
+  {
+    "name": "seagrass",
+    "start": "#429c1c",
+    "end": "#3b8b18",
+    "ink": "#0d2135"
+  },
+  {
+    "name": "anemone",
+    "start": "#c7237e",
+    "end": "#b62073",
+    "ink": "#eed7a0"
+  },
+  {
+    "name": "gold",
+    "start": "#aa8518",
+    "end": "#987716",
+    "ink": "#0d2135"
+  },
+  {
+    "name": "azure",
+    "start": "#298ee0",
+    "end": "#1f84d6",
+    "ink": "#0d2135"
+  },
+  {
+    "name": "reef",
+    "start": "#257e52",
+    "end": "#206f47",
+    "ink": "#eed7a0"
+  },
+  {
+    "name": "rose",
+    "start": "#d36979",
+    "end": "#cf596b",
+    "ink": "#0d2135"
+  },
+  {
+    "name": "kelp",
+    "start": "#6e7722",
+    "end": "#5f671e",
+    "ink": "#eed7a0"
+  },
+  {
+    "name": "orchid",
+    "start": "#e444d4",
+    "end": "#e232d0",
+    "ink": "#0d2135"
+  },
+  {
+    "name": "sea",
+    "start": "#257793",
+    "end": "#216a83",
+    "ink": "#eed7a0"
+  },
+  {
+    "name": "dawn",
+    "start": "#df6320",
+    "end": "#cd5b1d",
+    "ink": "#0d2135"
+  },
+  {
+    "name": "iris",
+    "start": "#a029e0",
+    "end": "#961fd6",
+    "ink": "#eed7a0"
+  },
+  {
+    "name": "copper",
+    "start": "#96612c",
+    "end": "#865727",
+    "ink": "#eed7a0"
+  },
+  {
+    "name": "lilac",
+    "start": "#9579d8",
+    "end": "#8969d3",
+    "ink": "#0d2135"
+  }
+].map((palette) => Object.freeze(palette)));
 
-const DOMAIN = 'eastsea-account-icon-v1';
+const DOMAIN = 'eastsea-account-icon-v2';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const SHA256_INITIAL = [
   0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
@@ -74,10 +167,10 @@ export function deriveAccountIcon(address, version = ACCOUNT_ICON_VERSION) {
   const seed = seedPrefix(bytes);
   return Object.freeze({
     version: ACCOUNT_ICON_VERSION,
-    palette: seed[0] & 7,
+    palette: seed[0] & 15,
     layout: ((seed[1] << 8) | seed[2]) & 0x3fff,
-    shape: (seed[0] >>> 3) & 3,
-    rotation: (seed[0] >>> 5) & 3,
+    shape: (seed[0] >>> 4) & 3,
+    rotation: (seed[0] >>> 6) & 3,
   });
 }
 
@@ -91,26 +184,70 @@ function validSpec(spec) {
 
 const validSize = (size) => typeof size === 'number' && Number.isFinite(size) && size > 0;
 
-/** Both renderers share the integer geometry and ascending cell order. */
-function glyphs(spec) {
-  const result = [];
-  for (let i = 0; i < 15; i++) {
-    if (i !== 0 && !(spec.layout & (1 << (i - 1)))) continue;
-    const x = 9 + 12 * (i % 4), y = 9 + 12 * Math.floor(i / 4);
-    if (spec.shape === 0) result.push(['rect', { x, y, width: 10, height: 10 }]);
-    else if (spec.shape === 1) result.push(['circle', { cx: x + 5, cy: y + 5, r: 5 }]);
-    else if (spec.shape === 2) result.push(['path', { d: `M${x + 5} ${y}L${x + 10} ${y + 10}L${x} ${y + 10}Z` }]);
-    else result.push(['path', { d: `M${x} ${y}L${x + 10} ${y}A10 10 0 0 1 ${x} ${y + 10}Z` }]);
+// The broad coastline is the identity at a glance. These are deliberately
+// different topologies, not a grid of small glyphs. M/L/C/Z are integer-only
+// commands, shared with Swift's Canvas and the independent Python oracle.
+export const ACCOUNT_ICON_SILHOUETTES = Object.freeze([
+  ['cove', 'M 52 12 C 36 4 13 10 10 28 C 7 45 25 55 43 48 L 47 38 C 33 44 21 40 22 29 C 23 19 35 15 48 23 Z'],
+  ['headland', 'M 12 47 L 12 34 C 22 32 19 18 29 11 C 37 5 51 12 53 24 C 55 35 44 41 35 38 C 29 36 29 48 22 50 Z'],
+  ['sandbar', 'M 10 40 C 13 29 21 28 29 26 C 35 24 37 10 48 10 L 55 21 C 44 22 46 35 35 38 C 27 41 21 38 17 51 Z'],
+  ['twin peaks', 'M 9 43 L 19 15 C 21 9 25 9 28 17 L 33 29 L 42 12 C 45 7 48 9 50 17 L 56 43 C 42 51 24 51 9 43 Z'],
+  ['reef', 'M 8 32 L 25 9 C 28 6 32 8 32 13 L 29 24 L 50 16 C 56 14 58 20 53 25 L 35 48 C 31 54 26 51 28 45 L 32 34 L 13 42 C 7 45 5 39 8 32 Z'],
+  ['breaker', 'M 8 43 C 16 39 17 18 31 11 C 44 4 56 14 54 27 C 48 18 36 17 34 28 C 40 26 51 32 56 43 C 40 52 22 51 8 43 Z'],
+  ['inlet', 'M 10 48 L 10 26 C 10 6 52 6 52 26 L 52 48 L 40 48 L 40 29 C 40 21 22 21 22 29 L 22 48 Z'],
+  ['delta', 'M 27 50 L 25 32 L 9 20 L 14 9 L 31 22 L 48 9 L 56 18 L 39 34 L 40 50 Z'],
+  ['spit', 'M 11 48 C 9 26 23 9 51 10 C 49 33 33 49 11 48 Z'],
+  ['shelf', 'M 10 15 L 32 10 L 33 25 L 52 20 L 55 40 L 39 50 L 12 45 C 8 34 8 25 10 15 Z'],
+  ['hook', 'M 11 10 L 25 10 L 25 32 C 25 45 43 44 43 32 L 43 22 L 55 22 L 55 35 C 55 59 11 58 11 35 Z'],
+  ['crescent', 'M 50 8 C 23 4 8 19 10 36 C 12 52 33 58 52 45 C 30 43 29 23 50 8 Z'],
+  ['ridge', 'M 8 42 L 14 27 L 25 30 L 31 9 L 43 24 L 51 18 L 57 42 C 39 51 24 50 8 42 Z'],
+  ['estuary', 'M 10 13 L 24 11 L 32 28 L 41 10 L 55 15 L 42 33 L 51 47 L 35 51 L 28 39 L 13 48 L 8 34 L 23 29 Z'],
+  ['arch', 'M 8 44 C 9 27 18 8 32 8 C 46 8 55 27 56 44 L 42 47 C 42 33 37 24 32 24 C 27 24 22 33 22 47 Z'],
+  ['tidal pool', 'M 54 27 C 54 47 38 55 21 48 C 6 41 8 18 23 11 C 39 3 51 13 46 27 C 42 37 30 39 25 29 C 29 32 36 29 35 23 C 34 16 21 21 21 31 C 21 43 43 42 43 29 Z'],
+].map(([name, path]) => Object.freeze({ name, path })));
+
+export function accountIconSilhouette(spec) {
+  return validSpec(spec) ? spec.shape * 4 + (spec.layout & 3) : null;
+}
+
+// Only at >=32 logical pixels: two large neighboring islands. The remaining
+// layout bits change shore proportions and positions, never small dots.
+function islands(spec, size) {
+  const result = [{ d: ACCOUNT_ICON_SILHOUETTES[accountIconSilhouette(spec)].path, transform: `translate(0 ${size < 32 ? 5 : 0}) scale(1 0.8)` }];
+  if (size < 32) return result;
+  for (let i = 0; i < 2; i++) {
+    const bits = (spec.layout >>> (2 + i * 6)) & 63;
+    const x = 9 + i * 25 + (bits & 3), y = 46 + ((bits >>> 2) & 3);
+    const w = 14 + ((bits >>> 4) & 3);
+    result.push({ d: `M ${x} ${y + 4} C ${x + 2} ${y - 3} ${x + w - 5} ${y + 1} ${x + w - 2} ${y - 2} L ${x + w} ${y + 6} C ${x + w - 3} ${y + 11} ${x + 3} ${y + 13} ${x} ${y + 4} Z` });
   }
   return result;
 }
 
+function drawing(spec, size) {
+  const palette = ACCOUNT_ICON_PALETTES[spec.palette];
+  // Identical IDs are safe: they always resolve to identical fixed gradients.
+  const id = `eastsea-island-v2-${spec.palette}`;
+  return [
+    ['defs', {}, [['linearGradient', { id, x1: 0, y1: 0, x2: 64, y2: 64, gradientUnits: 'userSpaceOnUse', 'color-interpolation': 'sRGB' }, [
+      ['stop', { offset: 0, 'stop-color': palette.start }],
+      ['stop', { offset: 1, 'stop-color': palette.end }],
+    ]]]],
+    ['rect', { width: 64, height: 64, rx: 12, fill: `url(#${id})` }],
+    ['g', { fill: palette.ink, transform: `rotate(${spec.rotation * 90} 32 32)` }, islands(spec, size).map((attrs) => ['path', attrs])],
+  ];
+}
+
 /** Canonical UTF-8 SVG, without a trailing newline; invalid specs have no SVG.
- * All interpolated values come from checked numbers and the fixed palette. */
+ * Interpolated values come from checked numbers and frozen drawing tables. */
 export function accountIconSVG(spec, size = 64) {
   if (!validSpec(spec) || !validSize(size)) return null;
-  const body = glyphs(spec).map(([tag, attrs]) => `<${tag} ${Object.entries(attrs).map(([key, value]) => `${key}="${value}"`).join(' ')}/>`).join('');
-  return `<svg xmlns="${SVG_NS}" width="${size}" height="${size}" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="12" fill="${ACCOUNT_ICON_PALETTES[spec.palette]}"/><g fill="${ACCOUNT_ICON_INK}" transform="rotate(${spec.rotation * 90} 32 32)">${body}</g></svg>`;
+  const serialize = ([tag, attrs, children]) => {
+    const attributes = Object.entries(attrs).map(([key, value]) => `${key}="${value}"`).join(' ');
+    const opening = `<${tag}${attributes ? ` ${attributes}` : ''}`;
+    return children ? `${opening}>${children.map(serialize).join('')}</${tag}>` : `${opening}/>`;
+  };
+  return `<svg xmlns="${SVG_NS}" width="${size}" height="${size}" viewBox="0 0 64 64" aria-hidden="true">${drawing(spec, size).map(serialize).join('')}</svg>`;
 }
 
 /** Decorative DOM icon, paired by the caller with the authoritative address.
@@ -118,17 +255,13 @@ export function accountIconSVG(spec, size = 64) {
 export function createAccountIcon(address, size = 32, doc = globalThis.document) {
   if (!validSize(size)) throw new RangeError('Invalid account icon size');
   const spec = deriveAccountIcon(address);
-  const node = (tag, attrs) => {
+  const node = ([tag, attrs, children]) => {
     const el = doc.createElementNS(SVG_NS, tag);
     for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, String(value));
+    if (children) for (const child of children) el.append(node(child));
     return el;
   };
-  const svg = node('svg', { width: size, height: size, viewBox: '0 0 64 64', 'aria-hidden': 'true', focusable: 'false', class: spec ? 'account-icon' : 'account-icon placeholder' });
-  svg.append(node('rect', { width: 64, height: 64, rx: 12, fill: spec ? ACCOUNT_ICON_PALETTES[spec.palette] : '#808890' }));
-  if (spec) {
-    const group = node('g', { fill: ACCOUNT_ICON_INK, transform: `rotate(${spec.rotation * 90} 32 32)` });
-    for (const [tag, attrs] of glyphs(spec)) group.append(node(tag, attrs));
-    svg.append(group);
-  }
+  const svg = node(['svg', { width: size, height: size, viewBox: '0 0 64 64', 'aria-hidden': 'true', focusable: 'false', class: spec ? 'account-icon' : 'account-icon placeholder' }]);
+  for (const element of spec ? drawing(spec, size) : [['rect', { width: 64, height: 64, rx: 12, fill: '#808890' }]]) svg.append(node(element));
   return svg;
 }

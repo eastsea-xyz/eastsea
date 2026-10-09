@@ -1,111 +1,1057 @@
 {
-  "version": 1,
-  "sampleCount": 100000,
-  "totalUnorderedPairs": 4999950000,
-  "measurementStream": "SHA-256(UTF8(\"eastsea-account-icon-measure-v1\") || UInt32BE(i))[0..20], i=0..99999",
-  "metricDefinitions": {
-    "tuple": "palette, 14-bit layout, glyph style, raw quarter-turn (can overcount distinct images)",
-    "coarse": "palette, actually rotated 4x4 occupied mask, glyph style, visible glyph orientation",
-    "paletteAndMask": "palette and actually rotated mask; discard glyph style/orientation",
-    "grayscaleMask": "actually rotated mask only; discard hue, glyph style and orientation"
+  "version": 2,
+  "pairCount": 10000,
+  "addressCount": 20000,
+  "stream": "SHA-256(UTF8(\"eastsea-account-icon-glance-v2\") || UInt32BE(i))[0..20]; consecutive independent pairs; i=0..19999",
+  "raster": {
+    "renderer": "SwiftUI ImageRenderer, 16x16 pixels, sRGB, alpha uncomposited",
+    "uniqueRenders": 1024,
+    "signature": "palette + unrotated silhouette class + quarter-turn; remaining detail is absent below 32 px",
+    "dominantColor": "12 iterations of two-cluster sRGB k-means on alpha>=0.95 interior; premultiplied channels unpremultiplied; largest cluster centroid converted to D65 Lab",
+    "minimumDominantShare": 0.7418032786885246,
+    "foregroundDominatesCount": 0
   },
-  "metrics": {
-    "tuple": {
-      "distinctSignatures": 97638,
-      "matchingPairs": 2398,
-      "fraction": 4.796047960479604e-7,
-      "oneIn": 2085050.0417014179
+  "glance": {
+    "definition": "CIEDE2000 between rendered dominant colors <15 AND same unrotated coastline silhouette class. Rotation deliberately ignored.",
+    "thresholdDeltaE": 15,
+    "silhouetteClassCount": 16,
+    "matchingPairs": 36,
+    "totalPairs": 10000,
+    "fraction": 0.0036,
+    "percentage": 0.36,
+    "targetFraction": 0.01,
+    "passes": true,
+    "nearColorPairs": 748,
+    "sameClassPairs": 597,
+    "matchingPairsWithDifferentRotations": 28,
+    "exact16Pairs": 7,
+    "conservativeGrouping": {
+      "definition": "Merge cove/crescent, inlet/hook/arch, and twinpeaks/ridge; ignore rotation.",
+      "silhouetteGroups": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        6,
+        0,
+        3,
+        10,
+        6,
+        11
+      ],
+      "groupCount": 12,
+      "matchingPairs": 68,
+      "percentage": 0.6799999999999999,
+      "passes": true
     },
-    "coarse": {
-      "distinctSignatures": 97052,
-      "matchingPairs": 3019,
-      "fraction": 6.038060380603806e-7,
-      "oneIn": 1656160.980457105
+    "wilson95Percent": [
+      0.2601603638795569,
+      0.49796299435965796
+    ],
+    "examples": [
+      {
+        "first": "0x5192aabf4b6e56a8b2eddb48af6886eb191cb007",
+        "second": "0x849e6606bfa09be18bb3240878a93c33254eb11e",
+        "deltaE": 0.13178187449330733,
+        "silhouetteClass": 0
+      },
+      {
+        "first": "0x34e3fcf7b710adb5a6739f4bd639f89b7e6c21b8",
+        "second": "0xb76d7ea995039c9dfb81dbf157f7e5ddb5ac3dad",
+        "deltaE": 0.036627181933388125,
+        "silhouetteClass": 12
+      },
+      {
+        "first": "0x18a117ad0554de4f23f779e662a7ced405e8fabf",
+        "second": "0xda0a2dfa4c0f2e8fc9a0c6908b9e3952ea6ad69d",
+        "deltaE": 14.883521719663378,
+        "silhouetteClass": 15
+      },
+      {
+        "first": "0xda4a15b124967be84ebafa453a8aa56155525418",
+        "second": "0xcbc95d16d86216ad62afc98f22b4b488bad0f503",
+        "deltaE": 0.06466105857161976,
+        "silhouetteClass": 12
+      },
+      {
+        "first": "0xdd3f2bc54e58528e1fbe535740bae6ceac1747af",
+        "second": "0x9c852afde05b613ff78fe336545a06211f9790fb",
+        "deltaE": 0,
+        "silhouetteClass": 8
+      }
+    ]
+  },
+  "palette": {
+    "colorSpace": "CIEDE2000, D65 Lab, kL=kC=kH=1, encoded sRGB background midpoint",
+    "minimumDeltaE": 15.995413938449344,
+    "closestPair": {
+      "a": 13,
+      "b": 15,
+      "deltaE": 15.995413938449344
     },
-    "paletteAndMask": {
-      "distinctSignatures": 87084,
-      "matchingPairs": 14335,
-      "fraction": 0.0000028670286702867027,
-      "oneIn": 348793.1635856296
-    },
-    "grayscaleMask": {
-      "distinctSignatures": 41214,
-      "matchingPairs": 114412,
-      "fraction": 0.000022882628826288263,
-      "oneIn": 43701.27259378387
+    "distances": [
+      {
+        "a": 13,
+        "b": 15,
+        "deltaE": 15.995413938449344
+      },
+      {
+        "a": 10,
+        "b": 13,
+        "deltaE": 16.18891923289508
+      },
+      {
+        "a": 6,
+        "b": 11,
+        "deltaE": 16.203645912130824
+      },
+      {
+        "a": 2,
+        "b": 11,
+        "deltaE": 16.282791210192254
+      },
+      {
+        "a": 5,
+        "b": 14,
+        "deltaE": 16.363695741198825
+      },
+      {
+        "a": 3,
+        "b": 9,
+        "deltaE": 16.619522745683913
+      },
+      {
+        "a": 3,
+        "b": 7,
+        "deltaE": 16.67892212552051
+      },
+      {
+        "a": 2,
+        "b": 6,
+        "deltaE": 16.730622692413675
+      },
+      {
+        "a": 0,
+        "b": 7,
+        "deltaE": 16.763079695318456
+      },
+      {
+        "a": 4,
+        "b": 8,
+        "deltaE": 16.78174180749068
+      },
+      {
+        "a": 2,
+        "b": 15,
+        "deltaE": 16.808064921236856
+      },
+      {
+        "a": 12,
+        "b": 14,
+        "deltaE": 16.822221865680905
+      },
+      {
+        "a": 4,
+        "b": 10,
+        "deltaE": 16.854241413146575
+      },
+      {
+        "a": 5,
+        "b": 9,
+        "deltaE": 16.891481513614217
+      },
+      {
+        "a": 10,
+        "b": 15,
+        "deltaE": 17.189758693348697
+      },
+      {
+        "a": 0,
+        "b": 11,
+        "deltaE": 17.245669580544885
+      },
+      {
+        "a": 1,
+        "b": 8,
+        "deltaE": 17.357070862229264
+      },
+      {
+        "a": 1,
+        "b": 12,
+        "deltaE": 17.39109304659216
+      },
+      {
+        "a": 7,
+        "b": 9,
+        "deltaE": 18.05486491267874
+      },
+      {
+        "a": 4,
+        "b": 13,
+        "deltaE": 19.65743742168113
+      },
+      {
+        "a": 2,
+        "b": 13,
+        "deltaE": 20.45592496143636
+      },
+      {
+        "a": 1,
+        "b": 14,
+        "deltaE": 21.612746648955035
+      },
+      {
+        "a": 9,
+        "b": 14,
+        "deltaE": 22.00085740120062
+      },
+      {
+        "a": 8,
+        "b": 10,
+        "deltaE": 22.1048072035603
+      },
+      {
+        "a": 6,
+        "b": 15,
+        "deltaE": 22.606623961510792
+      },
+      {
+        "a": 8,
+        "b": 12,
+        "deltaE": 22.792970279600038
+      },
+      {
+        "a": 1,
+        "b": 4,
+        "deltaE": 22.99454106819085
+      },
+      {
+        "a": 5,
+        "b": 12,
+        "deltaE": 23.811023238904774
+      },
+      {
+        "a": 11,
+        "b": 15,
+        "deltaE": 24.180318200983823
+      },
+      {
+        "a": 4,
+        "b": 15,
+        "deltaE": 25.29344810992501
+      },
+      {
+        "a": 0,
+        "b": 3,
+        "deltaE": 26.422556028528366
+      },
+      {
+        "a": 0,
+        "b": 6,
+        "deltaE": 26.66300051657865
+      },
+      {
+        "a": 3,
+        "b": 5,
+        "deltaE": 27.244685193126216
+      },
+      {
+        "a": 7,
+        "b": 11,
+        "deltaE": 27.9846888973204
+      },
+      {
+        "a": 11,
+        "b": 13,
+        "deltaE": 28.15919564285361
+      },
+      {
+        "a": 8,
+        "b": 15,
+        "deltaE": 28.39970655274896
+      },
+      {
+        "a": 8,
+        "b": 14,
+        "deltaE": 28.67271146110558
+      },
+      {
+        "a": 0,
+        "b": 9,
+        "deltaE": 29.1362319923305
+      },
+      {
+        "a": 8,
+        "b": 13,
+        "deltaE": 30.971563743968737
+      },
+      {
+        "a": 2,
+        "b": 10,
+        "deltaE": 31.104404137821952
+      },
+      {
+        "a": 5,
+        "b": 7,
+        "deltaE": 32.05011070808289
+      },
+      {
+        "a": 2,
+        "b": 4,
+        "deltaE": 32.77929960811488
+      },
+      {
+        "a": 1,
+        "b": 10,
+        "deltaE": 34.973408334891346
+      },
+      {
+        "a": 0,
+        "b": 15,
+        "deltaE": 35.130767222522465
+      },
+      {
+        "a": 0,
+        "b": 2,
+        "deltaE": 35.322343469955555
+      },
+      {
+        "a": 6,
+        "b": 13,
+        "deltaE": 35.41565071368943
+      },
+      {
+        "a": 7,
+        "b": 14,
+        "deltaE": 36.04069336489489
+      },
+      {
+        "a": 0,
+        "b": 5,
+        "deltaE": 36.061953425309255
+      },
+      {
+        "a": 4,
+        "b": 12,
+        "deltaE": 36.82322164815226
+      },
+      {
+        "a": 1,
+        "b": 5,
+        "deltaE": 36.97166916788287
+      },
+      {
+        "a": 9,
+        "b": 12,
+        "deltaE": 37.63591008660827
+      },
+      {
+        "a": 2,
+        "b": 8,
+        "deltaE": 37.830349844202054
+      },
+      {
+        "a": 1,
+        "b": 13,
+        "deltaE": 38.08367097921665
+      },
+      {
+        "a": 3,
+        "b": 14,
+        "deltaE": 38.43848198965949
+      },
+      {
+        "a": 11,
+        "b": 14,
+        "deltaE": 38.47602126997726
+      },
+      {
+        "a": 4,
+        "b": 14,
+        "deltaE": 38.603102829343
+      },
+      {
+        "a": 9,
+        "b": 11,
+        "deltaE": 38.77804046746711
+      },
+      {
+        "a": 0,
+        "b": 14,
+        "deltaE": 39.169739192309954
+      },
+      {
+        "a": 1,
+        "b": 15,
+        "deltaE": 39.236395236044835
+      },
+      {
+        "a": 5,
+        "b": 8,
+        "deltaE": 39.76333403418748
+      },
+      {
+        "a": 0,
+        "b": 13,
+        "deltaE": 40.392763116525416
+      },
+      {
+        "a": 10,
+        "b": 11,
+        "deltaE": 41.395783187142264
+      },
+      {
+        "a": 6,
+        "b": 7,
+        "deltaE": 41.74991620535755
+      },
+      {
+        "a": 6,
+        "b": 10,
+        "deltaE": 42.3190812406951
+      },
+      {
+        "a": 0,
+        "b": 10,
+        "deltaE": 42.562580128461775
+      },
+      {
+        "a": 6,
+        "b": 8,
+        "deltaE": 42.563111804736685
+      },
+      {
+        "a": 3,
+        "b": 11,
+        "deltaE": 43.044021111430226
+      },
+      {
+        "a": 1,
+        "b": 2,
+        "deltaE": 43.37528141261286
+      },
+      {
+        "a": 5,
+        "b": 11,
+        "deltaE": 43.779497880583094
+      },
+      {
+        "a": 10,
+        "b": 12,
+        "deltaE": 44.132753044458035
+      },
+      {
+        "a": 7,
+        "b": 15,
+        "deltaE": 44.445389263077296
+      },
+      {
+        "a": 2,
+        "b": 7,
+        "deltaE": 44.77431453485824
+      },
+      {
+        "a": 12,
+        "b": 15,
+        "deltaE": 44.94575720292823
+      },
+      {
+        "a": 6,
+        "b": 14,
+        "deltaE": 45.823355562269775
+      },
+      {
+        "a": 1,
+        "b": 9,
+        "deltaE": 45.98879817090922
+      },
+      {
+        "a": 14,
+        "b": 15,
+        "deltaE": 46.023622135629914
+      },
+      {
+        "a": 4,
+        "b": 6,
+        "deltaE": 46.30533642501891
+      },
+      {
+        "a": 2,
+        "b": 14,
+        "deltaE": 47.467426606011365
+      },
+      {
+        "a": 7,
+        "b": 13,
+        "deltaE": 47.667701308316
+      },
+      {
+        "a": 8,
+        "b": 9,
+        "deltaE": 48.369524494607575
+      },
+      {
+        "a": 10,
+        "b": 14,
+        "deltaE": 48.642687694208966
+      },
+      {
+        "a": 7,
+        "b": 10,
+        "deltaE": 48.649964336745846
+      },
+      {
+        "a": 6,
+        "b": 12,
+        "deltaE": 48.95933512297649
+      },
+      {
+        "a": 0,
+        "b": 12,
+        "deltaE": 49.055979085040676
+      },
+      {
+        "a": 4,
+        "b": 11,
+        "deltaE": 49.15590214224404
+      },
+      {
+        "a": 1,
+        "b": 6,
+        "deltaE": 49.26730735252633
+      },
+      {
+        "a": 12,
+        "b": 13,
+        "deltaE": 49.49611770104733
+      },
+      {
+        "a": 13,
+        "b": 14,
+        "deltaE": 49.92428372131833
+      },
+      {
+        "a": 11,
+        "b": 12,
+        "deltaE": 49.95910050930086
+      },
+      {
+        "a": 8,
+        "b": 11,
+        "deltaE": 50.139103875171614
+      },
+      {
+        "a": 2,
+        "b": 12,
+        "deltaE": 50.30904785047731
+      },
+      {
+        "a": 5,
+        "b": 6,
+        "deltaE": 50.97665028578082
+      },
+      {
+        "a": 0,
+        "b": 4,
+        "deltaE": 52.09889164322444
+      },
+      {
+        "a": 7,
+        "b": 12,
+        "deltaE": 52.250735245489444
+      },
+      {
+        "a": 1,
+        "b": 11,
+        "deltaE": 52.74940414087525
+      },
+      {
+        "a": 0,
+        "b": 8,
+        "deltaE": 53.81549800824926
+      },
+      {
+        "a": 3,
+        "b": 12,
+        "deltaE": 54.339912063370164
+      },
+      {
+        "a": 3,
+        "b": 15,
+        "deltaE": 54.53027954968491
+      },
+      {
+        "a": 4,
+        "b": 5,
+        "deltaE": 54.70966057667294
+      },
+      {
+        "a": 0,
+        "b": 1,
+        "deltaE": 56.25248649299853
+      },
+      {
+        "a": 6,
+        "b": 9,
+        "deltaE": 56.37540308582813
+      },
+      {
+        "a": 3,
+        "b": 6,
+        "deltaE": 56.92686934579479
+      },
+      {
+        "a": 5,
+        "b": 15,
+        "deltaE": 56.957835476508855
+      },
+      {
+        "a": 2,
+        "b": 5,
+        "deltaE": 59.57862536967843
+      },
+      {
+        "a": 7,
+        "b": 8,
+        "deltaE": 59.812312328848726
+      },
+      {
+        "a": 4,
+        "b": 9,
+        "deltaE": 60.06198067628922
+      },
+      {
+        "a": 1,
+        "b": 7,
+        "deltaE": 60.39461504435856
+      },
+      {
+        "a": 2,
+        "b": 3,
+        "deltaE": 60.64140447282192
+      },
+      {
+        "a": 9,
+        "b": 15,
+        "deltaE": 61.69850812465688
+      },
+      {
+        "a": 2,
+        "b": 9,
+        "deltaE": 61.940055981409245
+      },
+      {
+        "a": 5,
+        "b": 10,
+        "deltaE": 62.84289543166951
+      },
+      {
+        "a": 3,
+        "b": 8,
+        "deltaE": 65.35186596070028
+      },
+      {
+        "a": 5,
+        "b": 13,
+        "deltaE": 66.14138067933943
+      },
+      {
+        "a": 1,
+        "b": 3,
+        "deltaE": 66.85484244599166
+      },
+      {
+        "a": 4,
+        "b": 7,
+        "deltaE": 69.43726006165976
+      },
+      {
+        "a": 9,
+        "b": 10,
+        "deltaE": 69.92003266639931
+      },
+      {
+        "a": 9,
+        "b": 13,
+        "deltaE": 71.14121764894266
+      },
+      {
+        "a": 3,
+        "b": 4,
+        "deltaE": 79.62531061177265
+      },
+      {
+        "a": 3,
+        "b": 10,
+        "deltaE": 87.95750827787262
+      },
+      {
+        "a": 3,
+        "b": 13,
+        "deltaE": 90.3060778322687
+      }
+    ],
+    "allContrastPairsPass": true,
+    "minimumInkContrast": 3.4367184367410926,
+    "palettes": [
+      {
+        "name": "tidal",
+        "start": "#209792",
+        "end": "#1d8781",
+        "ink": "#0d2135",
+        "midpoint": "#1f8f8a",
+        "contrast": {
+          "start": {
+            "ink": 4.590069646650381,
+            "light": 3.106127637629223,
+            "dark": 5.25637829994847
+          },
+          "end": {
+            "ink": 3.7593986070916565,
+            "light": 3.7924529102098874,
+            "dark": 4.30512449273915
+          }
+        }
+      },
+      {
+        "name": "coral",
+        "start": "#ca2b2b",
+        "end": "#b92727",
+        "ink": "#eed7a0",
+        "midpoint": "#c22929",
+        "contrast": {
+          "start": {
+            "ink": 3.819164520651589,
+            "light": 4.7114728708482305,
+            "dark": 3.4653668521209213
+          },
+          "end": {
+            "ink": 4.394330899274991,
+            "light": 5.4210209341628355,
+            "dark": 3.0117909725109406
+          }
+        }
+      },
+      {
+        "name": "cove",
+        "start": "#2f62da",
+        "end": "#2558d0",
+        "ink": "#eed7a0",
+        "midpoint": "#2a5dd5",
+        "contrast": {
+          "start": {
+            "ink": 3.8303986540563133,
+            "light": 4.725331743509422,
+            "dark": 3.4552033164085723
+          },
+          "end": {
+            "ink": 4.390431831135947,
+            "light": 5.416210889018311,
+            "dark": 3.0144656930564464
+          }
+        }
+      },
+      {
+        "name": "seagrass",
+        "start": "#429c1c",
+        "end": "#3b8b18",
+        "ink": "#0d2135",
+        "midpoint": "#3f941a",
+        "contrast": {
+          "start": {
+            "ink": 4.668356364772067,
+            "light": 3.0540389537720873,
+            "dark": 5.346029359297714
+          },
+          "end": {
+            "ink": 3.804008593331066,
+            "light": 3.747978438613091,
+            "dark": 4.356210202037907
+          }
+        }
+      },
+      {
+        "name": "anemone",
+        "start": "#c7237e",
+        "end": "#b62073",
+        "ink": "#eed7a0",
+        "midpoint": "#bf2279",
+        "contrast": {
+          "start": {
+            "ink": 3.7437823934595165,
+            "light": 4.61847848809991,
+            "dark": 3.535143002911667
+          },
+          "end": {
+            "ink": 4.316709209228333,
+            "light": 5.325263737826651,
+            "dark": 3.065948038466134
+          }
+        }
+      },
+      {
+        "name": "gold",
+        "start": "#aa8518",
+        "end": "#987716",
+        "ink": "#0d2135",
+        "midpoint": "#a17e17",
+        "contrast": {
+          "start": {
+            "ink": 4.725589624773648,
+            "light": 3.017050425487733,
+            "dark": 5.411570775674077
+          },
+          "end": {
+            "ink": 3.8764757247914186,
+            "light": 3.6779134451747133,
+            "dark": 4.439196885594154
+          }
+        }
+      },
+      {
+        "name": "azure",
+        "start": "#298ee0",
+        "end": "#1f84d6",
+        "ink": "#0d2135",
+        "midpoint": "#2489db",
+        "contrast": {
+          "start": {
+            "ink": 4.696381755732052,
+            "light": 3.0358141500533478,
+            "dark": 5.37812300236414
+          },
+          "end": {
+            "ink": 4.144253232282496,
+            "light": 3.440268098735692,
+            "dark": 4.745845801175979
+          }
+        }
+      },
+      {
+        "name": "reef",
+        "start": "#257e52",
+        "end": "#206f47",
+        "ink": "#eed7a0",
+        "midpoint": "#23774d",
+        "contrast": {
+          "start": {
+            "ink": 3.551677724246703,
+            "light": 4.381490546767384,
+            "dark": 3.72635333501982
+          },
+          "end": {
+            "ink": 4.338134041635479,
+            "light": 5.351694261074053,
+            "dark": 3.0508061774118844
+          }
+        }
+      },
+      {
+        "name": "rose",
+        "start": "#d36979",
+        "end": "#cf596b",
+        "ink": "#0d2135",
+        "midpoint": "#d16172",
+        "contrast": {
+          "start": {
+            "ink": 4.717107534218923,
+            "light": 3.022475549831733,
+            "dark": 5.401857398718547
+          },
+          "end": {
+            "ink": 4.1166990334422255,
+            "light": 3.4632947592922063,
+            "dark": 4.71429174992925
+          }
+        }
+      },
+      {
+        "name": "kelp",
+        "start": "#6e7722",
+        "end": "#5f671e",
+        "ink": "#eed7a0",
+        "midpoint": "#676f20",
+        "contrast": {
+          "start": {
+            "ink": 3.4367184367410926,
+            "light": 4.2396722089068515,
+            "dark": 3.8510009988517884
+          },
+          "end": {
+            "ink": 4.31389841255363,
+            "light": 5.321796227535664,
+            "dark": 3.0679457110414208
+          }
+        }
+      },
+      {
+        "name": "orchid",
+        "start": "#e444d4",
+        "end": "#e232d0",
+        "ink": "#0d2135",
+        "midpoint": "#e33bd2",
+        "contrast": {
+          "start": {
+            "ink": 4.724755726954276,
+            "light": 3.0175829211163205,
+            "dark": 5.410615826677754
+          },
+          "end": {
+            "ink": 4.354996654839138,
+            "light": 3.2737894694503216,
+            "dark": 4.987181388315052
+          }
+        }
+      },
+      {
+        "name": "sea",
+        "start": "#257793",
+        "end": "#216a83",
+        "ink": "#eed7a0",
+        "midpoint": "#23718b",
+        "contrast": {
+          "start": {
+            "ink": 3.5912680176555414,
+            "light": 4.430330703386989,
+            "dark": 3.6852738552502347
+          },
+          "end": {
+            "ink": 4.30316603651614,
+            "light": 5.3085563426689735,
+            "dark": 3.0755973672299324
+          }
+        }
+      },
+      {
+        "name": "dawn",
+        "start": "#df6320",
+        "end": "#cd5b1d",
+        "ink": "#0d2135",
+        "midpoint": "#d65f1f",
+        "contrast": {
+          "start": {
+            "ink": 4.621222670497061,
+            "light": 3.085188315881395,
+            "dark": 5.292053592728606
+          },
+          "end": {
+            "ink": 3.973366101012007,
+            "light": 3.5882276703554794,
+            "dark": 4.550152167375424
+          }
+        }
+      },
+      {
+        "name": "iris",
+        "start": "#a029e0",
+        "end": "#961fd6",
+        "ink": "#eed7a0",
+        "midpoint": "#9b24db",
+        "contrast": {
+          "start": {
+            "ink": 3.8225926709695517,
+            "light": 4.7157019730858885,
+            "dark": 3.4622590665160944
+          },
+          "end": {
+            "ink": 4.2910041971442885,
+            "light": 5.293553015121744,
+            "dark": 3.084314422593718
+          }
+        }
+      },
+      {
+        "name": "copper",
+        "start": "#96612c",
+        "end": "#865727",
+        "ink": "#eed7a0",
+        "midpoint": "#8e5c2a",
+        "contrast": {
+          "start": {
+            "ink": 3.6762355267772806,
+            "light": 4.535149993565755,
+            "dark": 3.600097446494243
+          },
+          "end": {
+            "ink": 4.363524595090249,
+            "light": 5.383017055138333,
+            "dark": 3.0330540929123773
+          }
+        }
+      },
+      {
+        "name": "lilac",
+        "start": "#9579d8",
+        "end": "#8969d3",
+        "ink": "#0d2135",
+        "midpoint": "#8f71d6",
+        "contrast": {
+          "start": {
+            "ink": 4.668845983931897,
+            "light": 3.053718678485265,
+            "dark": 5.34659005308345
+          },
+          "end": {
+            "ink": 3.9072184115751543,
+            "light": 3.6489749704972474,
+            "dark": 4.474402275518917
+          }
+        }
+      }
+    ],
+    "backgrounds": {
+      "light": "#f4efe6",
+      "dark": "#071320"
     }
   },
-  "targetFraction": 0.0001,
-  "passes": true,
-  "palettes": [
-    {
-      "fill": "#4e8dad",
-      "ink": "#101820",
-      "light": 3.359418538447056,
-      "dark": 4.888888010813549,
-      "inkContrast": 4.888888010813549
-    },
-    {
-      "fill": "#368f8b",
-      "ink": "#101820",
-      "light": 3.5309158094278055,
-      "dark": 4.651433764596078,
-      "inkContrast": 4.651433764596078
-    },
-    {
-      "fill": "#73864a",
-      "ink": "#101820",
-      "light": 3.679736025395935,
-      "dark": 4.463315004817881,
-      "inkContrast": 4.463315004817881
-    },
-    {
-      "fill": "#a77a45",
-      "ink": "#101820",
-      "light": 3.4962068429359334,
-      "dark": 4.697611369619858,
-      "inkContrast": 4.697611369619858
-    },
-    {
-      "fill": "#b36c5c",
-      "ink": "#101820",
-      "light": 3.694960311697737,
-      "dark": 4.444924878874348,
-      "inkContrast": 4.444924878874348
-    },
-    {
-      "fill": "#96749e",
-      "ink": "#101820",
-      "light": 3.6443920360934468,
-      "dark": 4.506601060824363,
-      "inkContrast": 4.506601060824363
-    },
-    {
-      "fill": "#758694",
-      "ink": "#101820",
-      "light": 3.4454588216000097,
-      "dark": 4.766802294357898,
-      "inkContrast": 4.766802294357898
-    },
-    {
-      "fill": "#958130",
-      "ink": "#101820",
-      "light": 3.5295962237232317,
-      "dark": 4.653172763935515,
-      "inkContrast": 4.653172763935515
-    }
-  ],
-  "backgrounds": {
-    "light": "#f7f5f0",
-    "dark": "#101820"
+  "reviewedPair": {
+    "addresses": [
+      "0x1234567890abcdef1234567890abcdef12345678",
+      "0xa2521982a17474cb2f8741c85de653b5282d72b0"
+    ],
+    "features": [
+      {
+        "version": 2,
+        "palette": 12,
+        "layout": 290,
+        "shape": 2,
+        "rotation": 2
+      },
+      {
+        "version": 2,
+        "palette": 11,
+        "layout": 5518,
+        "shape": 2,
+        "rotation": 3
+      }
+    ],
+    "palettes": [
+      "dawn",
+      "sea"
+    ],
+    "silhouetteClasses": [
+      10,
+      10
+    ],
+    "dominantDeltaE": 49.256554844477996
   },
-  "allContrastPairsPass": true,
-  "caveat": "Exact coarse-feature equality is not a measured human/perceptual confusion rate. Rasterization can introduce further aliases.",
+  "provenance": {
+    "scriptSha256": "1a29df84651c27c722861bd36ac49e8e6125cceba4bcfa19f67805df475e216a",
+    "canonicalSourceSha256": "e4e574a6c848fe7170a565ffa0a543507e86609cdd286886992dcccbdeda1329",
+    "rasterBinarySha256": "b52bb8537144f147248d10bb3696624139ba5138f8a98d2b2498d38da7c95386"
+  },
   "environment": {
     "host": "Jayui-MacBookPro-2.local",
     "platform": "darwin",
     "arch": "arm64",
     "node": "v26.3.0"
   },
-  "elapsedSeconds": 0.34284420899999996
+  "caveat": "This requested dominant-color/silhouette proxy is not a human recognition experiment or proof against attacker address grinding. Distinct coastline classes may still look similar to a person.",
+  "elapsedSeconds": 0.953544291
 }

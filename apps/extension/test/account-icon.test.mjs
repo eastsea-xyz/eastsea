@@ -3,22 +3,23 @@ import assert from 'node:assert/strict';
 import { createHash, webcrypto } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import {
-  ACCOUNT_ICON_VERSION, ACCOUNT_ICON_PALETTES, ACCOUNT_ICON_INK,
+  ACCOUNT_ICON_VERSION, ACCOUNT_ICON_PALETTES, ACCOUNT_ICON_SILHOUETTES, accountIconSilhouette,
   deriveAccountIcon, accountIconSVG, createAccountIcon,
 } from '../src/lib/accountIcon.js';
 
 const vectors = JSON.parse(await readFile(new URL('../../../crates/client/tests/account-icon-vectors.json', import.meta.url), 'utf8'));
 const hash = (value) => createHash('sha256').update(value).digest('hex');
-const features = (seed) => ({ version: 1, palette: seed[0] & 7, layout: ((seed[1] << 8) | seed[2]) & 0x3fff, shape: (seed[0] >>> 3) & 3, rotation: (seed[0] >>> 5) & 3 });
+const features = (seed) => ({ version: 2, palette: seed[0] & 15, layout: ((seed[1] << 8) | seed[2]) & 0x3fff, shape: (seed[0] >>> 4) & 3, rotation: (seed[0] >>> 6) & 3 });
 
 test('all frozen shared vectors and canonical SVG hashes match', () => {
   assert.equal(ACCOUNT_ICON_VERSION, vectors.version);
   assert.deepEqual(ACCOUNT_ICON_PALETTES, vectors.palettes);
-  assert.equal(ACCOUNT_ICON_INK, vectors.ink);
+  assert.deepEqual(ACCOUNT_ICON_SILHOUETTES, vectors.silhouettes);
   for (const vector of vectors.vectors) {
     const spec = deriveAccountIcon(vector.address);
     assert.deepEqual(spec, vector.features, vector.address);
-    assert.equal(hash(accountIconSVG(spec)), vector.svg64Sha256, vector.address);
+    for (const size of [16, 32, 64]) assert.equal(hash(accountIconSVG(spec, size)), vector[`svg${size}Sha256`], `${vector.address} at ${size}px`);
+    assert.equal(accountIconSilhouette(spec), vector.silhouetteClass);
     assert.equal(accountIconSVG(spec).endsWith('\n'), false);
   }
 });
@@ -28,7 +29,7 @@ test('case and optional prefixes normalize to the same decoded address', () => {
     assert.deepEqual(deriveAccountIcon(address.slice(2)), expected);
     assert.deepEqual(deriveAccountIcon(address.toUpperCase()), expected);
     assert.deepEqual(deriveAccountIcon(address.slice(2).toUpperCase()), expected);
-    assert.deepEqual(deriveAccountIcon(address, 1), expected);
+    assert.deepEqual(deriveAccountIcon(address, 2), expected);
   }
 });
 
@@ -39,8 +40,8 @@ test('invalid addresses and versions have no seeded icon', () => {
     `0x${'g'.repeat(40)}`, `0x${'f'.repeat(39)}ｆ`, `<svg onload=alert(1)>${'a'.repeat(20)}`]) {
     assert.equal(deriveAccountIcon(invalid), null, String(invalid));
   }
-  for (const version of [0, 2, -1, '1', null, NaN, Infinity]) assert.equal(deriveAccountIcon(address, version), null);
-  for (const invalid of [null, {}, { ...deriveAccountIcon(address), version: 2 }, { ...deriveAccountIcon(address), palette: '#fff" onload="alert(1)' },
+  for (const version of [0, 1, 3, -1, '2', null, NaN, Infinity]) assert.equal(deriveAccountIcon(address, version), null);
+  for (const invalid of [null, {}, { ...deriveAccountIcon(address), version: 1 }, { ...deriveAccountIcon(address), palette: '#fff" onload="alert(1)' },
     { ...deriveAccountIcon(address), layout: -1 }, { ...deriveAccountIcon(address), layout: 0x4000 }, { ...deriveAccountIcon(address), shape: 4 },
     { ...deriveAccountIcon(address), rotation: 1.5 }]) assert.equal(accountIconSVG(invalid), null);
   for (const size of [0, -1, NaN, Infinity, null, '64', '64" onload="alert(1)']) {
@@ -70,9 +71,12 @@ function luminance(color) {
 }
 const contrast = (a, b) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
 
-test('every fixed palette exceeds 3:1 against ink and both supported surfaces', () => {
-  for (const color of ACCOUNT_ICON_PALETTES) {
-    for (const surface of [ACCOUNT_ICON_INK, vectors.backgrounds.light, vectors.backgrounds.dark]) assert.ok(contrast(color, surface) >= 3, `${color} against ${surface}`);
+test('every gradient endpoint contrasts with its island and both EastSea surfaces', () => {
+  assert.equal(ACCOUNT_ICON_PALETTES.length, 16);
+  for (const palette of ACCOUNT_ICON_PALETTES) {
+    for (const color of [palette.start, palette.end]) {
+      for (const surface of [palette.ink, vectors.backgrounds.light, vectors.backgrounds.dark]) assert.ok(contrast(color, surface) >= 3, `${palette.name}: ${color} against ${surface}`);
+    }
   }
 });
 
@@ -112,7 +116,8 @@ function serializeIcon(svg) {
   const serialize = (node) => {
     const attrs = Object.entries(node.attrs).filter(([key]) => !['class', 'focusable'].includes(key));
     if (node.tagName === 'svg') attrs.unshift(['xmlns', node.namespaceURI]);
-    const opening = `<${node.tagName} ${attrs.map(([key, value]) => `${key}="${value}"`).join(' ')}`;
+    const attributes = attrs.map(([key, value]) => `${key}="${value}"`).join(' ');
+    const opening = `<${node.tagName}${attributes ? ` ${attributes}` : ''}`;
     return node.children.length ? `${opening}>${node.children.map(serialize).join('')}</${node.tagName}>` : `${opening}/>`;
   };
   return serialize(svg);
@@ -135,15 +140,23 @@ test('safe SVG DOM construction matches every canonical SVG and keeps invalid in
   assert.equal(serializeIcon(empty), serializeIcon(placeholder));
 });
 
-test('the anchors stay occupied and empty, with geometry uniformly scaled at every size', () => {
-  const spec = { version: 1, palette: 0, layout: 0, shape: 0, rotation: 0 };
-  for (const size of [16, 32, 64]) {
-    const svg = accountIconSVG(spec, size);
-    assert.ok(svg.includes(`width="${size}" height="${size}" viewBox="0 0 64 64"`));
-    assert.ok(svg.includes('<rect x="9" y="9" width="10" height="10"/>'));
-    assert.equal(svg.includes('x="45" y="45"'), false);
+test('16px keeps one broad silhouette; secondary islands appear only at 32px and up', () => {
+  assert.equal(ACCOUNT_ICON_SILHOUETTES.length, 16);
+  assert.equal(new Set(ACCOUNT_ICON_SILHOUETTES.map(({ path }) => path)).size, 16);
+  for (let silhouette = 0; silhouette < 16; silhouette++) {
+    const spec = { version: 2, palette: 0, layout: silhouette & 3, shape: silhouette >>> 2, rotation: 0 };
+    assert.equal(accountIconSilhouette(spec), silhouette);
+    for (const size of [16, 24, 31, 32, 64]) {
+      const svg = accountIconSVG(spec, size);
+      assert.ok(svg.includes(`width="${size}" height="${size}" viewBox="0 0 64 64"`));
+      assert.equal((svg.match(/<path /g) || []).length, size < 32 ? 1 : 3);
+      assert.ok(svg.includes(ACCOUNT_ICON_SILHOUETTES[silhouette].path));
+      assert.equal(svg.includes('<circle'), false);
+    }
+    const layoutChange = { ...spec, layout: spec.layout | (63 << 2) | (63 << 8) };
+    assert.equal(accountIconSVG(spec, 16), accountIconSVG(layoutChange, 16), 'detail bits cannot create 16px noise');
+    assert.notEqual(accountIconSVG(spec, 32), accountIconSVG(layoutChange, 32), 'detail bits change the two large islands');
   }
-  assert.equal((accountIconSVG({ ...spec, layout: 0x3fff }).match(/<rect x=/g) || []).length, 15);
 });
 
 const sender = vectors.vectors[5].address;

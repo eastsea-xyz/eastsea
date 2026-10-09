@@ -18,21 +18,26 @@ struct Fixture: Decodable {
     struct Vector: Decodable {
         let address: String
         let features: Features
+        let silhouetteClass: UInt8
         let seedSha256: String
+        let svg16Sha256: String
+        let svg32Sha256: String
         let svg64Sha256: String
     }
     let domain: String
     let version: UInt8
-    let palettes: [String]
-    let ink: String
+    let palettes: [AccountIconSpec.Palette]
+    let silhouettes: [AccountIconSpec.Silhouette]
     let backgrounds: [String: String]
     let vectors: [Vector]
 }
 
 let path = CommandLine.arguments.dropFirst().first ?? "crates/client/tests/account-icon-vectors.json"
 let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
-check(fixture.domain == AccountIconSpec.domain && fixture.version == 1, "v1 domain and explicit version")
-check(fixture.palettes == AccountIconSpec.palettes && fixture.ink == AccountIconSpec.ink, "frozen drawing colors")
+check(fixture.domain == AccountIconSpec.domain && fixture.version == 2, "v2 domain and explicit version")
+check(fixture.palettes == AccountIconSpec.palettes && fixture.palettes.count == 16, "sixteen frozen gradient color pairs")
+check(fixture.silhouettes == AccountIconSpec.silhouettes && fixture.silhouettes.count == 16, "sixteen frozen coastlines")
+check(Set(fixture.silhouettes.map(\.path)).count == 16, "coastline classes have distinct paths")
 check(fixture.vectors.count == 16, "all sixteen shared vectors")
 
 func sha256(_ data: Data) -> String {
@@ -44,7 +49,15 @@ for vector in fixture.vectors {
     let expected = vector.features
     check(spec.version == expected.version && spec.palette == expected.palette && spec.layout == expected.layout &&
           spec.shape == expected.shape && spec.rotation == expected.rotation, "feature tuple: \(vector.address)")
+    check(spec.silhouetteClass == vector.silhouetteClass, "coastline class: \(vector.address)")
+    guard let svg16 = spec.svg(size: 16), let svg32 = spec.svg(size: 32) else { fatalError("valid drawing size") }
+    check(sha256(Data(svg16.utf8)) == vector.svg16Sha256, "canonical 16px drawing hash: \(vector.address)")
+    check(sha256(Data(svg32.utf8)) == vector.svg32Sha256, "canonical 32px drawing hash: \(vector.address)")
     check(sha256(Data(spec.svg64.utf8)) == vector.svg64Sha256, "canonical drawing hash: \(vector.address)")
+    check(svg16.components(separatedBy: "<path ").count - 1 == 1, "16px contains one bold silhouette")
+    check(spec.svg(size: 31)!.components(separatedBy: "<path ").count - 1 == 1, "simplification continues below 32px")
+    check(svg32.components(separatedBy: "<path ").count - 1 == 3, "32px adds two large satellite islands")
+    check(spec.svg(size: 0) == nil && spec.svg(size: -1) == nil, "nonpositive drawing sizes rejected")
     let text = Array(vector.address.dropFirst(2))
     let bytes = stride(from: 0, to: 40, by: 2).map { UInt8(String(text[$0...($0 + 1)]), radix: 16)! }
     check(sha256(Data(fixture.domain.utf8) + Data(bytes)) == vector.seedSha256, "raw-byte seed fixture")
@@ -52,29 +65,9 @@ for vector in fixture.vectors {
                      "0X" + vector.address.dropFirst(2), vector.address.replacingOccurrences(of: "a", with: "A")] {
         check(AccountIconSpec.of(address: spelling) == spec, "ASCII case/prefix invariance")
     }
-    check(AccountIconSpec.of(address: vector.address, version: 1) == spec, "default remains v1")
-    check(spec.isOccupied(0) && !spec.isOccupied(15), "fixed island/sea anchors")
-    check(!spec.isOccupied(-1) && !spec.isOccupied(16), "out-of-grid cells are sea")
-    check(spec.occupiedCells.count == spec.layout.nonzeroBitCount + 1, "exact occupancy count")
-    check(spec.layout < 1 << 14 && spec.palette < 8 && spec.shape < 4 && spec.rotation < 4, "feature ranges")
-    var rotated: UInt16 = 0
-    for cell in 0..<16 {
-        let occupied = cell == 0 || (cell != 15 && expected.layout & (UInt16(1) << (cell - 1)) != 0)
-        check(spec.isOccupied(cell) == occupied, "every occupancy bit: \(cell)")
-        if occupied {
-            let x = cell % 4, y = cell / 4
-            let index: Int
-            switch expected.rotation {
-            case 0: index = cell
-            case 1: index = x * 4 + 3 - y
-            case 2: index = 15 - cell
-            default: index = (3 - x) * 4 + y
-            }
-            rotated |= UInt16(1) << index
-        }
-    }
-    check(spec.rotatedMask == rotated, "actual clockwise mask")
-    check(spec.rotatedMask.nonzeroBitCount == spec.occupiedCells.count, "rotation preserves occupancy")
+    check(AccountIconSpec.of(address: vector.address, version: 2) == spec, "default remains v2")
+    check(spec.layout < 1 << 14 && spec.palette < 16 && spec.shape < 4 && spec.rotation < 4, "feature ranges")
+    check(spec.silhouetteClass < 16, "coastline class range")
 }
 
 let valid = fixture.vectors[7].address
@@ -85,12 +78,9 @@ let invalid: [String?] = [nil, "", "0x", "0X", String(valid.dropLast()), valid +
                          "0х" + valid.dropFirst(2), "0x+" + valid.dropFirst(3),
                          "0x" + String(repeating: "a", count: 39) + "\n"]
 for address in invalid { check(AccountIconSpec.of(address: address) == nil, "strict malformed-input rejection") }
-for version in UInt8.min...UInt8.max where version != 1 {
+for version in UInt8.min...UInt8.max where version != 2 {
     check(AccountIconSpec.of(address: valid, version: version) == nil, "unsupported version \(version)")
 }
-check(Set(fixture.vectors.map { $0.features.palette }).count == 8, "all palettes covered")
-check(Set(fixture.vectors.map { $0.features.shape }).count == 4, "all silhouettes covered")
-check(Set(fixture.vectors.map { $0.features.rotation }).count == 4, "all rotations covered")
 let similar = fixture.vectors[8].address
 check(valid.prefix(10) == similar.prefix(10) && valid.suffix(8) == similar.suffix(8), "matching displayed ends")
 check(AccountIconSpec.of(address: valid) != AccountIconSpec.of(address: similar), "full address influences icon")
@@ -112,9 +102,11 @@ func contrast(_ a: String, _ b: String) -> Double {
 }
 
 for palette in AccountIconSpec.palettes {
-    check(contrast(palette, AccountIconSpec.ink) >= 3, "internal ink contrast >= 3:1")
-    for background in fixture.backgrounds.values {
-        check(contrast(palette, background) >= 3, "both enclosing-surface contrasts >= 3:1")
+    for color in [palette.start, palette.end] {
+        check(contrast(color, palette.ink) >= 3, "internal endpoint/ink contrast >= 3:1")
+        for background in fixture.backgrounds.values {
+            check(contrast(color, background) >= 3, "both enclosing-surface endpoint contrasts >= 3:1")
+        }
     }
 }
-print("account-icon OK (16 frozen vectors, canonical SVG, strict input/version rejection, occupancy and contrast)")
+print("account-icon OK (16 frozen vectors, per-size canonical SVG, strict input/version rejection, coastlines and gradient contrast)")

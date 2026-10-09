@@ -1,69 +1,337 @@
 {
-  "backend": "Offline mocked RPC and chrome.runtime; no wallet app, live node or signing calls",
+  "backend": "Offline bounded RPC and chrome.runtime fixture; real product DOM/CSS; no wallet, live node, signing or external requests",
+  "canonicalSourceSha256": "e4e574a6c848fe7170a565ffa0a543507e86609cdd286886992dcccbdeda1329",
+  "sharedVectorsSha256": "81f8ffae02a923e01c4c521a0b521f6505a620bff9f50c773bf2e4f126810874",
+  "addresses": {
+    "sender": "0x1234567890abcdef1234567890abcdef12345678",
+    "recipient": "0x1234567890abcdef0000000000abcdef12345678",
+    "contract": "0xa2521982a17474cb2f8741c85de653b5282d72b0"
+  },
+  "externalRequests": [],
   "checks": [
     {
       "surface": "extension-home",
       "theme": "light",
       "viewportWidth": 360,
       "documentWidth": 360,
-      "icons": 1,
-      "pageErrors": []
+      "icons": [
+        {
+          "width": 32,
+          "height": 32,
+          "requestedWidth": "32",
+          "ariaHidden": "true",
+          "focusable": "false",
+          "role": null,
+          "titleCount": 0,
+          "fullAddress": "0x1234567890abcdef1234567890abcdef12345678"
+        }
+      ],
+      "identities": [
+        "0x1234567890abcdef1234567890abcdef12345678"
+      ],
+      "operations": [
+        "state",
+        "account"
+      ],
+      "unexpectedOperations": [],
+      "rpcMethods": [],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "expectedFullAddresses": [
+        "0x1234567890abcdef1234567890abcdef12345678"
+      ],
+      "passed": true
     },
     {
       "surface": "extension-approval",
       "theme": "light",
       "viewportWidth": 360,
       "documentWidth": 360,
-      "icons": 3,
-      "pageErrors": []
+      "icons": [
+        {
+          "width": 24,
+          "height": 24,
+          "requestedWidth": "24",
+          "ariaHidden": "true",
+          "focusable": "false",
+          "role": null,
+          "titleCount": 0,
+          "fullAddress": "0x1234567890abcdef0000000000abcdef12345678"
+        },
+        {
+          "width": 24,
+          "height": 24,
+          "requestedWidth": "24",
+          "ariaHidden": "true",
+          "focusable": "false",
+          "role": null,
+          "titleCount": 0,
+          "fullAddress": "0xa2521982a17474cb2f8741c85de653b5282d72b0"
+        },
+        {
+          "width": 24,
+          "height": 24,
+          "requestedWidth": "24",
+          "ariaHidden": "true",
+          "focusable": "false",
+          "role": null,
+          "titleCount": 0,
+          "fullAddress": "0x1234567890abcdef1234567890abcdef12345678"
+        }
+      ],
+      "identities": [
+        "0x1234567890abcdef0000000000abcdef12345678",
+        "0xa2521982a17474cb2f8741c85de653b5282d72b0",
+        "0x1234567890abcdef1234567890abcdef12345678"
+      ],
+      "operations": [
+        "state",
+        "quote"
+      ],
+      "unexpectedOperations": [],
+      "rpcMethods": [],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "expectedFullAddresses": [
+        "0x1234567890abcdef1234567890abcdef12345678",
+        "0x1234567890abcdef0000000000abcdef12345678",
+        "0xa2521982a17474cb2f8741c85de653b5282d72b0"
+      ],
+      "passed": true
     },
     {
       "surface": "explorer-mobile",
       "theme": "light",
       "viewportWidth": 360,
       "documentWidth": 360,
-      "icons": 1,
-      "pageErrors": []
+      "icons": [
+        {
+          "width": 64,
+          "height": 64,
+          "requestedWidth": "64",
+          "ariaHidden": "true",
+          "focusable": "false",
+          "role": null,
+          "titleCount": 0,
+          "fullAddress": "0x1234567890abcdef0000000000abcdef12345678"
+        }
+      ],
+      "identities": [
+        "0x1234567890abcdef0000000000abcdef12345678"
+      ],
+      "operations": [],
+      "unexpectedOperations": [],
+      "rpcMethods": [
+        "aether_getAccount",
+        "aether_rewards",
+        "eth_blockNumber",
+        "eth_getLogs",
+        "eth_getLogs"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "expectedFullAddresses": [
+        "0x1234567890abcdef0000000000abcdef12345678"
+      ],
+      "passed": true
     },
     {
       "surface": "explorer-desktop",
       "theme": "light",
       "viewportWidth": 1200,
       "documentWidth": 1200,
-      "icons": 1,
-      "pageErrors": []
+      "icons": [
+        {
+          "width": 64,
+          "height": 64,
+          "requestedWidth": "64",
+          "ariaHidden": "true",
+          "focusable": "false",
+          "role": null,
+          "titleCount": 0,
+          "fullAddress": "0x1234567890abcdef0000000000abcdef12345678"
+        }
+      ],
+      "identities": [
+        "0x1234567890abcdef0000000000abcdef12345678"
+      ],
+      "operations": [],
+      "unexpectedOperations": [],
+      "rpcMethods": [
+        "aether_getAccount",
+        "aether_rewards",
+        "eth_blockNumber",
+        "eth_getLogs",
+        "eth_getLogs"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "expectedFullAddresses": [
+        "0x1234567890abcdef0000000000abcdef12345678"
+      ],
+      "passed": true
     },
     {
       "surface": "extension-home",
       "theme": "dark",
       "viewportWidth": 360,
       "documentWidth": 360,
-      "icons": 1,
-      "pageErrors": []
+      "icons": [
+        {
+          "width": 32,
+          "height": 32,
+          "requestedWidth": "32",
+          "ariaHidden": "true",
+          "focusable": "false",
+          "role": null,
+          "titleCount": 0,
+          "fullAddress": "0x1234567890abcdef1234567890abcdef12345678"
+        }
+      ],
+      "identities": [
+        "0x1234567890abcdef1234567890abcdef12345678"
+      ],
+      "operations": [
+        "state",
+        "account"
+      ],
+      "unexpectedOperations": [],
+      "rpcMethods": [],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "expectedFullAddresses": [
+        "0x1234567890abcdef1234567890abcdef12345678"
+      ],
+      "passed": true
     },
     {
       "surface": "extension-approval",
       "theme": "dark",
       "viewportWidth": 360,
       "documentWidth": 360,
-      "icons": 3,
-      "pageErrors": []
+      "icons": [
+        {
+          "width": 24,
+          "height": 24,
+          "requestedWidth": "24",
+          "ariaHidden": "true",
+          "focusable": "false",
+          "role": null,
+          "titleCount": 0,
+          "fullAddress": "0x1234567890abcdef0000000000abcdef12345678"
+        },
+        {
+          "width": 24,
+          "height": 24,
+          "requestedWidth": "24",
+          "ariaHidden": "true",
+          "focusable": "false",
+          "role": null,
+          "titleCount": 0,
+          "fullAddress": "0xa2521982a17474cb2f8741c85de653b5282d72b0"
+        },
+        {
+          "width": 24,
+          "height": 24,
+          "requestedWidth": "24",
+          "ariaHidden": "true",
+          "focusable": "false",
+          "role": null,
+          "titleCount": 0,
+          "fullAddress": "0x1234567890abcdef1234567890abcdef12345678"
+        }
+      ],
+      "identities": [
+        "0x1234567890abcdef0000000000abcdef12345678",
+        "0xa2521982a17474cb2f8741c85de653b5282d72b0",
+        "0x1234567890abcdef1234567890abcdef12345678"
+      ],
+      "operations": [
+        "state",
+        "quote"
+      ],
+      "unexpectedOperations": [],
+      "rpcMethods": [],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "expectedFullAddresses": [
+        "0x1234567890abcdef1234567890abcdef12345678",
+        "0x1234567890abcdef0000000000abcdef12345678",
+        "0xa2521982a17474cb2f8741c85de653b5282d72b0"
+      ],
+      "passed": true
     },
     {
       "surface": "explorer-mobile",
       "theme": "dark",
       "viewportWidth": 360,
       "documentWidth": 360,
-      "icons": 1,
-      "pageErrors": []
+      "icons": [
+        {
+          "width": 64,
+          "height": 64,
+          "requestedWidth": "64",
+          "ariaHidden": "true",
+          "focusable": "false",
+          "role": null,
+          "titleCount": 0,
+          "fullAddress": "0x1234567890abcdef0000000000abcdef12345678"
+        }
+      ],
+      "identities": [
+        "0x1234567890abcdef0000000000abcdef12345678"
+      ],
+      "operations": [],
+      "unexpectedOperations": [],
+      "rpcMethods": [
+        "aether_getAccount",
+        "aether_rewards",
+        "eth_blockNumber",
+        "eth_getLogs",
+        "eth_getLogs"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "expectedFullAddresses": [
+        "0x1234567890abcdef0000000000abcdef12345678"
+      ],
+      "passed": true
     },
     {
       "surface": "explorer-desktop",
       "theme": "dark",
       "viewportWidth": 1200,
       "documentWidth": 1200,
-      "icons": 1,
-      "pageErrors": []
+      "icons": [
+        {
+          "width": 64,
+          "height": 64,
+          "requestedWidth": "64",
+          "ariaHidden": "true",
+          "focusable": "false",
+          "role": null,
+          "titleCount": 0,
+          "fullAddress": "0x1234567890abcdef0000000000abcdef12345678"
+        }
+      ],
+      "identities": [
+        "0x1234567890abcdef0000000000abcdef12345678"
+      ],
+      "operations": [],
+      "unexpectedOperations": [],
+      "rpcMethods": [
+        "aether_getAccount",
+        "aether_rewards",
+        "eth_blockNumber",
+        "eth_getLogs",
+        "eth_getLogs"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "expectedFullAddresses": [
+        "0x1234567890abcdef0000000000abcdef12345678"
+      ],
+      "passed": true
     }
   ]
 }

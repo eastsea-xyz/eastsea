@@ -10,8 +10,11 @@ fn features(spec: AccountIconSpec) -> Value {
 fn shared_cross_language_goldens() {
     let fixture: Value = serde_json::from_str(include_str!("account-icon-vectors.json")).unwrap();
     let vectors = fixture["vectors"].as_array().unwrap();
-    assert!(vectors.len() >= 12);
+    assert_eq!(vectors.len(), 16);
     assert_eq!(fixture["version"], ACCOUNT_ICON_VERSION);
+    assert_eq!(fixture["domain"], "eastsea-account-icon-v2");
+    assert_eq!(fixture["palettes"].as_array().unwrap().len(), 16);
+    assert_eq!(fixture["silhouettes"].as_array().unwrap().len(), 16);
     for vector in vectors {
         let address = vector["address"].as_str().unwrap();
         let expected = &vector["features"];
@@ -25,6 +28,13 @@ fn shared_cross_language_goldens() {
                 expected,
                 "{text}"
             );
+            assert_eq!(
+                AccountIconSpec::from_address(&text)
+                    .unwrap()
+                    .silhouette_class(),
+                vector["silhouetteClass"].as_u64().unwrap() as u8,
+                "{text}"
+            );
         }
     }
 }
@@ -32,7 +42,7 @@ fn shared_cross_language_goldens() {
 #[test]
 fn rejects_malformed_input_and_unknown_versions() {
     let valid = format!("0x{}", "12".repeat(20));
-    for version in [0, 2, 255] {
+    for version in (0..=u8::MAX).filter(|&version| version != ACCOUNT_ICON_VERSION) {
         assert_eq!(
             AccountIconSpec::from_address_version(&valid, version),
             Err(AccountIconError::UnsupportedVersion)
@@ -58,7 +68,7 @@ fn rejects_malformed_input_and_unknown_versions() {
 }
 
 #[test]
-fn byte_and_text_apis_agree_and_anchors_are_visible() {
+fn byte_and_text_apis_agree_and_coastline_classes_are_bounded() {
     assert_eq!(
         AccountIconSpec::from_bytes(&[0; 20]),
         AccountIconSpec::from_address(&"00".repeat(20)).unwrap()
@@ -67,13 +77,8 @@ fn byte_and_text_apis_agree_and_anchors_are_visible() {
         let mut address = [0u8; 20];
         address[18..].copy_from_slice(&value.to_be_bytes());
         let spec = AccountIconSpec::from_bytes(&address);
-        assert!(spec.palette < 8 && spec.layout < 16384 && spec.shape < 4 && spec.rotation < 4);
-        assert!(spec.occupied(0));
-        assert!(!spec.occupied(15) && !spec.occupied(16) && !spec.occupied(usize::MAX));
-        assert_eq!(
-            (0..16).filter(|&cell| spec.occupied(cell)).count(),
-            spec.layout.count_ones() as usize + 1
-        );
+        assert!(spec.palette < 16 && spec.layout < 16384 && spec.shape < 4 && spec.rotation < 4);
+        assert!(spec.silhouette_class() < 16);
     }
 }
 

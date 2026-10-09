@@ -1,10 +1,10 @@
-//! Archipelago v1, specified in `docs/design/46-account-icon.md`.
+//! Archipelago v2, specified in `docs/design/46-account-icon.md`.
 //! Identity depends on all 20 address bytes, never on names or chain metadata.
 
 use sha2::{Digest, Sha256};
 
-pub const ACCOUNT_ICON_VERSION: u8 = 1;
-const DOMAIN: &[u8] = b"eastsea-account-icon-v1";
+pub const ACCOUNT_ICON_VERSION: u8 = 2;
+const DOMAIN: &[u8] = b"eastsea-account-icon-v2";
 
 /// A versioned feature tuple; palette and geometry tables belong to the renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -23,7 +23,7 @@ pub enum AccountIconError {
 }
 
 impl AccountIconSpec {
-    /// Derive v1 from exactly 20 bytes, without text normalization or allocation.
+    /// Derive v2 from exactly 20 bytes, without text normalization or allocation.
     pub fn from_bytes(address: &[u8; 20]) -> Self {
         let mut hash = Sha256::new();
         hash.update(DOMAIN);
@@ -31,10 +31,10 @@ impl AccountIconSpec {
         let seed = hash.finalize();
         Self {
             version: ACCOUNT_ICON_VERSION,
-            palette: seed[0] & 7,
+            palette: seed[0] & 15,
             layout: u16::from_be_bytes([seed[1], seed[2]]) & 0x3fff,
-            shape: (seed[0] >> 3) & 3,
-            rotation: (seed[0] >> 5) & 3,
+            shape: (seed[0] >> 4) & 3,
+            rotation: (seed[0] >> 6) & 3,
         }
     }
 
@@ -63,13 +63,9 @@ impl AccountIconSpec {
         Ok(Self::from_bytes(&bytes))
     }
 
-    /// Occupancy before rotation: the first/last anchors guarantee island + sea.
-    pub fn occupied(&self, cell: usize) -> bool {
-        match cell {
-            0 => true,
-            1..=14 => (self.layout >> (cell - 1)) & 1 != 0,
-            _ => false,
-        }
+    /// One of 16 broad coastline classes; larger icons add two satellite islands.
+    pub fn silhouette_class(&self) -> u8 {
+        self.shape * 4 + (self.layout & 3) as u8
     }
 }
 

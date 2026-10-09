@@ -6942,6 +6942,41 @@
         }
       }
     },
+    "Copying and checking · %lld%% · %@ / %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copying and checking · %lld%% · %@ / %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "コピーして確認中 · %lld%% · %@ / %@"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "옮기고 확인하는 중 · %lld%% · %@ / %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在复制并检查 · %lld%% · %@ / %@"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在複製並確認 · %lld%% · %@ / %@"
+          }
+        }
+      }
+    },
     "Could not change Open at Login. Please try again." : {
       "extractionState" : "manual",
       "localizations" : {

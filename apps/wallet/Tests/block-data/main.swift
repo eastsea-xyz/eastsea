@@ -42,6 +42,9 @@ final class MoveProcessStub {
     var storageMoveOffersDiskUtility = false
     var updateInProgress = false
     var storageMovePercent: Int?
+    var storageMoveBytesDone: UInt64 = 0
+    var storageMoveBytesTotal: UInt64 = 0
+    var storageMoveCleanup: Task<Void, Never>?
     var storageMoveError: String?
     var attached = false
     var process: MoveProcessStub?
@@ -166,6 +169,22 @@ check(BlockDataLocation.sentence(.notEnoughSpace(freeBytes: 26 * GiB, neededByte
 for p in [BlockDataLocation.Problem.networkShare, .unsupportedFormat("ntfs"), .readOnly, .notEnoughSpace(freeBytes: 1, neededBytes: 2), .inUse] {
     for language in ["en", "ko", "ja", "zh-Hans", "zh-Hant"] { check(!BlockDataLocation.sentence(p, locale: walletTestLocale(language), bundle: walletTestBundle(language)).isEmpty, "\(p) has words in \(language)") }
 }
+
+#if os(macOS)
+let progressPrefixes = [
+    "en": "Copying and checking · 32% · ",
+    "ko": "옮기고 확인하는 중 · 32% · ",
+    "ja": "コピーして確認中 · 32% · ",
+    "zh-Hans": "正在复制并检查 · 32% · ",
+    "zh-Hant": "正在複製並確認 · 32% · ",
+]
+for (language, prefix) in progressPrefixes {
+    let text = NodeController.storageMoveSentence(percent: 32, done: 4_100_000_000, total: 12_900_000_000,
+                                                  locale: walletTestLocale(language), bundle: walletTestBundle(language))
+    check(text.hasPrefix(prefix) && text.contains("4.1 GB / 12.9 GB"),
+          "metered bytes and percent are visible in \(language): \(text)")
+}
+#endif
 
 // The former language branches resolve from the same catalog in Japanese.
 let japaneseProblems: [(BlockDataLocation.Problem, String)] = [

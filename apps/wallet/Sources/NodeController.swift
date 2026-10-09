@@ -145,6 +145,9 @@ final class NodeController: ObservableObject {
     }
     /// The block data is moving (0…100), or nil.
     @Published var storageMovePercent: Int?
+    @Published var storageMoveBytesDone: UInt64 = 0
+    @Published var storageMoveBytesTotal: UInt64 = 0
+    var storageMoveCleanup: Task<Void, Never>?
     /// The last move's failure, in the person's words, until the next try.
     @Published var storageMoveError: String?
     /// That failure is a disk format Disk Utility can fix (exFAT, FAT).
@@ -981,12 +984,13 @@ final class NodeController: ObservableObject {
             env["AETHER_PROVE"] = proveAddress
             p.environment = env
         }
-        let log = Self.dataDir.appendingPathComponent("node.log")
+        // The replacement node must not wait for log space on the old full
+        // disk before it can answer and confirm the verified move.
+        let log = chainRoot.appendingPathComponent("node.log")
         FileManager.default.createFile(atPath: log.path, contents: nil)
-        if let h = try? FileHandle(forWritingTo: log) {
-            p.standardOutput = h
-            p.standardError = h
-        }
+        let logHandle = (try? FileHandle(forWritingTo: log)) ?? FileHandle.nullDevice
+        p.standardOutput = logHandle
+        p.standardError = logHandle
         p.terminationHandler = { [weak self] proc in
             Task { @MainActor in self?.exited(proc) }
         }
@@ -1092,7 +1096,7 @@ final class NodeController: ObservableObject {
     /// The tail of the node's log: what the watchdog reads to tell a full disk
     /// from a damaged database when the node exits with the storage code.
     private func nodeLogTail(_ bytes: Int = 8_192) -> String {
-        guard let h = try? FileHandle(forReadingFrom: Self.dataDir.appendingPathComponent("node.log")) else { return "" }
+        guard let h = try? FileHandle(forReadingFrom: chainRoot.appendingPathComponent("node.log")) else { return "" }
         defer { try? h.close() }
         let size = (try? h.seekToEnd()) ?? 0
         try? h.seek(toOffset: NodeLogTail.offset(size: size, wanted: bytes))

@@ -532,6 +532,8 @@ enum NodeStatusLog {
     static func append(_ line: String, in dir: URL, fileName: String = NodeStatusLog.fileName) {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { return }
+        var space = statfs()
+        if statfs(dir.path, &space) == 0, space.f_bavail == 0 { return }
         let url = dir.appendingPathComponent(fileName)
         let existing = (try? Data(contentsOf: url)) ?? Data()
         try? appending(existing, line: line).write(to: url, options: .atomic)

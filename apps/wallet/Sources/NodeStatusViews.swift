@@ -76,8 +76,11 @@ struct BlockDataSection: View {
                 .font(.aeFootnote).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let p = node.storageMovePercent {
-                ProgressView(value: Double(p), total: 100) {
-                    Text(String(localized: "Copying and checking · \(p)%")).font(.aeFootnote)
+                ProgressView(value: node.storageMoveFraction) {
+                    Text(NodeController.storageMoveSentence(percent: p, done: node.storageMoveBytesDone,
+                                                            total: node.storageMoveBytesTotal))
+                        .font(.aeFootnote.monospacedDigit())
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
                 HStack {

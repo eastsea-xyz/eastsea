@@ -39,7 +39,10 @@ enum BlockDataMove {
     static func holdRunLock(in dir: URL, timeout: TimeInterval = 60) async -> Int32? {
         guard timeout.isFinite, timeout >= 0, let rootID = identity(dir) else { return nil }
         let lockURL = dir.appendingPathComponent("run.lock")
-        let fd = open(lockURL.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        // A running installation already has this inode. flock needs no
+        // writable descriptor or new allocation on a full source volume.
+        var fd = open(lockURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        if fd < 0, errno == ENOENT { fd = open(lockURL.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600) }
         guard fd >= 0 else { return nil }
         let flags = fcntl(fd, F_GETFD)
         var descriptor = stat()
@@ -71,25 +74,28 @@ enum BlockDataMove {
         var st = stat()
         guard lstat(url.path, &st) == 0,
               (st.st_mode & S_IFMT) == (directory ? S_IFDIR : S_IFREG) else { return nil }
-        if directory, let volume = BlockDataLocation.volumeName(ofPath: url.path) {
+        if directory, BlockDataLocation.volumeName(ofPath: url.path) != nil {
             var fs = statfs()
             guard statfs(url.path, &fs) == 0 else { return nil }
             let mount = withUnsafeBytes(of: fs.f_mntonname) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
-            guard mount == "/Volumes/\(volume)" else { return nil } // no internal /Volumes fallback
+            // Accept genuine nested mounts too, never a missing disk path
+            // that falls back onto the system volume.
+            guard mount.hasPrefix("/Volumes/"), url.path == mount || url.path.hasPrefix(mount + "/") else { return nil }
         }
         let uuid = (try? url.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
         return Identity(device: UInt64(UInt32(bitPattern: st.st_dev)), inode: UInt64(st.st_ino), volumeUUID: uuid)
     }
 
-    private static func scan(_ dir: URL, prefix: String, files: inout [String: File]) throws {
+    private static func scan(_ dir: URL, prefix: String, files: inout [String: File], hashing: Bool = true) throws {
         guard identity(dir) != nil else { throw Failure.unavailable }
         for name in try FileManager.default.contentsOfDirectory(atPath: dir.path) {
             if BlockDataLocation.keepsInternal(name) || name.lowercased() == "run.lock" { continue }
             let item = dir.appendingPathComponent(name), rel = "\(prefix)/\(name)"
             if identity(item) != nil {
-                try scan(item, prefix: rel, files: &files)
+                try scan(item, prefix: rel, files: &files, hashing: hashing)
             } else {
-                guard let id = identity(item, directory: false), let hash = DataMigration.streamSHA256(item) else { throw Failure.copy }
+                guard let id = identity(item, directory: false) else { throw Failure.copy }
+                guard let hash = hashing ? DataMigration.streamSHA256(item) : "" else { throw Failure.copy }
                 files[rel] = File(identity: id, hash: hash)
             }
         }
@@ -106,7 +112,8 @@ enum BlockDataMove {
               r.files.keys.allSatisfy({ rel in
                   let parts = rel.split(separator: "/", omittingEmptySubsequences: false)
                   return parts.count > 1 && r.directories.contains(String(parts[0]))
-                      && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." && !BlockDataLocation.keepsInternal(String($0)) }
+                      && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." && !BlockDataLocation.keepsInternal(String($0))
+                          && $0.lowercased() != "run.lock" }
               }) else { throw Failure.invalidRecord }
         return r
     }
@@ -119,13 +126,58 @@ enum BlockDataMove {
     }
 
     private static func save(_ record: Record, in dir: URL) throws {
+        while true {
+            do { try persist(record, in: dir); return }
+            catch {
+                guard isNoSpace(error), try preserveLogsAndFreeSpace(in: dir, target: URL(fileURLWithPath: record.target)) else { throw error }
+            }
+        }
+    }
+
+    private static func isNoSpace(_ error: Error) -> Bool {
+        let e = error as NSError
+        if e.domain == NSPOSIXErrorDomain && e.code == Int(ENOSPC) { return true }
+        if e.domain == NSCocoaErrorDomain && e.code == CocoaError.fileWriteOutOfSpace.rawValue { return true }
+        return (e.userInfo[NSUnderlyingErrorKey] as? Error).map(isNoSpace) ?? false
+    }
+
+    /// The ownership journal must remain durable even when the internal
+    /// disk filled. Preserve diagnostics on the destination before releasing
+    /// their old allocation; block data and keys are never used as spare space.
+    private static func preserveLogsAndFreeSpace(in dir: URL, target: URL) throws -> Bool {
+        for name in ["node-status.log", "node.log"] {
+            let original = dir.appendingPathComponent(name)
+            guard let originalID = identity(original, directory: false),
+                  let bytes = (try? FileManager.default.attributesOfItem(atPath: original.path))?[.size] as? NSNumber,
+                  bytes.int64Value > 0 else { continue }
+            let backup = target.appendingPathComponent(".\(name).before-storage-move-\(UUID().uuidString)")
+            guard DataMigration.streamCopyVerified(original, backup) != nil, syncDirectory(target),
+                  identity(original, directory: false) == originalID else { throw Failure.persistence }
+            let fd = open(original.path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw Failure.persistence }
+            var descriptor = stat()
+            let matches = fstat(fd, &descriptor) == 0
+                && originalID.device == UInt64(UInt32(bitPattern: descriptor.st_dev))
+                && originalID.inode == UInt64(descriptor.st_ino)
+            let released = matches && ftruncate(fd, 0) == 0 && DataMigration.syncFile(fd)
+            close(fd)
+            guard released else { throw Failure.persistence }
+            return true
+        }
+        return false
+    }
+
+    private static func persist(_ record: Record, in dir: URL) throws {
         let url = dir.appendingPathComponent(recordName)
         let temp = dir.appendingPathComponent(".block-data-move-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temp) }
         try JSONEncoder().encode(record).write(to: temp, options: .withoutOverwriting)
         let handle = try FileHandle(forWritingTo: temp)
-        try handle.synchronize(); try handle.close()
-        guard rename(temp.path, url.path) == 0, syncDirectory(dir) else { throw Failure.persistence }
+        defer { try? handle.close() }
+        guard DataMigration.syncFile(handle.fileDescriptor) else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        try handle.close()
+        guard rename(temp.path, url.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        guard syncDirectory(dir) else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
     }
 
     /// Returns after every intended file is published, durably. An existing
@@ -136,14 +188,11 @@ enum BlockDataMove {
         guard identity(source) == sourceID, identity(internalRoot) != nil,
               BlockDataLocation.disjoint(source, target) else { throw Failure.unavailable }
         var record = try load(internalRoot)
+        var freshlyVerified = false
         if record?.cleanupDone == true { record = nil }
         if var previous = record, !previous.committed, previous.source == source.path,
            previous.sourceID == sourceID {
-            let unchanged = previous.files.allSatisfy { rel, proof in
-                let item = source.appendingPathComponent(rel)
-                return identity(item, directory: false) == proof.identity && DataMigration.streamSHA256(item) == proof.hash
-            }
-            if previous.target != target.path || !unchanged {
+            if previous.target != target.path {
                 // Source writers may advance after a killed, uncommitted
                 // move. Abort durably, retaining all copied cargo, so a fresh
                 // move to an empty folder remains possible.
@@ -174,7 +223,15 @@ enum BlockDataMove {
                 dirs.append(name)
             }
             var files: [String: File] = [:]
-            for d in dirs { try scan(source.appendingPathComponent(d), prefix: d, files: &files) }
+            // Inventory identities only. The source digest is collected
+            // during its one copy read, while the caller owns the writer lock.
+            for d in dirs { try scan(source.appendingPathComponent(d), prefix: d, files: &files, hashing: false) }
+            if meter.total == 0 {
+                let bytes = files.keys.reduce(Int64(0)) { total, rel in
+                    total + (((try? fm.attributesOfItem(atPath: source.appendingPathComponent(rel).path))?[.size] as? NSNumber)?.int64Value ?? 0)
+                }
+                meter.expect(bytes * 2)
+            }
             guard identity(source) == sourceID else { throw Failure.unavailable }
             if !fm.fileExists(atPath: target.path) { try fm.createDirectory(at: target, withIntermediateDirectories: false) }
             guard let targetID = identity(target) else { throw Failure.unavailable }
@@ -188,23 +245,29 @@ enum BlockDataMove {
                     let staged = stage.appendingPathComponent(d)
                     try fm.createDirectory(at: staged, withIntermediateDirectories: false)
                     guard DataMigration.syncTreeVerified(source.appendingPathComponent(d), staged, meter: meter,
-                                                               excluding: BlockDataLocation.keepInternal) else { throw Failure.copy }
+                                                        excluding: BlockDataLocation.keepInternal.union(["run.lock"]), verified: { rel, hash in
+                        let path = "\(d)/\(rel)"
+                        guard let proof = files[path], identity(source.appendingPathComponent(path), directory: false) == proof.identity else { return false }
+                        files[path] = File(identity: proof.identity, hash: hash)
+                        return true
+                    }) else { throw Failure.copy }
                     var directories = [staged]
                     guard let entries = fm.enumerator(at: staged, includingPropertiesForKeys: nil) else { throw Failure.persistence }
                     for case let file as URL in entries {
                         if identity(file) != nil { directories.append(file); continue }
-                        guard identity(file, directory: false) != nil else { continue }
-                        let h = try FileHandle(forWritingTo: file)
-                        try h.synchronize(); try h.close()
+                        // Each regular temp was already flushed before its
+                        // verified rename. Only directory entries remain.
                     }
                     for dir in directories.reversed() { guard syncDirectory(dir) else { throw Failure.persistence } }
                 }
                 guard syncDirectory(stage), syncDirectory(target), syncDirectory(target.deletingLastPathComponent()) else { throw Failure.persistence }
                 guard identity(source) == sourceID, identity(target) == targetID else { throw Failure.unavailable }
+                guard files.values.allSatisfy({ !$0.hash.isEmpty }) else { throw Failure.copy }
                 let r = Record(source: source.path, target: target.path, staging: stageName,
                                stagingID: stagingID, sourceID: sourceID, targetID: targetID, directories: dirs, files: files)
                 try save(r, in: internalRoot)
                 record = r
+                freshlyVerified = true
             } catch {
                 // If persistence succeeded before a later fsync failure,
                 // retain its cargo for replay. Never recursively clear target.
@@ -217,19 +280,26 @@ enum BlockDataMove {
         if fm.fileExists(atPath: stage.path), identity(stage) != r.stagingID { throw Failure.invalidRecord }
         // Verify all replay inputs before any publication. Additional source
         // data is retained; changed snapshot files cannot authorize a switch.
-        for (rel, proof) in r.files {
+        if !freshlyVerified, meter.total == 0 {
+            let bytes = r.files.keys.reduce(Int64(0)) { total, rel in
+                total + (((try? fm.attributesOfItem(atPath: source.appendingPathComponent(rel).path))?[.size] as? NSNumber)?.int64Value ?? 0)
+            }
+            meter.expect(bytes * 2)
+        }
+        for (rel, proof) in r.files where !freshlyVerified {
             let original = source.appendingPathComponent(rel)
-            guard identity(original, directory: false) == proof.identity, DataMigration.streamSHA256(original) == proof.hash else { throw Failure.copy }
+            guard identity(original, directory: false) == proof.identity, DataMigration.streamSHA256(original, meter: meter) == proof.hash else { throw Failure.copy }
             let staged = stage.appendingPathComponent(rel), final = target.appendingPathComponent(rel)
             let cargo = fm.fileExists(atPath: staged.path) ? staged : final
-            guard identity(cargo, directory: false) != nil, DataMigration.streamSHA256(cargo) == proof.hash else { throw Failure.copy }
+            guard identity(cargo, directory: false) != nil, DataMigration.streamSHA256(cargo, meter: meter) == proof.hash else { throw Failure.copy }
+            if cargo == staged, fm.fileExists(atPath: final.path) { throw Failure.occupied }
         }
         // A resumed destination must contain only our verified cargo and,
         // at the default home, the preexisting internal endpoint key.
         for d in r.directories where fm.fileExists(atPath: target.appendingPathComponent(d).path) {
             var existing: [String: File] = [:]
-            try scan(target.appendingPathComponent(d), prefix: d, files: &existing)
-            guard existing.allSatisfy({ r.files[$0.key]?.hash == $0.value.hash }) else { throw Failure.occupied }
+            try scan(target.appendingPathComponent(d), prefix: d, files: &existing, hashing: false)
+            guard existing.keys.allSatisfy({ r.files[$0] != nil }) else { throw Failure.occupied }
         }
         for d in r.directories {
             let staged = stage.appendingPathComponent(d), final = target.appendingPathComponent(d)

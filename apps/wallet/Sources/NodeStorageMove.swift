@@ -11,6 +11,20 @@ extension NodeController {
     /// UserDefaults: the old chain root to clear once the node runs from the new one.
     static let cleanupKey = "nodeChainDataCleanup"
 
+    /// The same metered bytes drive the bar, percentage, and readable label.
+    var storageMoveFraction: Double {
+        storageMoveBytesTotal > 0 ? min(1, Double(storageMoveBytesDone) / Double(storageMoveBytesTotal)) : 0
+    }
+
+    nonisolated static func storageMoveSentence(percent: Int, done: UInt64, total: UInt64,
+                                               locale: Locale = .current, bundle: Bundle = .main) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let completed = formatter.string(fromByteCount: Int64(clamping: done))
+        let expected = formatter.string(fromByteCount: Int64(clamping: total))
+        return String(localized: "Copying and checking · \(percent)% · \(completed) / \(expected)", bundle: bundle, locale: locale)
+    }
+
     /// Claim the storage source only after proving a current writer lease.
     /// The marker is already suspended; the caller owns the returned fd.
     func acquireStorageMoveOwnership() async -> Int32? {
@@ -180,6 +194,8 @@ extension NodeController {
         storageMoveError = nil
         storageMoveOffersDiskUtility = false
         storageMovePercent = 0
+        storageMoveBytesDone = 0
+        storageMoveBytesTotal = 0
         logEvent("storage", "moving block data from \(source.path) to \(target.path)")
         // Suspend before shutdown: the daemon may otherwise restart the
         // source while a large database copy is still working.
@@ -191,6 +207,9 @@ extension NodeController {
         }
         let dataDir = Self.dataDir
         Task { @MainActor in
+            // A quick return move can start as soon as the last old file
+            // disappears. Wait for cleanup's durable record, not just unlink.
+            await self.storageMoveCleanup?.value
             // A released parent lock cannot prove legacy children are gone.
             // Fresh signed lease preflight precedes every source shutdown.
             guard let moveFD = await self.acquireStorageMoveOwnership() else {
@@ -201,17 +220,21 @@ extension NodeController {
                 return
             }
             Task.detached {
-                let total = BlockDataLocation.movedDirs.reduce(UInt64(0)) { $0 + Self.treeBytes(source.appendingPathComponent($1)) }
-                let meter = DataMigration.ProgressMeter { f in
+                let meter = DataMigration.ProgressMeter(reportBytes: { done, total in
                     Task { @MainActor in
-                        if self.storageMovePercent != nil { self.storageMovePercent = min(99, Int(f * 100)) }
+                        if self.storageMovePercent != nil {
+                            // Show the data's size once, with progress across
+                            // both the copying and checking halves.
+                            self.storageMoveBytesDone = max(self.storageMoveBytesDone, UInt64(max(0, done)) / 2)
+                            self.storageMoveBytesTotal = UInt64(max(0, total)) / 2
+                            self.storageMovePercent = min(99, Int(self.storageMoveFraction * 100))
+                        }
                     }
-                }
-                meter.expect(Int64(total) * 3)
-                let copied = (try? BlockDataMove.copy(source: source, target: target, sourceID: sourceID,
-                                                     internalRoot: dataDir, preservingInternalKeys: dest == nil, meter: meter)) != nil
+                }) { _ in }
+                let copiedBytes = try? BlockDataMove.copy(source: source, target: target, sourceID: sourceID,
+                                                         internalRoot: dataDir, preservingInternalKeys: dest == nil, meter: meter)
                 await MainActor.run {
-                    if copied {
+                    if let total = copiedBytes {
                         self.chainDataPath = dest?.path ?? ""
                         self.logEvent("storage", "copied and verified \(NodeStopReason.gb(total)); the node now uses \(target.path)")
                     } else {
@@ -236,7 +259,11 @@ extension NodeController {
         // Legacy path-only records carry no proof and authorize no deletion.
         Self.storageMoveDefaults.removeObject(forKey: Self.cleanupKey)
         let target = BlockDataLocation.resolvedRoot(chainRoot), internalRoot = Self.dataDir
-        Task.detached { BlockDataMove.cleanup(confirmedTarget: target, internalRoot: internalRoot) }
+        let previous = storageMoveCleanup
+        storageMoveCleanup = Task.detached {
+            await previous?.value
+            BlockDataMove.cleanup(confirmedTarget: target, internalRoot: internalRoot)
+        }
     }
 
     /// Turn archive off: back to a normal follower; the archive's extra

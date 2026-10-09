@@ -8,6 +8,7 @@ import Sparkle
 @main
 struct AetherWalletApp: App {
     @StateObject private var model = WalletModel()
+    @Environment(\.scenePhase) private var scenePhase
     #if os(macOS)
     @StateObject private var node = NodeController()
     /// The unattended-restart half of the node (docs/design/29): the
@@ -52,6 +53,10 @@ struct AetherWalletApp: App {
                 .environmentObject(model)
                 .eastSeaPage()
                 .onOpenURL { model.open(url: $0) }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { model.resumePush() }
+                    if phase == .background { model.suspendPush() }
+                }
                 #if DEBUG
                 // `-spinnerGallery` (debug builds only) shows every loader on one screen.
                 .overlay {
@@ -134,11 +139,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var node: NodeController?
     weak var model: WalletModel?
     private let releaseGate = ReleaseUpdateGate()
-    /// Sparkle: checks the signed appcast on GitHub Releases and installs updates.
+    /// Chain push schedules appcast discovery; Sparkle's signatures and the
+    /// existing certified release/install gates still decide what can install.
     lazy var updater: SPUStandardUpdaterController = {
         let controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
         // Override an older saved opt-in before the first update request.
         controller.updater.sendsSystemProfile = false
+        controller.updater.automaticallyChecksForUpdates = false
         controller.startUpdater()
         return controller
     }()
@@ -163,6 +170,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateShutdownTask: Task<Void, Never>?
     private var updateShutdownID: UUID?
     private var updateShutdownReady = false
+    /// A known release waiting for its certified approval window is revisited
+    /// on head delivery, without rediscovering the appcast on a timer.
+    private var pendingReleaseItem: SUAppcastItem?
+    private var lastPendingPreflight: TimeInterval = -.infinity
     static let updateLog = Logger(subsystem: "com.pipln.eastsea", category: "update")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -181,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #if DEBUG
         if DesignPreview.on { return }
         #endif
-        _ = updater  // start checking right away (hourly, and when the chain schedules a newer protocol)
+        _ = updater  // initialize the updater; chain push or an explicit check wakes discovery
     }
 
     /// Once per launch, from whichever appears first (window or menu-bar panel).
@@ -220,6 +231,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                          dataDirectory: directory)
         }
         model.onOutdated = check
+        model.onReleaseNotice = { [weak node] in
+            node?.walletReleaseNotice()
+            check()
+        }
+        model.onPushHead = { [weak self] in
+            self?.advanceReleaseWindow()
+            self?.installIfSafe()
+        }
         pauseWatch = model.$chainPausedSince
             .removeDuplicates { ($0 == nil) == ($1 == nil) }
             .sink { [weak node] since in
@@ -281,6 +300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             updateTickTimer?.invalidate()
+            model?.suspendPush()
             // Update termination was approved only after the async shutdown
             // acquired run.lock. Ordinary quit retains the daemon's behavior.
             node?.stop()
@@ -296,7 +316,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tracker.nodeRunning(running: node.state == .running && node.rpcAnswering,
                                 releaseVerified: node.updateReleaseVerified && !node.usePreviousBinary)
         }
-        if tracker.retryDue() { updater.updater.checkForUpdatesInBackground() }
+        // Timers retry a known download/install action. A failed initial
+        // discovery waits for the next release hint or stream-drop fallback.
+        if tracker.retryDue(), tracker.itemKey != nil { updater.updater.checkForUpdatesInBackground() }
         installIfSafe()
         let notice = tracker.sentence
         if updates.installNotice != notice { updates.installNotice = notice }
@@ -430,6 +452,7 @@ extension AppDelegate: SPUUpdaterDelegate {
                 guard let self else { return }
                 self.updates.pendingRelease = pending
                 self.updates.approvalIssue = issue
+                self.pendingReleaseItem = pending != nil && !ready ? item : nil
                 // The preflight concluded without an approval and without even
                 // a pending window: this exact item is refused (red team #11).
                 if pending == nil, issue != nil { self.tracker.refused() }
@@ -437,6 +460,17 @@ extension AppDelegate: SPUUpdaterDelegate {
                 self.syncUpdateNotice()
             }
         }
+    }
+
+    @MainActor private func advanceReleaseWindow() {
+        guard let item = pendingReleaseItem, let availableAt = updates.pendingRelease?.availableAt,
+              Date() >= availableAt else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastPendingPreflight >= 30 else { return }
+        lastPendingPreflight = now
+        // ReleaseUpdateGate rechecks certified time and state proofs. A local
+        // clock or a forged head hint cannot make this item approved early.
+        startReleasePreflight(item)
     }
 
     /// This selector is Sparkle's synchronous gate before its own download.

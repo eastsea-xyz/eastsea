@@ -107,6 +107,8 @@ run update-channel UpdateChannel.swift
 run update-state Brand.swift DataMigration.swift UpdateTracker.swift
 run update-window UpdateWindow.swift
 run watchdog Brand.swift Clock.swift NodeWatchdog.swift
+run wallet-push WalletPush.swift
+run wallet-push-wiring
 # The agent's payment history (aether-agent): pending context, drops, receipts.
 W=apps/agent/Sources; T=apps/agent/Tests
 run history History.swift AgentPolicy.swift
@@ -122,7 +124,7 @@ if [ "$(uname -s)" = Darwin ]; then
     bad=$((bad+1))
   fi
   for fixture in update-daemon update-listener; do
-    "$HOME/.claude/playbooks/aether-team/wait-compile.sh" || exit 1
+    "$compile_gate" || { echo "FAIL $fixture :: compile gate refused"; bad=$((bad+1)); continue; }
     if bash "scripts/test-$fixture.sh" > "tmp/sw-$fixture.out" 2> "tmp/sw-$fixture.err"; then
       echo "OK   $fixture"
     else

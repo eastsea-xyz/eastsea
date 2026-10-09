@@ -87,6 +87,9 @@ final class WalletModel: ObservableObject {
     @Published var networkOutdated = false
     /// Called once when the network looks outdated (the app checks for its update).
     var onOutdated: (() -> Void)?
+    /// Push only schedules discovery; ReleaseUpdateGate still verifies approval.
+    var onReleaseNotice: (() -> Void)?
+    var onPushHead: (() -> Void)?
     /// A payment a web page or another app asked for (`aether://pay?...`), shown for approval.
     @Published var paymentRequest: PaymentRequest?
     /// A contract call or deployment a page asked for (`aether://call?...`).
@@ -254,6 +257,7 @@ final class WalletModel: ObservableObject {
     private var lastHeight: UInt64?
     private var heightChangedAt: Date?
     private var tokenScanRunning = false
+    private var tokenRefreshWork = WalletPushReconciliation()
     private var activityLoading = false
     private var lastActivityHeight: UInt64?
     private var activityCursors: [String: String] = [:]
@@ -278,18 +282,72 @@ final class WalletModel: ObservableObject {
     /// app started: the Secure Enclave only makes keys while it is unlocked).
     @Published var keyError: String?
     private var lastKeyAttempt = Date.distantPast
-    private var timer: Timer?
+    private var started = false
+    private let push = WalletPushClient()
+    private var pushRefreshPending = false
+    private var pushBalancePending = false
+    private var pushTransactionsPending = false
+    private var lastRecoveryCheck = Date.distantPast
+    private var lastReleaseHintHeight: UInt64?
+    private var reconciliation = WalletPushReconciliation()
+    private var reconciliationTask: Task<Void, Never>?
+    private var reconciliationID: UUID?
 
     func start() {
-        guard timer == nil else { return }
+        guard !started else { return }
         #if DEBUG
         if DesignPreview.on { return loadPreview() }
         #endif
+        started = true
         pinCommittee()
         loadKey()
+        push.onDelivery = { [weak self] delivery in self?.receivePush(delivery) }
+        push.onPulse = { [weak self] in
+            self?.reevaluateCachedProgress()
+            #if os(macOS)
+            self?.refreshPresence()
+            #endif
+        }
+        updatePushSubscription()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+        push.start()
+    }
+
+    /// iOS only owns an active subscription while foregrounded. Foregrounding
+    /// receives one fresh snapshot; there is no background polling task.
+    func suspendPush() {
+        push.stop()
+        resetUnresolvedReconciliation()
+    }
+    func resumePush() {
+        guard started else { return start() }
+        updatePushSubscription()
+        push.start()
+    }
+
+    private func updatePushSubscription(resetStream: Bool = false) {
+        let hashes = unresolvedHashes()
+        push.configure(port: nodeRpcPort, address: address, transactions: hashes, resetStream: resetStream)
+    }
+
+    private func receivePush(_ delivery: WalletPushDelivery) {
+        switch delivery {
+        case .connected, .gap, .fallback:
+            // Initial attach, reconnect and a detected gap each get one bounded
+            // current-state reconciliation through the ordinary verified reads.
+            reconcileUnresolved(force: true)
+            refresh()
+            onReleaseNotice?()
+        case .notice(let notice):
+            if notice.transactionsChanged { reconcileUnresolved(force: true) }
+            if !notice.transactionsChanged, notice.topics.contains("head") { reconcileHeadOpportunity() }
+            refresh(readBalance: notice.balanceChanged || verifyError != nil,
+                    reconcileTransactions: notice.transactionsChanged)
+            if notice.releaseChanged, lastReleaseHintHeight != notice.height {
+                lastReleaseHintHeight = notice.height
+                onReleaseNotice?()
+            }
+            onPushHead?()
         }
     }
 
@@ -335,6 +393,7 @@ final class WalletModel: ObservableObject {
             loadSaved()
             loadTokens()
             loadTokenChoices(chain: networkChainId)
+            updatePushSubscription()
             keyLabel = acct.isSecureEnclave ? String(localized: "Key in the Secure Enclave") : String(localized: "Simulator: software key (no Secure Enclave)")
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
         } catch { reportKeyError(error) }
@@ -361,7 +420,7 @@ final class WalletModel: ObservableObject {
     }
 
 
-    /// The migration callback and the refresh timer share one identity path.
+    /// The migration callback and pushed refresh share one identity path.
     /// Success reloads the authoritative handle; a pending replacement closes
     /// signing immediately without initiating another migration from here.
     func migrationFinished(_ outcome: DataMigration.Outcome) {
@@ -388,11 +447,18 @@ final class WalletModel: ObservableObject {
         enclave = nil
         address = ""
         recoveryCode = ""
+        updatePushSubscription()
     }
 
     /// Account reads in flight use networkGeneration; resetting it together
     /// with this state prevents the previous wallet's results reappearing.
     private func clearWalletAccountState() {
+        push.resetCursor()
+        pushRefreshPending = false
+        pushBalancePending = false
+        pushTransactionsPending = false
+        resetUnresolvedReconciliation()
+        lastRecoveryCheck = .distantPast
         account = nil
         verifyError = nil
         verifyFailingSince = nil
@@ -429,9 +495,11 @@ final class WalletModel: ObservableObject {
         pendingBalanceRises = []
         activityLoading = false
         tokenScanRunning = false
+        tokenRefreshWork = WalletPushReconciliation()
         tokenChoicesForChain = nil
         tokensUpdated = nil
         tokensError = nil
+        lastReleaseHintHeight = nil
     }
 
     /// Validators' node ids and the committee key, from the bundled network.json
@@ -488,6 +556,12 @@ final class WalletModel: ObservableObject {
         }
         save()
         networkGeneration &+= 1
+        push.resetCursor()
+        pushRefreshPending = false
+        pushBalancePending = false
+        pushTransactionsPending = false
+        resetUnresolvedReconciliation()
+        lastRecoveryCheck = .distantPast
         UserDefaults.standard.set(development, forKey: "useDevelopmentNetwork")
         if development { UserDefaults.standard.set(Int(port), forKey: "developmentNetworkPort") }
         pinCommittee()
@@ -517,12 +591,15 @@ final class WalletModel: ObservableObject {
         pendingBalanceRises = []
         activityLoading = false
         tokenScanRunning = false
+        tokenRefreshWork = WalletPushReconciliation()
         tokenChoicesForChain = nil
         tokensUpdated = nil
         tokensError = nil
         loadSaved()
         loadTokens()
         loadTokenChoices(chain: networkChainId)
+        lastReleaseHintHeight = nil
+        updatePushSubscription(resetStream: true)
         refresh()
     }
 
@@ -740,18 +817,25 @@ final class WalletModel: ObservableObject {
         if log.count > 50 { log.removeLast() }
     }
 
-    func refresh() {
+    func refresh(readBalance: Bool = true, reconcileTransactions: Bool = true) {
         #if os(macOS)
         refreshPresence()
         #endif
-        guard !refreshInFlight else { return }
+        guard !refreshInFlight else {
+            pushRefreshPending = true
+            pushBalancePending = pushBalancePending || readBalance
+            pushTransactionsPending = pushTransactionsPending || reconcileTransactions
+            return
+        }
         refreshInFlight = true
         if enclave == nil, Date().timeIntervalSince(lastKeyAttempt) > 5 { loadKey() }
         let addr = address, n = validators, generation = networkGeneration
         refreshes += 1
-        reconcileUnresolved()
-        // Recovery status needs several proofs; every 30 s is enough to warn within the delay.
-        let checkRecovery = refreshes % 15 == 1 && !addr.isEmpty
+        if reconcileTransactions { reconcileUnresolved() }
+        // Head delivery also advances recovery/expiry checks. The stream's
+        // cadence must not change this proof reader's thirty-second bound.
+        let checkRecovery = !addr.isEmpty && Date().timeIntervalSince(lastRecoveryCheck) >= 30
+        if checkRecovery { lastRecoveryCheck = Date() }
         Task.detached {
             if checkRecovery, let rs = try? recoveryStatus(account: addr, validators: n) {
                 await MainActor.run { if self.networkGeneration == generation { self.incomingRecovery = rs.pending ? rs : nil } }
@@ -762,13 +846,14 @@ final class WalletModel: ObservableObject {
             let bl = (try? recentBlocks(n: 24)) ?? []
             var acc: VerifiedAccount?
             var err: String?
-            if !addr.isEmpty {
+            if readBalance, !addr.isEmpty {
                 do { acc = try verifiedAccount(address: addr, validators: n) } catch { err = "\(error)" }
             }
             let verified = acc, readError = err
             await MainActor.run {
                 self.refreshInFlight = false
-                guard self.networkGeneration == generation else { return }
+                defer { self.drainPushRefresh() }
+                guard self.networkGeneration == generation, self.address == addr else { return }
                 // Published only when something actually changed: an unchanged set
                 // would still invalidate every view watching this model (the whole
                 // window), which lands right on top of live resizes.
@@ -781,6 +866,7 @@ final class WalletModel: ObservableObject {
                         self.pendingBalanceRises.append((acc.stateHeight, rise))
                     }
                     if self.account != acc { self.account = acc }
+                    self.push.verified(height: acc.stateHeight)
                     if self.verifyError != nil { self.verifyError = nil }
                     self.record(balanceWei: acc.balanceWei)
                 }
@@ -791,8 +877,8 @@ final class WalletModel: ObservableObject {
                 if st == nil { self.setVerifyError(String(localized: "The network cannot be reached yet.")) } else if let readError, !behindNode { self.setVerifyError(readError) }
                 self.trackChainProgress(st, blocks: bl)
                 self.trackVerification()
-                self.refreshTokens()
-                if let st, !self.activityLoading,
+                if readBalance { self.refreshTokens(force: true) }
+                if readBalance || reconcileTransactions, let st, !self.activityLoading,
                    (st.height != self.lastActivityHeight || self.refreshes % 15 == 1) {
                     self.lastActivityHeight = st.height
                     self.refreshChainActivity()
@@ -802,7 +888,7 @@ final class WalletModel: ObservableObject {
     }
 
     #if os(macOS)
-    /// The existing 2 s refresh drives this separate 10 s read. A slow
+    /// The local push pulse drives this separate 10 s read. A slow
     /// verified balance read never holds up the live observation, or vice versa.
     private func refreshPresence() {
         guard presenceRefreshRequest == nil, Date().timeIntervalSince(lastPresenceAttempt) >= 10 else { return }
@@ -826,6 +912,15 @@ final class WalletModel: ObservableObject {
     }
     #endif
 
+    private func drainPushRefresh() {
+        guard pushRefreshPending else { return }
+        let balance = pushBalancePending, transactions = pushTransactionsPending
+        pushRefreshPending = false
+        pushBalancePending = false
+        pushTransactionsPending = false
+        refresh(readBalance: balance, reconcileTransactions: transactions)
+    }
+
     /// The chain is paused when its height has not moved for `pauseAfter`, or its
     /// newest block is that old (while the height is not moving here either, so a
     /// wrong clock on this device alone never looks like a pause).
@@ -837,29 +932,38 @@ final class WalletModel: ObservableObject {
             heightChangedAt = now
         }
         let newest = blocks.max(by: { $0.height < $1.height }).map { Date(timeIntervalSince1970: TimeInterval($0.timestampMs) / 1000) }
-        let still = heightChangedAt.map { now.timeIntervalSince($0) } ?? 0
-        let oldBlock = newest.map { now.timeIntervalSince($0) > Self.pauseAfter } ?? false
-        let paused = still > Self.pauseAfter || (oldBlock && still > 20)
-        let since = paused ? min(newest ?? heightChangedAt ?? now, heightChangedAt ?? now) : nil
+        let since = WalletPushProgress.pauseSince(now: now, changedAt: heightChangedAt,
+                                                 newest: newest, after: Self.pauseAfter)
         if since != chainPausedSince { chainPausedSince = since }
+    }
+
+    private func reevaluateCachedProgress() {
+        // Pongs only attest transport liveness. The chain's cached age must
+        // still reach the pause threshold when no new finalized heads arrive.
+        trackChainProgress(status, blocks: blocks)
+        trackVerification()
     }
 
     // MARK: tokens
 
-    /// Read token balances again if the last read is older than `tokenRefreshSeconds`
-    /// (`force`: a few seconds, e.g. when the Assets sheet opens).
+    /// Balance hints/catch-up and explicit asset actions force a fresh scan.
+    /// A transfer during an active scan remains dirty for one follow-up read.
     func refreshTokens(force: Bool = false) {
-        let minAge = force ? 5 : Self.tokenRefreshSeconds
         #if DEBUG
         if DesignPreview.on { return }
         #endif
-        guard !tokenScanRunning, !address.isEmpty, let chain = status?.chainId,
-              tokensUpdated.map({ Date().timeIntervalSince($0) >= minAge }) ?? true else { return }
+        if force { tokenRefreshWork.invalidate(["tokens"]) }
+        guard !tokenScanRunning, !address.isEmpty, let chain = status?.chainId else { return }
+        guard force || tokenRefreshWork.hasReadyWork
+                || (tokensUpdated.map({ Date().timeIntervalSince($0) >= Self.tokenRefreshSeconds }) ?? true) else { return }
         guard let sources = TokenSources.bundled(chainId: chain) else {
+            tokenRefreshWork = WalletPushReconciliation()
             tokensError = nil
             tokensUpdated = Date()
             return
         }
+        if !tokenRefreshWork.hasReadyWork { tokenRefreshWork.invalidate(["tokens"]) }
+        guard !tokenRefreshWork.nextBatch().isEmpty else { return }
         tokenScanRunning = true
         let owner = address, catalogKey = "tokenCatalog.\(chain)", catalog = tokenCatalog, generation = networkGeneration
         Task.detached {
@@ -867,9 +971,14 @@ final class WalletModel: ObservableObject {
             await MainActor.run {
                 guard self.networkGeneration == generation else { return }
                 self.tokenScanRunning = false
-                guard owner == self.address else { return }
+                guard owner == self.address else {
+                    self.tokenRefreshWork = WalletPushReconciliation()
+                    return
+                }
+                let retry: [String]
                 switch result {
                 case .success(let (cat, held)):
+                    retry = []
                     UserDefaults.standard.set(try? JSONEncoder().encode(cat), forKey: catalogKey)
                     self.tokenCatalog = cat
                     self.tokens = held
@@ -877,10 +986,13 @@ final class WalletModel: ObservableObject {
                     self.tokensUpdated = Date()
                     UserDefaults.standard.set(try? JSONEncoder().encode(held), forKey: self.tokensKey)
                 case .failure(let e):
+                    retry = ["tokens"]
                     self.tokensError = "\(e)"
-                    // Try again on the normal cadence, not every 2 s.
+                    // A later balance hint, catch-up or explicit read retries.
                     self.tokensUpdated = Date()
                 }
+                self.tokenRefreshWork.finish(retry: retry)
+                if self.tokenRefreshWork.hasReadyWork { self.refreshTokens() }
             }
         }
     }
@@ -1284,7 +1396,7 @@ final class WalletModel: ObservableObject {
     /// may still include it (B5 review round 2, finding 5) — so the row then
     /// reads "not on chain yet" and keeps its context; only a receipt, or the
     /// nonce used by another transaction, makes it done or failed. A later
-    /// receipt supersedes a drop: polling continues, and the chain-history
+    /// receipt supersedes a drop: push keeps following, and the chain-history
     /// refresh and `reconcileUnresolved` pick it up after this returns.
     private func follow(_ hash: String, operation: Operation, label: String, item: ActivityItem) async -> TxTrack.Row {
         let generation = operation.generation
@@ -1303,8 +1415,15 @@ final class WalletModel: ObservableObject {
         var unknownSince: Date?
         var last: TxStatus?
         var lastRow = TxTrack.Row.pending
+        var readRevision: UInt64?
         while Date().timeIntervalSince(start) < Self.trackLimit {
             guard networkGeneration == generation else { releaseOperation(operation); return .notIncluded }
+            guard push.shouldReadTransaction(lastRevision: readRevision) else {
+                if Date().timeIntervalSince(start) > 30 { releaseOperation(operation) }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                continue
+            }
+            readRevision = push.revision
             let st = try? txStatus(txHash: hash)
             if st == nil || st?.state == "unknown" { unknownSince = unknownSince ?? Date() } else { unknownSince = nil }
             let row = TxTrack.row(state: st?.state, success: st?.receipt?.success,
@@ -1359,37 +1478,94 @@ final class WalletModel: ObservableObject {
         return .notIncluded
     }
 
-    /// Rows a past session left not-included or pending (bug #5, round 2):
-    /// asked again — with the sender and nonce they were signed at, when the
-    /// row kept them — and settled only on a chain fact. A few per refresh.
-    private func reconcileUnresolved() {
-        let own = address
-        let generation = networkGeneration
-        guard !own.isEmpty, Date().timeIntervalSince(lastReconcile) > 30 else { return }
-        lastReconcile = Date()
-        let open = activity.filter {
-            ($0.state == .notIncluded || ($0.state == .pending && Date().timeIntervalSince($0.date) > Self.trackLimit))
-                && $0.hash?.hasPrefix("0x") == true
-        }.prefix(8).map { ($0.id, $0.hash!, $0.nonce) }
-        guard !open.isEmpty else { return }
-        Task.detached { [weak self] in
-            for (id, hash, nonce) in open {
-                let st = nonce.map { try? txStatusFor(txHash: hash, sender: own, nonce: $0) } ?? (try? txStatus(txHash: hash))
-                guard let st else { continue }
+    private func unresolvedActivity() -> [ActivityItem] {
+        let own = address.lowercased()
+        return Array(activity.lazy.filter {
+            ($0.state == .pending || $0.state == .notIncluded) && $0.hash?.hasPrefix("0x") == true
+                && ($0.owner == nil || $0.owner?.lowercased() == own)
+        }.prefix(WalletPushReconciliation.maxPending))
+    }
+
+    private func unresolvedHashes() -> [String] {
+        var seen = Set<String>()
+        return unresolvedActivity().compactMap { $0.hash?.lowercased() }.filter { seen.insert($0).inserted }
+    }
+
+    /// Every saved pending row needs catch-up, including one submitted moments
+    /// before a prior launch ended. A hint overrides the ordinary manual-read
+    /// throttle and remains dirty until all bounded batches have completed.
+    private func reconcileUnresolved(force: Bool = false) {
+        guard !address.isEmpty else { return }
+        let hashes = unresolvedHashes()
+        reconciliation.retain(available: hashes)
+        if force || Date().timeIntervalSince(lastReconcile) > 30 {
+            lastReconcile = Date()
+            reconciliation.invalidate(hashes)
+        }
+        drainUnresolvedReconciliation()
+    }
+
+    private func reconcileHeadOpportunity() {
+        guard !address.isEmpty else { return }
+        let hashes = unresolvedHashes()
+        let filter = WalletPushFilter(address: address, transactions: hashes)
+        reconciliation.headOpportunity(available: hashes, subscribed: Set(filter.transactions))
+        drainUnresolvedReconciliation()
+    }
+
+    private func resetUnresolvedReconciliation() {
+        reconciliationTask?.cancel()
+        reconciliationTask = nil
+        reconciliationID = nil
+        reconciliation = WalletPushReconciliation()
+        lastReconcile = .distantPast
+    }
+
+    private func drainUnresolvedReconciliation() {
+        guard reconciliationTask == nil, !address.isEmpty else { return }
+        let own = address, generation = networkGeneration, rows = unresolvedActivity()
+        reconciliation.retain(available: unresolvedHashes())
+        let batch = reconciliation.nextBatch()
+        guard !batch.isEmpty else { return }
+        let requests = batch.map { hash in
+            (hash, rows.first { $0.hash?.lowercased() == hash && $0.nonce != nil }?.nonce)
+        }
+        let job = UUID()
+        reconciliationID = job
+        reconciliationTask = Task.detached { [weak self] in
+            var failed = [String]()
+            for (hash, nonce) in requests {
+                guard !Task.isCancelled else { return }
+                let status: TxStatus?
+                if let nonce { status = try? txStatusFor(txHash: hash, sender: own, nonce: nonce) }
+                else { status = try? txStatus(txHash: hash) }
+                guard let st = status else { failed.append(hash); continue }
                 let row = TxTrack.row(state: st.state, success: st.receipt?.success, unknownFor: 0)
                 await MainActor.run {
-                    guard let self, self.networkGeneration == generation else { return }
-                    switch row {
-                    case .done, .failed: self.settle(id, state: row == .done ? .done : .failed, why: row == .done ? nil : TxStatusText.sentence(st))
-                    case .notIncluded: self.settle(id, state: .notIncluded, why: TxStatusText.sentence(st), canResend: st.canResend)
-                    case .pending: self.explain(id, why: TxStatusText.sentence(st))
+                    guard let self, self.networkGeneration == generation, self.address == own,
+                          self.reconciliationID == job else { return }
+                    for item in self.unresolvedActivity() where item.hash?.lowercased() == hash {
+                        switch row {
+                        case .done, .failed: self.settle(item.id, state: row == .done ? .done : .failed, why: row == .done ? nil : TxStatusText.sentence(st))
+                        case .notIncluded: self.settle(item.id, state: .notIncluded, why: TxStatusText.sentence(st), canResend: st.canResend)
+                        case .pending: self.explain(item.id, why: TxStatusText.sentence(st))
+                        }
                     }
                 }
+            }
+            let retry = failed
+            await MainActor.run {
+                guard let self, self.networkGeneration == generation, self.address == own,
+                      self.reconciliationID == job else { return }
+                self.reconciliationTask = nil
+                self.reconciliationID = nil
+                self.reconciliation.finish(retry: retry)
+                self.drainUnresolvedReconciliation()
             }
         }
     }
 
-    /// When `reconcileUnresolved` last asked (at most every 30 s).
+    /// Manual reads remain throttled; stream dirtiness bypasses this timestamp.
     private var lastReconcile = Date.distantPast
 
     /// How long `track` follows a transaction: the node's mempool lifetime
@@ -1453,6 +1629,7 @@ final class WalletModel: ObservableObject {
         let d = UserDefaults.standard
         d.set(try? JSONEncoder().encode(history), forKey: historyKey)
         d.set(try? JSONEncoder().encode(Array(activity.prefix(500))), forKey: activityKey)
+        updatePushSubscription()
     }
 
     func addLinkedWallet(_ input: String) -> Bool {

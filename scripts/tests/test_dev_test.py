@@ -87,6 +87,14 @@ sys.exit(code)
         self.assertEqual(result.returncode, 75, result.stderr)
         self.assertEqual([c['kind'] for c in self.calls()], ['rust'])
 
+    def test_explicit_local_waits_twenty_minutes_and_never_offloads(self):
+        self.env['FIXTURE_QUEUE_KIND'] = 'rust'
+        result = self.run_loop('--local', '--changed-file', 'crates/node/tests/rpc_alias.rs')
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertEqual([c['kind'] for c in self.calls()], ['rust'])
+        self.assertEqual(self.calls()[0]['queue_limit'], '1200')
+        self.assertNotEqual(self.run_loop('--local', '--remote').returncode, 0)
+
     def test_local_failure_and_remote_failure_propagate(self):
         self.env['FIXTURE_LOCAL_EXIT'] = '1'
         self.assertEqual(self.run_loop('--changed-file', 'crates/node/src/lib.rs').returncode, 1)

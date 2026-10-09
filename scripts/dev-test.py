@@ -74,7 +74,9 @@ def execute(command, env):
 def main():
     started = time.monotonic()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--remote', action='store_true', help='use guarded poc-m3; no local slot')
+    location = parser.add_mutually_exclusive_group()
+    location.add_argument('--remote', action='store_true', help='use guarded poc-m3; no local slot')
+    location.add_argument('--local', action='store_true', help='wait up to 20 minutes locally; never offload')
     parser.add_argument('--base', default='HEAD', help='include committed changes since this ref (default: HEAD)')
     parser.add_argument('--changed-file', action='append', help='scope to an explicit changed path; repeatable')
     parser.add_argument('--rust-test', action='append', default=[], help='restrict Rust integration test binaries')
@@ -124,7 +126,7 @@ def main():
     if args.dry_run:
         for kind, local, remote in work:
             print(json.dumps(dict(kind=kind, command=remote if args.remote else local,
-                                  offload_after_seconds=None if args.remote else 60)))
+                                  offload_after_seconds=None if args.remote or args.local else 60)))
         return 0
     selection_seconds = time.monotonic() - started
     results = []
@@ -133,7 +135,7 @@ def main():
     for index, (kind, local, remote) in enumerate(work):
         gate_file = directory / f'{index}-{kind}-gate.json'
         timing_file = directory / f'{index}-{kind}.json'
-        worker_env = dict(env, AETHER_COMPILE_WAIT_SECONDS='60',
+        worker_env = dict(env, AETHER_COMPILE_WAIT_SECONDS='1200' if args.local else '60',
                           AETHER_COMPILE_TIMING_FILE=str(gate_file),
                           AETHER_DEV_TIMING_FILE=str(timing_file))
         command_started = time.monotonic()
@@ -145,7 +147,7 @@ def main():
                        timing=streamed if offloaded else worker)
         results.append(attempt)
         # A test failure returning 75 is not evidence of a queue timeout.
-        if not offloaded and code == 75 and gate.get('status') == 'queue_timeout':
+        if not args.local and not offloaded and code == 75 and gate.get('status') == 'queue_timeout':
             print('Local compile queue reached 60 seconds; offloading to poc-m3.', flush=True)
             offloaded = True
             remote_started = time.monotonic()

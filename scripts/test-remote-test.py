@@ -32,7 +32,7 @@ class RemoteTests(unittest.TestCase):
         (self.root / 'bin').mkdir()
         script = (ROOT / 'scripts/remote-test.sh').read_text()
         # Replace only the local production binary in this isolated fixture.
-        script = script.replace('/usr/bin/rsync -a', str(self.root / 'bin/rsync') + ' -a', 1)
+        script = script.replace("['/usr/bin/rsync', '-a'", '[' + repr(str(self.root / 'bin/rsync')) + ", '-a'", 1)
         self.script = self.root / 'scripts/remote-test.sh'
         self.script.write_text(script)
         self.log = self.root / 'calls.jsonl'
@@ -54,8 +54,12 @@ if tool == 'ssh' and 'bash -s' in sys.argv[-1]:
     if os.environ.get('SSH_HANG'):
         Path(os.environ['SSH_STARTED']).write_text(str(os.getpid()))
         time.sleep(30)
-    sys.exit(int(os.environ.get('TEST_EXIT', '0')))
+    status = int(os.environ.get('TEST_EXIT', '0'))
+    print('dev-test timing: '+json.dumps({'compile_seconds':.2,'run_seconds':.01,'exit_code':status,
+                                        'resources':{'peak_owned_rss_bytes':12345}}))
+    sys.exit(status)
 if tool == 'rsync':
+    if os.environ.get('RSYNC_FAIL'): sys.exit(43)
     destination = Path(os.environ['MOCK_REMOTE_SOURCE'])
     destination.mkdir(exist_ok=True)
     # Use actual system rsync locally to exercise production deletion rules.
@@ -164,6 +168,34 @@ if tool == 'rsync':
         self.assertIn('bash scripts/test-swift-pure.sh "${swift[@]}"', call['stdin'])
         self.assertIn('AETHER_DEV_TIMING_FILE=', call['stdin'])
         self.assertIn('dev-test timing: ', call['stdin'])
+        timing = json.loads(next(line.removeprefix('dev-test timing: ')
+                                 for line in result.stdout.splitlines() if line.startswith('dev-test timing: ')))
+        self.assertGreater(timing['rsync_seconds'], 0)
+        self.assertEqual(timing['rsync_exit_code'], 0)
+        self.assertEqual(timing['resources']['peak_owned_rss_bytes'], 12345)
+        self.assertIn('--report-file', call['stdin'])
+
+    def test_failed_rsync_starts_no_tests_and_releases_lease(self):
+        self.env['RSYNC_FAIL'] = '1'
+        result = self.run_script('-p', 'aether-node', '--test', 'rpc_alias')
+        self.assertEqual(result.returncode, 43, result.stderr)
+        calls = self.calls()
+        self.assertFalse(any('bash -s' in call['args'][-1] for call in calls))
+        self.assertIn('lock.rmdir()', calls[-1]['stdin'])
+        self.assertNotIn('dev-test timing: ', result.stdout)
+
+    def test_startup_failure_transports_resources_without_workload_timing(self):
+        token = 'startup-test'
+        resources = {'exit_code': 75, 'cleanup_complete': True, 'peak_owned_rss_bytes': 12345}
+        (self.root / ('remote-' + token + '-resources.json')).write_text(json.dumps(resources))
+        body = self.script.read_text().split("<<'TIMING'\n", 1)[1].split('\nTIMING\n', 1)[0]
+        result = subprocess.run([sys.executable, '-', str(self.root), token, '75'], input=body,
+                                text=True, capture_output=True, check=True)
+        timing = json.loads(result.stdout.removeprefix('dev-test timing: '))
+        self.assertEqual(timing['resources'], resources)
+        self.assertEqual(timing['exit_code'], 75)
+        self.assertEqual(timing['workloads'], [])
+        self.assertEqual(timing['compile_seconds'], 0)
 
     def test_snapshot_deletes_stale_sources_and_keeps_warm_artifacts(self):
         self.assertEqual(self.run_script('-p', 'aether-types').returncode, 0)
@@ -196,6 +228,8 @@ if tool == 'rsync':
         self.assertNotIn('cargo install', call['stdin'])
         self.assertNotIn('rustup-init', call['stdin'])
         self.assertNotIn('sudo', call['stdin'])
+        self.assertIn('! command -v cargo-nextest', call['stdin'])
+        self.assertIn('! command -v sccache', call['stdin'])
 
     def test_preflight_failure_stops_transfer_and_local_scratch(self):
         for key, status in [('SSH_FAIL', 42), ('LOW_RAM', 75)]:
@@ -218,6 +252,27 @@ if tool == 'rsync':
         result = self.run_script('-p', 'aether-types')
         self.assertEqual(result.returncode, 7)
         self.assertIn('lock.rmdir()', self.calls()[-1]['stdin'])
+
+    def test_cleanup_failure_retains_snapshot_lease(self):
+        base = self.root / 'lease-fixture'
+        lock = base / 'tmp/remote-test.lock'
+        lock.mkdir(parents=True)
+        token = 'cleanup-test'
+        owner = lock / 'owner'
+        owner.write_text(token)
+        resources = base / ('source/tmp/remote-' + token + '-resources.json')
+        resources.parent.mkdir(parents=True)
+        body = self.script.read_text().split("<<'RELEASE'", 1)[1].split('\n', 1)[1].split('\nRELEASE\n', 1)[0]
+        body = body.replace("base = Path.home() / 'eastsea-lab/dev-speed'", 'base = Path(' + repr(str(base)) + ')')
+        resources.write_text(json.dumps({'cleanup_complete': False}))
+        result = subprocess.run([sys.executable, '-', token], input=body, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('snapshot lease retained', result.stderr)
+        self.assertTrue(owner.exists())
+        resources.write_text(json.dumps({'cleanup_complete': True}))
+        result = subprocess.run([sys.executable, '-', token], input=body, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(lock.exists())
 
     def test_signal_stops_ssh_and_runs_matching_cleanup(self):
         self.env['SSH_HANG'] = '1'
@@ -291,6 +346,60 @@ class ResourceGuardTests(unittest.TestCase):
         with mock.patch.object(guard, 'process_table', return_value=rows):
             self.assertEqual(set(owned.sample()), {101, 102})
 
+    def test_process_table_keeps_birth_identity_and_observed_nice(self):
+        text = '100 1 100 8 15 S Fri Oct 9 12:34:56 2026\n101 100 100 4 15 Z Fri Oct 9 12:34:57 2026\n'
+        with mock.patch.object(guard.subprocess, 'check_output', return_value=text):
+            self.assertEqual(guard.process_table(), {100: (1, 100, 8192, 'Fri Oct 9 12:34:56 2026', 15)})
+
+    def test_resource_report_measures_owned_processes_and_cleanup(self):
+        report = self.root / 'tmp/resources.json'
+        unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)
+        try:
+            with mock.patch.object(guard, 'validate_root'), \
+                 mock.patch.object(guard, 'free_ram', return_value=8 * guard.GIB), \
+                 mock.patch.object(guard.shutil, 'disk_usage', return_value=SimpleNamespace(free=40 * guard.GIB)):
+                self.assertEqual(guard.run(self.root, [sys.executable, '-c', 'import time; time.sleep(.6)'], report_file=report), 0)
+            value = json.loads(report.read_text())
+            self.assertGreater(value['peak_owned_rss_bytes'], 0)
+            self.assertGreater(value['samples'], 0)
+            expected_nice = min(20 if sys.platform == 'darwin' else 19,
+                                os.getpriority(os.PRIO_PROCESS, 0) + 15)
+            self.assertEqual(value['nice_max'], expected_nice)
+            self.assertGreaterEqual(value['nice_min'], os.getpriority(os.PRIO_PROCESS, 0))
+            self.assertEqual(value['min_free_ram_bytes'], 8 * guard.GIB)
+            self.assertTrue(value['cleanup_complete'])
+            self.assertEqual(value['exit_code'], 0)
+            self.assertIsNone(unrelated.poll())
+        finally:
+            unrelated.terminate()
+            unrelated.wait()
+
+    def test_resource_report_preserves_violating_ram_sample(self):
+        report = self.root / 'tmp/resources.json'
+        with mock.patch.object(guard, 'validate_root'), \
+             mock.patch.object(guard, 'free_ram', side_effect=[8 * guard.GIB, guard.MIN_RAM - 1]), \
+             mock.patch.object(guard.shutil, 'disk_usage', return_value=SimpleNamespace(free=40 * guard.GIB)):
+            with self.assertRaisesRegex(RuntimeError, 'resource stop'):
+                guard.run(self.root, [sys.executable, '-c', 'import time; time.sleep(30)'], report_file=report)
+        value = json.loads(report.read_text())
+        self.assertEqual(value['min_free_ram_bytes'], guard.MIN_RAM - 1)
+        self.assertEqual(value['samples'], 1)
+        self.assertTrue(value['cleanup_complete'])
+        self.assertEqual(value['exit_code'], 75)
+
+    def test_resource_report_records_cleanup_failure_after_success(self):
+        report = self.root / 'tmp/resources.json'
+        with mock.patch.object(guard, 'validate_root'), \
+             mock.patch.object(guard, 'free_ram', return_value=8 * guard.GIB), \
+             mock.patch.object(guard.shutil, 'disk_usage', return_value=SimpleNamespace(free=40 * guard.GIB)), \
+             mock.patch.object(guard.OwnedProcesses, 'terminate', side_effect=RuntimeError('cleanup failure')):
+            with self.assertRaisesRegex(RuntimeError, 'cleanup failure'):
+                guard.run(self.root, [sys.executable, '-c', 'pass'], report_file=report)
+        value = json.loads(report.read_text())
+        self.assertFalse(value['cleanup_complete'])
+        self.assertEqual(value['exit_code'], 75)
+        self.assertEqual(value['error'], 'cleanup failure')
+
     def test_reused_private_group_is_excluded_from_discovery_and_fallback(self):
         owned = guard.OwnedProcesses([100])
         original = {100: (1, 100, 1, 'parent'), 101: (100, 101, 2, 'original child')}
@@ -354,7 +463,7 @@ class ResourceGuardTests(unittest.TestCase):
         def popen(command, **options):
             calls.append((command, options))
             return original_popen(command, **options)
-        def resources(_root, _rss=0):
+        def resources(_root, _rss=0, _report=None):
             if pidfile.exists():
                 raise RuntimeError('simulated RAM drop')
             return 8 * guard.GIB, 40 * guard.GIB

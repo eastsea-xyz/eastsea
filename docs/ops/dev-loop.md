@@ -22,6 +22,7 @@ sccache --version
 scripts/test-affected.sh --base lead-merge --list
 scripts/test-affected.sh --base lead-merge
 scripts/dev-test.sh
+scripts/dev-test.sh --local
 scripts/dev-test.sh --remote
 scripts/run-rust-tests.sh -- -p aether-hash -p aether-crypto
 scripts/test-swift-pure.sh
@@ -54,7 +55,9 @@ On a cache miss the fast path tries the normal local counting semaphore with a
 60-second queue limit. It offloads only when the gate's timing record confirms a
 queue timeout; an ordinary test failure, even exit 75, is returned. This is a
 measured bounded wait, not a predicted queue duration. `--remote` skips that local
-attempt entirely. Unchanged cached binaries still run their tests without a slot.
+attempt entirely. `--local` disables offload and uses the normal 1,200-second local
+queue ceiling, which also makes local/remote comparisons explicit. Unchanged
+cached binaries still run their tests without a slot.
 Timing records under `tmp/dev-test-*/timing.json` include command wall time,
 selection, queue, compilation, test execution and remaining orchestration time.
 
@@ -162,7 +165,8 @@ scripts/remote-test.sh --swift tx-status-text
 ```
 
 Setup validates the installed toolchain and downloads official prebuilt nextest
-and sccache 0.18.0 only when absent. Tools and Cargo/sccache state stay in the
+and sccache 0.18.0 only when absent. A Rust invocation also performs this setup
+automatically when either tool is missing. Tools and Cargo/sccache state stay in the
 lane's `tmp/`; setup never compiles a tool or installs globally. The source-only
 snapshot includes uncommitted Rust and pure Swift inputs while excluding
 credentials, private keys, symlinks, app data, `.git`, guest projects and targets.
@@ -181,6 +185,11 @@ Failed process discovery also stops the run; cleanup signals recorded private
 groups and reaps direct children without requiring another successful `ps` query.
 Warm build artifacts remain for the next run. Remote builds bypass the local
 gate only in the exact guarded `kjaylee` snapshot; they never take this Mac's slot.
+The transported timing record includes the system rsync subprocess wall time
+and a resource report: sampled peak aggregate owned RSS, minimum free RAM/disk,
+observed process nice range, exit status and cleanup result. Resource reports
+also survive guard startup failures and resource stops. The peak uses 0.5-second
+samples; it includes the private sccache server and build/test descendants.
 
 Explicit normal workspace packages and registered pure Swift tests are accepted;
 FFI/staticlib, alternate manifests/profiles, release and Jolt guest entry points
@@ -259,6 +268,79 @@ round-2 Swift measurements used frozen runner inputs. The timeout stays intact;
 Raw measurements, timing JSON, source snapshots, the Swift diagnosis and the
 remote resource refusal are under `tmp/dev-speed-round2/`; per-command fast-path
 timing records are under `tmp/dev-test-*/timing.json`.
+
+### Round 3: matched node cases; remote RAM floor still blocks execution
+
+Measured on 2026-10-09, starting from `ccbbcce` on `codex/dev-speed`. The workload
+is the three tests in the automatically selected `aether-node::rpc_alias`
+integration binary. All cases use the same explicit changed path, so a no-edit
+warm run executes the same tests instead of an empty affected selection:
+
+```bash
+scripts/dev-test.sh --local --changed-file crates/node/tests/rpc_alias.rs
+scripts/dev-test.sh --remote --changed-file crates/node/tests/rpc_alias.rs
+```
+
+The local cold case starts with an absent lane-owned Cargo target under
+`tmp/dev-speed-round3/local-targets/aether-round3`; it retains this Mac's existing
+shared sccache and Cargo registry. It is a cold target, not an empty compiler
+cache. The second invocation uses identical source bytes and environment. The
+third appends exactly one comment line to `crates/node/tests/rpc_alias.rs`, runs
+the same affected binary, and restores the original bytes. No Rust source edit
+is committed. Local lane/validator/background load was left running; there was
+no attempt to quiet this Mac. Both compiles used the counting semaphore in the
+build's shell and four Cargo jobs. The warm run took no compile slot.
+
+| Host and case | Command wall | rsync | Compile | Launch + run | Queue | Other time | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| This Mac, cold target | 227.18 s | n/a | 217.82 s | 6.12 s | 0.39 s | 2.85 s | three passed |
+| This Mac, warm, no edit | 1.68 s | n/a | 0.00 s | 0.75 s | 0.00 s | 0.93 s | three passed; verified binary cache hit |
+| This Mac, one-line edit | 49.63 s | n/a | 42.73 s | 1.00 s | 0.21 s | 5.69 s | three passed; rebuild |
+| poc-m3, cold command attempt | 0.78 s | not started | not started | not started | n/a | preflight refusal | exit 75; 1.81 GiB free RAM |
+| poc-m3, warm | not measured | not measured | not measured | not measured | n/a | cold prerequisite blocked | not run |
+| poc-m3, one-line edit | not measured | not measured | not measured | not measured | n/a | cold prerequisite blocked | not run |
+
+Command wall is an outer monotonic measurement around `dev-test.sh`, including
+interpreter startup and selection. Compile is the gated Cargo build-stage wall,
+including nextest build/list setup, linking and any artifact-lock wait. Launch
+and run includes nextest startup; nextest's local summary durations were 0.051 s,
+0.391 s and 0.050 s respectively. Other time is the measured command wall minus
+compile, run and queue; rounded components may differ by 0.01 s. A future remote
+run reports build-stage wall from the complete nextest build/list invocation,
+since the remote guard bypasses this Mac's semaphore. No remote speedup ratio
+can be calculated from these results.
+
+Read-only remote checks still refused execution despite the lane being reported
+free. The first recorded preflight saw 3.59 GiB free plus speculative RAM; later
+recorded checks saw 0.06 GiB and 2.89 GiB. The actual cold command saw 1.81 GiB,
+with 111.96 GiB disk free. The guard requires at least **4 GiB free plus
+speculative RAM**, at least **30 GiB free disk**, and at most **12 GiB aggregate
+owned RSS**. Inactive/reclaimable pages were not substituted for free RAM.
+The existing EastSea processes and the v4 validator were left untouched.
+A later read-only preflight still refused at 3.74 GiB; subsequent cold command
+attempts refused at 3.65 GiB and 2.84 GiB. None created the remote lane.
+
+`~/eastsea-lab/dev-speed` was absent before the attempts. All attempts stopped
+before creating it, installing tools, rsync or compilation; there is no remote
+target or warm cache to clean up, and no owned remote process to stop. Rust 1.98.1
+is installed; nextest/sccache are absent, and the wrapper now bootstraps those
+existing required tools into the lane when resources permit. No remote workload
+memory peak or observed nice range exists for this round: the refusal's
+`owned RSS=0.00 GiB` describes a run that never started. The **12 GiB / nice 15**
+guard remains enabled and regression-tested, but its successful end-to-end
+operation and the three remote timings remain unverified until RAM clears the
+floor. No Jolt guest, release, staticlib or wallet build ran.
+
+Raw logs, outer timing records, load snapshots, source backup and isolation
+hashes are in `tmp/dev-speed-round3/`. The local timing reports are
+`tmp/dev-test-0zdjt2zv/timing.json`, `tmp/dev-test-9tvrgw_5/timing.json` and
+`tmp/dev-test-m_dx9feh/timing.json`; the remote refusal is
+`tmp/dev-test-bq4aav8d/timing.json`. Workflow checks passed 65 tests covering
+affected selection, routing, cache/gate behavior, Rust execution and remote
+snapshot/resource cleanup; shellcheck and diff whitespace checks passed.
+The source probe, 80 protected guest-input files and root manifest bytes were
+verified unchanged. The existing `last_proof_reward` dead-code warning appeared
+in the local builds; it was not modified.
 
 ### Release and guest isolation proof
 

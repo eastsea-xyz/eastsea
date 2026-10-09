@@ -115,6 +115,9 @@ if owner.is_file() and owner.read_text() == token:
             while record.exists() and time.monotonic() < deadline: time.sleep(0.1)
             if record.exists(): raise SystemExit('Remote cleanup incomplete; snapshot lease retained.')
         record.unlink(missing_ok=True)
+    resources = base / 'source/tmp' / ('remote-' + token + '-resources.json')
+    if resources.is_file() and not json.loads(resources.read_text()).get('cleanup_complete', False):
+        raise SystemExit('Remote cleanup incomplete; snapshot lease retained.')
     owner.unlink(); lock.rmdir()
 RELEASE
   fi
@@ -172,8 +175,17 @@ except FileExistsError: raise SystemExit('Another remote run owns the dev-speed 
 (base / 'source').mkdir(exist_ok=True)
 RESERVE
 held=1
-/usr/bin/rsync -a --delete --exclude=/tmp/ --exclude=/.git/ --rsync-path=/usr/bin/rsync \
-  -e 'ssh -o BatchMode=yes -o ConnectTimeout=10 -l kjaylee' "$lane/source/" "$HOST:$remote/"
+python3 - "$lane/source/" "$HOST:$remote/" "$lane/rsync.json" <<'SYNC_TIMING'
+import json, subprocess, sys, time
+from pathlib import Path
+started = time.monotonic()
+status = subprocess.call(['/usr/bin/rsync', '-a', '--delete', '--exclude=/tmp/', '--exclude=/.git/',
+                          '--rsync-path=/usr/bin/rsync', '-e',
+                          'ssh -o BatchMode=yes -o ConnectTimeout=10 -l kjaylee', sys.argv[1], sys.argv[2]])
+Path(sys.argv[3]).write_text(json.dumps({'rsync_seconds': time.monotonic() - started,
+                                       'rsync_exit_code': status}))
+sys.exit(status)
+SYNC_TIMING
 # Encode values independently; filters may contain spaces or shell syntax.
 quote() { python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]), end="")' "$1"; }
 command="bash -s -- $(quote "$commit") $(quote "$token") $(quote "$setup")"
@@ -195,7 +207,7 @@ mkdir -p "$snapshot/tmp" "$base/tmp/tools"
 export TMPDIR="$snapshot/tmp"
 toolchain=$(dirname "$(rustup which --toolchain 1.98.1 cargo)")
 export PATH="$base/tmp/tools:$toolchain:$PATH"
-if ((setup)); then
+if ((setup)) || { [[ "${1:-}" == -p ]] && { ! command -v cargo-nextest >/dev/null || ! command -v sccache >/dev/null; }; }; then
   work=$(mktemp -d "$snapshot/tmp/remote-setup.XXXXXXXX")
   trap 'rm -rf "$work"' EXIT
   python3 scripts/remote-resource-guard.py --preflight --root "$snapshot"
@@ -271,7 +283,8 @@ fi
 RUNNER
 status=0
 python3 scripts/remote-resource-guard.py --root "$snapshot" ${guard[@]+"${guard[@]}"} \
-  --owner-file "$snapshot/tmp/remote-owner-$token.json" -- bash "$runner" "$token" \
+  --owner-file "$snapshot/tmp/remote-owner-$token.json" \
+  --report-file "$snapshot/tmp/remote-$token-resources.json" -- bash "$runner" "$token" \
   "${#packages[@]}" "${#targets[@]}" "${#swift[@]}" \
   ${packages[@]+"${packages[@]}"} ${targets[@]+"${targets[@]}"} ${swift[@]+"${swift[@]}"} "$@" || status=$?
 python3 - "$snapshot/tmp" "$token" "$status" <<'TIMING'
@@ -282,10 +295,12 @@ rows = []
 for kind in ('rust', 'swift'):
     path = root / ('remote-' + token + '-' + kind + '.json')
     if path.is_file(): rows.append(json.loads(path.read_text()))
-if rows:
+resources = root / ('remote-' + token + '-resources.json')
+if rows or resources.is_file():
     result = {key: sum(row.get(key, 0) for row in rows)
               for key in ('queue_seconds', 'compile_seconds', 'run_seconds', 'overhead_seconds', 'wall_seconds')}
     result.update(location='poc-m3', exit_code=status, workloads=rows)
+    if resources.is_file(): result['resources'] = json.loads(resources.read_text())
     print('dev-test timing: ' + json.dumps(result))
 TIMING
 exit "$status"
@@ -294,6 +309,17 @@ remote_pid=$!
 status=0
 wait "$remote_pid" || status=$?
 remote_pid=
-cat "$lane/test.log"
+python3 - "$lane/test.log" "$lane/rsync.json" <<'TRANSPORT_TIMING'
+import json, sys
+from pathlib import Path
+sync = json.loads(Path(sys.argv[2]).read_text())
+for line in Path(sys.argv[1]).read_text().splitlines():
+    if line.startswith('dev-test timing: '):
+        record = json.loads(line.removeprefix('dev-test timing: '))
+        record.update(sync)
+        line = 'dev-test timing: ' + json.dumps(record)
+    print(line, flush=True)
+print('Remote rsync: %.2fs' % sync['rsync_seconds'])
+TRANSPORT_TIMING
 printf 'Remote snapshot: %s:~/%s\nLocal log: %s/test.log\n' "$HOST" "$remote" "$lane"
 exit "$status"

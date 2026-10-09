@@ -48,12 +48,15 @@ def free_ram():
     return int(page_size[1]) * sum(int(count) for count in pages.values())
 
 
-def check_resources(root, rss=0):
+def check_resources(root, rss=0, report=None):
     existing = root
     while not existing.exists():
         existing = existing.parent
     ram = free_ram()
     disk = shutil.disk_usage(existing).free
+    if report is not None:
+        report['min_free_ram_bytes'] = min(report['min_free_ram_bytes'], ram)
+        report['min_free_disk_bytes'] = min(report['min_free_disk_bytes'], disk)
     if ram < MIN_RAM or disk < MIN_DISK or rss > MAX_RSS:
         raise RuntimeError(f'resource stop: free+speculative RAM={ram / GIB:.2f} GiB '
                            f'(minimum 4); disk={disk / GIB:.2f} GiB (minimum 30); '
@@ -63,13 +66,13 @@ def check_resources(root, rss=0):
 
 def process_table():
     output = subprocess.check_output(
-        ['/bin/ps', '-axo', 'pid=,ppid=,pgid=,rss=,stat=,lstart='], text=True, timeout=10)
+        ['/bin/ps', '-axo', 'pid=,ppid=,pgid=,rss=,nice=,stat=,lstart='], text=True, timeout=10)
     rows = {}
     for line in output.splitlines():
-        fields = line.split(None, 5)
-        if len(fields) == 6 and not fields[4].startswith('Z'):
-            pid, parent, group, rss = map(int, fields[:4])
-            rows[pid] = (parent, group, rss * 1024, fields[5])
+        fields = line.split(None, 6)
+        if len(fields) == 7 and not fields[5].startswith('Z'):
+            pid, parent, group, rss, nice = map(int, fields[:5])
+            rows[pid] = (parent, group, rss * 1024, fields[6], nice)
     return rows
 
 
@@ -237,9 +240,17 @@ def reap_children(children):
         raise RuntimeError('could not reap owned children: ' + '; '.join(errors))
 
 
-def run(root, command, sccache=False, owner_file=None):
+def run(root, command, sccache=False, owner_file=None, report_file=None):
     validate_root(root)
+    if report_file and (report_file.parent != root / 'tmp' or report_file.is_symlink()):
+        raise RuntimeError('resource report must be inside the owned source tmp directory')
     ram, disk = check_resources(root)
+    started = time.monotonic()
+    report = dict(schema_version=1, sample_interval_seconds=INTERVAL, samples=0,
+                  min_free_ram_bytes=ram, min_free_disk_bytes=disk, peak_owned_rss_bytes=0,
+                  nice_min=None, nice_max=None, cleanup_complete=False,
+                  limits=dict(min_free_ram_bytes=MIN_RAM, min_free_disk_bytes=MIN_DISK,
+                              max_owned_rss_bytes=MAX_RSS, nice=15))
     print(f'remote resources: RAM={ram / GIB:.2f} GiB; disk={disk / GIB:.2f} GiB; '
           'RSS limit=12 GiB; nice=15; checks every 0.5s', file=sys.stderr, flush=True)
     environment = dict(os.environ, AETHER_REMOTE_TEST_ROOT=str(root),
@@ -251,6 +262,16 @@ def run(root, command, sccache=False, owner_file=None):
     socket = None
     owner_written = False
     parent = os.getppid()
+    def sample_resources():
+        rows = owned.sample()
+        rss = sum(row[2] for row in rows.values())
+        report['peak_owned_rss_bytes'] = max(report['peak_owned_rss_bytes'], rss)
+        nice = [row[4] for row in rows.values()]
+        if nice:
+            report['nice_min'] = min(nice + ([report['nice_min']] if report['nice_min'] is not None else []))
+            report['nice_max'] = max(nice + ([report['nice_max']] if report['nice_max'] is not None else []))
+        report['samples'] += 1
+        check_resources(root, rss, report)
     try:
         def stop(signum, _frame):
             raise SystemExit(128 + signum)
@@ -281,44 +302,56 @@ def run(root, command, sccache=False, owner_file=None):
             while not socket.exists():
                 if server.poll() is not None or time.monotonic() >= deadline:
                     raise RuntimeError('private sccache server did not start')
-                check_resources(root, sum(row[2] for row in owned.sample().values()))
+                sample_resources()
                 time.sleep(INTERVAL)
         child = subprocess.Popen(['/usr/bin/nice', '-n', '15', *command],
                                  cwd=root, env=environment, start_new_session=True)
         children.append(child)
         owned.register(child)
         while True:
-            check_resources(root, sum(row[2] for row in owned.sample().values()))
+            sample_resources()
             if os.getppid() != parent:
                 raise RuntimeError('SSH command owner exited; stopping remote processes')
             code = child.poll()
             if code is not None:
-                return code if code >= 0 else 128 - code
+                report['exit_code'] = code if code >= 0 else 128 - code
+                return report['exit_code']
             if sccache and children[0].poll() is not None:
                 raise RuntimeError('private sccache server exited during tests')
             time.sleep(INTERVAL)
+    except BaseException as error:
+        report['error'] = str(error)
+        report['exit_code'] = error.code if isinstance(error, SystemExit) else 75
+        raise
     finally:
         try:
             try:
-                # Cleanup waits run outside the signal handler. Ignore further
-                # signals so they cannot interrupt a Popen waitpid lock.
-                for sig in previous:
-                    signal.signal(sig, signal.SIG_IGN)
-                owned.terminate()
-            finally:
-                # Discovery must never be a prerequisite for direct cleanup.
-                reap_children(children)
-        finally:
-            try:
-                if socket:
-                    socket.unlink(missing_ok=True)
+                try:
+                    # Cleanup waits run outside the signal handler. Ignore further
+                    # signals so they cannot interrupt a Popen waitpid lock.
+                    for sig in previous:
+                        signal.signal(sig, signal.SIG_IGN)
+                    owned.terminate()
+                finally:
+                    # Discovery must never be a prerequisite for direct cleanup.
+                    reap_children(children)
+                report['cleanup_complete'] = True
             finally:
                 try:
+                    if socket:
+                        socket.unlink(missing_ok=True)
+                finally:
                     if owner_written:
                         owner_file.unlink(missing_ok=True)
-                finally:
-                    for sig, handler in previous.items():
-                        signal.signal(sig, handler)
+        except BaseException as error:
+            report.update(cleanup_complete=False, error=str(error), exit_code=75)
+            raise
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+            if report_file:
+                report['wall_seconds'] = time.monotonic() - started
+                report_file.write_text(json.dumps(report) + '\n')
 
 
 def main():
@@ -327,6 +360,7 @@ def main():
     parser.add_argument('--root', type=Path)
     parser.add_argument('--sccache', action='store_true')
     parser.add_argument('--owner-file', type=Path)
+    parser.add_argument('--report-file', type=Path)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     root = args.root or authorized_base()
@@ -339,7 +373,7 @@ def main():
         args.command.pop(0)
     if not args.command:
         parser.error('a guarded command is required')
-    return run(root, args.command, args.sccache, args.owner_file)
+    return run(root, args.command, args.sccache, args.owner_file, args.report_file)
 
 
 if __name__ == '__main__':

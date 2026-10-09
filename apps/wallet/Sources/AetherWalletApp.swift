@@ -509,8 +509,7 @@ extension AppDelegate: SPUUpdaterDelegate {
             self.updateShutdownID = nil
             self.updateShutdownReady = false
             self.node?.abortUpdatePreparation()
-            self.tracker.aborted(networkError: ns.domain == NSURLErrorDomain
-                || ns.underlyingErrors.contains { ($0 as? NSError)?.domain == NSURLErrorDomain })
+            self.tracker.aborted(error: ns)
             self.syncUpdateNotice()
         }
     }

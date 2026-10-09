@@ -6,8 +6,9 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, extname, sep } from 'node:path';
 import { createRequire } from 'node:module';
-import { continentTotals, normalizePresence, regionKey } from '../apps/explorer/live-globe/data.js';
+import { CONTINENTS, GEOGRAPHIES, continentTotals, normalizePresence, regionKey } from '../apps/explorer/live-globe/data.js';
 import { qualityMean, summarizeQuality } from '../apps/explorer/live-globe/quality.js';
+import { SUBREGION_CODES } from '../apps/explorer/live-globe/subregions.js';
 
 const root = resolve(fileURLToPath(new URL('../', import.meta.url)));
 process.env.TMPDIR = resolve(root, 'tmp');
@@ -17,7 +18,7 @@ await mkdir(out, { recursive: true });
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const fixture = JSON.parse(await readFile(resolve(root, 'apps/explorer/live-globe/fixture.json'), 'utf8'));
 const example = JSON.parse(await readFile(resolve(root, 'apps/explorer/test/fixtures/presence-example.json'), 'utf8'));
-const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.webp': 'image/webp' };
+const mime = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.webp': 'image/webp' };
 // Fulfill local assets directly so this works in sandboxes that forbid listen().
 // No server, outbound request, or port is needed for the browser checks.
 const origin = 'http://globe.test.invalid';
@@ -52,7 +53,10 @@ async function context(options = {}, envelope = () => ({ jsonrpc: '2.0', id: 1, 
 async function verifyPage(page) {
   await page.locator('.lg-total').filter({ hasText: /^4$/ }).waitFor();
   await page.evaluate(() => document.fonts.ready);
-  assert.equal(await page.locator('.lg-region').count(), 8);
+  assert.deepEqual(await page.locator('.lg-region').evaluateAll(rows => rows.map(row => row.dataset.continent).sort()),
+    [...GEOGRAPHIES].sort(), 'all supported subregion/continent rows are present');
+  assert.deepEqual(await page.locator('.lg-region:visible').evaluateAll(rows => rows.map(row => row.dataset.continent).sort()),
+    [...CONTINENTS].sort(), 'the legacy fixture shows broad regions and hides unreported subregions');
   assert.equal(await page.locator('.lg-country').count(), 1);
   assert.equal(await page.locator('.lg-marker[data-region="asia:KR"]:visible').count(), 1, 'opening view shows Korea’s three-Mac group');
   assert.ok((await page.locator('.lg-role-summary').innerText()).includes('4'));
@@ -61,8 +65,13 @@ async function verifyPage(page) {
   assert.equal(await page.locator('.lg-quality-labels span').count(), 2);
   assert.ok(!/founder|창업자|founder[_-]?operated|tier-count/i.test(await page.locator('.live-globe').innerHTML()), 'no founder/tier fields in the globe DOM');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'mobile overflow');
-  const content = await page.locator('body').innerText();
-  assert.equal(/(?:\d{1,3}\.){3}\d{1,3}|latitude|longitude|node[_ -]?id|peer[_ -]?id/i.test(content), false, 'no precise/identifying location text');
+  const identifyingText = /(?:\d{1,3}\.){3}\d{1,3}|latitude|longitude|node[_ -]?id|peer[_ -]?id/i;
+  assert.equal(identifyingText.test(await page.locator('.live-globe').innerText()), false, 'the globe contains no precise/identifying location text');
+  // The landing page also contains valid release strings such as 0.7.3.2.
+  // The isolated explorer presence page must remain identifier-free throughout.
+  if (new URL(page.url()).pathname.startsWith('/apps/explorer/')) {
+    assert.equal(identifyingText.test(await page.locator('body').innerText()), false, 'the isolated presence page contains no identifiers');
+  }
 }
 
 // Every populated region has a pulse or an ordinary list entry. Continent
@@ -199,6 +208,34 @@ try {
     await coverage.ctx.close();
   }
   report.checks.push('every populated region has a visible marker or highlighted list entry; hover/click links both surfaces');
+
+  // The current cohort contract uses disjoint UN M49 subregions. Broad legacy
+  // regions must not create duplicate counts or fabricated quality evidence.
+  const regionCounts = Object.fromEntries([...SUBREGION_CODES, 'world', 'unknown'].map(code => [code, 3]));
+  const cohortTotal = Object.values(regionCounts).reduce((sum, count) => sum + count, 0);
+  const cohort = { schema: 2, available: true, scope: 'unverified cohort observation',
+    observed_at: Math.floor(Date.now() / 600_000) * 600, ttl_seconds: 600, minimum_bucket_size: 3,
+    total: cohortTotal, by_role: { other: cohortTotal }, by_version: { unknown: cohortTotal }, by_region: regionCounts };
+  const subregions = await context({ reducedMotion: 'reduce' }, () => ({ jsonrpc: '2.0', id: 1, result: cohort }));
+  const subregionPage = await subregions.ctx.newPage();
+  await subregionPage.goto(origin + '/apps/explorer/#/network');
+  await subregionPage.locator('.lg-total').filter({ hasText: new RegExp(`^${cohortTotal}$`) }).waitFor();
+  const visibleRegions = await subregionPage.locator('.lg-region:visible').evaluateAll(rows => rows.map(row => ({
+    code: row.dataset.continent, count: Number(row.dataset.count), quality: row.dataset.quality,
+  })));
+  assert.deepEqual(visibleRegions.map(row => row.code).sort(), Object.keys(regionCounts).sort(),
+    'reported subregions, folded world and unknown buckets remain separate');
+  assert.equal(visibleRegions.reduce((sum, row) => sum + row.count, 0), cohortTotal, 'every transport is counted once');
+  for (const row of visibleRegions) {
+    assert.equal(row.count, regionCounts[row.code]);
+    assert.equal(row.quality, '', 'uncommitted cohort counts carry no quality evidence');
+  }
+  assert.equal(await subregionPage.locator('.lg-country').count(), 0, 'aggregate cohorts contain no country disclosures');
+  assert.equal(await subregionPage.locator('.lg-quality-gradient:visible').count(), 0);
+  assert.match(await subregionPage.locator('.lg-status').innerText(), /Unverified cohort observations/);
+  assert.deepEqual(subregions.errors, []);
+  await subregions.ctx.close();
+  report.checks.push('UN M49 cohort rows, world/unknown folding, exact disjoint totals and absent quality/country evidence');
 
   const idle = await context();
   const idlePage = await idle.ctx.newPage();

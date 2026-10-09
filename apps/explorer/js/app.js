@@ -1,8 +1,7 @@
 // Entry point: the header (search, sources, theme), the hash router and the
 // polling that keeps the home page and a pending transaction current. Reads go
-// through an ordered list of sources — the visitor's own node first, then the
-// public read-only gateway (docs/ops/read-gateway.md) — and the header badge
-// always says which one answered.
+// from the visitor's node first, then verified public peers. The header badge
+// always says which source answered; a personal HTTP gateway is optional.
 
 import {
   DEFAULT_ENDPOINT, DEFAULT_GATEWAY, FailoverNode,
@@ -16,6 +15,7 @@ import { resolveSearchLocale, searchText } from './search-catalog.js';
 import { accountView, blockView, errorView, homeView, notFoundView, seaLinkView, tokenView, txView } from './pages.js';
 import { parseSeaURL, externalNameMessage, suggestedHTTPS } from './sea-url.mjs';
 import { detectVerifier } from './verify.js';
+import { loadPublicPeerPool } from './peers.js';
 import { h, loading, message } from './dom.js';
 import { pollCurrentPage } from './polling.js';
 import { mountLiveGlobe } from '../live-globe/live-globe.js';
@@ -40,6 +40,7 @@ const ctx = {
   locale: resolveSearchLocale(navigator.languages || navigator.language),
   chainId: null, // set once the node answers aether_status
   verifier: null, // set once at boot: {kind, block, account, receipt} (verify.js)
+  peerPool: null,
   pollNow: false, // the current page asked to be re-checked (a pending tx)
   tokenCache: new Map(),
   originCache: new Map(),
@@ -70,13 +71,15 @@ const ctx = {
     return this.originCache.get(a);
   },
 };
+const peerEvents = [];
 
 // ---- header ----
 
 const searchInput = h('input', { id: 'q', class: 'es-control', type: 'search', placeholder: searchText(ctx.locale, 'placeholder'), 'aria-label': searchText(ctx.locale, 'search') });
 const searchMsg = h('span', { id: 'search-msg', class: 'small' });
 const nodeInput = h('input', { id: 'node-url', class: 'es-control', type: 'url', spellcheck: 'false', 'aria-label': 'Node JSON-RPC endpoint' });
-const gatewayInput = h('input', { id: 'gateway-url', class: 'es-control', type: 'url', spellcheck: 'false', placeholder: DEFAULT_GATEWAY, 'aria-label': 'Public read gateway' });
+const gatewayInput = h('input', { id: 'gateway-url', class: 'es-control', type: 'url', spellcheck: 'false', placeholder: 'https://your-gateway.example (optional)', 'aria-label': 'Your optional read gateway' });
+const relayInput = h('input', { id: 'relay-urls', class: 'es-control', type: 'text', spellcheck: 'false', placeholder: 'n0 public relays (default)', 'aria-label': 'WebSocket relay URLs, comma separated' });
 const nodeMsg = h('span', { class: 'small' });
 const chainPill = h('span', { class: 'pill es-status', id: 'chain' }, 'connecting…');
 const sourcePill = h('span', { class: 'pill es-status plain', id: 'source', title: 'Where this page reads from; changes when a source does not answer' });
@@ -84,7 +87,7 @@ const themeButton = h('button', { class: 'ghost es-control', type: 'button', tit
 
 /** The header badge: which source answered the last read. */
 function updateSourcePill(n) {
-  const kind = n.kind === 'node' ? 'good' : n.kind === 'gateway' ? 'warn' : 'plain';
+  const kind = ['node', 'peers'].includes(n.kind) ? 'good' : n.kind === 'gateway' ? 'warn' : 'plain';
   sourcePill.className = `pill es-status ${kind}`;
   sourcePill.title = n.source.url;
   sourcePill.replaceChildren(sourceLabel(n.source));
@@ -101,7 +104,7 @@ function showLocalNotice(show) {
 function onSourceChange(n, { from, to } = {}) {
   if (isNetworkRoute()) return;
   updateSourcePill(n);
-  showLocalNotice(from === 'node' && to === 'gateway');
+  showLocalNotice(to === 'peers' || (from === 'node' && to === 'gateway'));
 }
 
 top.append(
@@ -145,16 +148,24 @@ top.append(
     h('summary', { class: 'es-control' }, 'Settings'),
     h('div', { class: 'settings-body' },
       h('label', {}, 'Node JSON-RPC endpoint', nodeInput),
-      h('label', {}, 'Public read gateway (tried after the node)', gatewayInput),
+      h('label', {}, 'Your read gateway (optional, after public peers)', gatewayInput),
+      h('label', {}, 'WebSocket relays (comma separated; empty uses n0)', relayInput),
       h('div', { class: 'row tight' },
         h('button', {
           class: 'es-control primary',
-          onclick: () => {
+          onclick: async () => {
             try {
               const nodeUrl = saveEndpoint(nodeInput.value, store);
               const gatewayUrl = saveGateway(gatewayInput.value, store);
+              const relays = String(relayInput.value).split(',').map((s) => s.trim()).filter(Boolean);
+              for (const relay of relays) {
+                const u = new URL(relay);
+                if (!['https:', 'http:'].includes(u.protocol)) throw new Error('relays must use http:// or https://');
+              }
+              store?.setItem('aether-explorer.relays', JSON.stringify(relays));
+              await setupPeers(relays);
               connect();
-              nodeMsg.replaceChildren(message('ok', `Reading ${nodeUrl}${gatewayUrl ? ` then ${gatewayUrl}` : ' (no gateway fallback)'}.`));
+              nodeMsg.replaceChildren(message('ok', `Reading ${nodeUrl}, then verified peers${gatewayUrl ? `, then ${gatewayUrl}` : ''}.`));
             } catch (e) {
               nodeMsg.replaceChildren(message('error', e.message));
             }
@@ -162,22 +173,24 @@ top.append(
         }, 'Save'),
         h('button', {
           class: 'es-control',
-          onclick: () => {
+          onclick: async () => {
             saveEndpoint(DEFAULT_ENDPOINT, store);
             saveGateway(DEFAULT_GATEWAY, store);
+            store?.removeItem('aether-explorer.relays');
+            await setupPeers([]);
             connect();
           },
         }, 'Reset'),
         nodeMsg),
-      h('p', { class: 'small muted' }, 'An EastSea node serves JSON-RPC on this Mac at 127.0.0.1:18545 while it runs; when this browser cannot reach it, reads fall back to the public gateway — honest but unverified, and never a write. Empty the gateway field to read from your node only.'))),
+      h('p', { class: 'small muted' }, 'Your node at 127.0.0.1:18545 is tried first. Public peers serve certificate-verified blocks and state proofs over n0 relays. A personal gateway is optional. Token calls and node metrics need your own node.'))),
   themeButton,
 ));
 
 foot.append(
   h('p', { class: 'small muted' },
-    'Reads go to your own node first, then to the public gateway (Settings). What a committee certificate vouches for is ',
-    h('em', {}, 'marked on the page'), '; everything else is node-read and unverified. ',
-    'No analytics, no external requests, no prices.'),
+    'Reads go to your own node first, then to verified public peers over WebSocket relays. ',
+    'Committee certificates and Merkle proofs verify public chain data. Uncommitted metrics are unavailable on public peers. ',
+    'No analytics, no prices.'),
 );
 const defaultFoot = [...foot.childNodes];
 const searchForm = document.getElementById('search');
@@ -189,13 +202,29 @@ const store = (() => { try { return localStorage; } catch { return null; } })();
 
 // ---- sources, chain pill ----
 
+async function setupPeers(relays = []) {
+  ctx.peerPool?.close();
+  ctx.peerPool = null;
+  relayInput.value = relays.join(', ');
+  try {
+    ctx.peerPool = await loadPublicPeerPool({ env: ctx.verifier?.env, relays, onPeer: event => {
+      if (event.dropped) {
+        peerEvents.push({ ...event, at: performance.now() });
+        if (peerEvents.length > 64) peerEvents.shift();
+      }
+    } });
+  } catch (e) {
+    nodeMsg.replaceChildren(message('warn', `Public peer reads are unavailable: ${e?.message || e}`));
+  }
+}
+
 function connect() {
   if (isNetworkRoute()) { render(); return; }
   const nodeUrl = loadEndpoint(store);
   const gatewayUrl = loadGateway(store);
   nodeInput.value = nodeUrl;
   gatewayInput.value = gatewayUrl || '';
-  ctx.node = new FailoverNode(orderedSources(nodeUrl, gatewayUrl), { onSource: onSourceChange });
+  ctx.node = new FailoverNode(orderedSources(nodeUrl, gatewayUrl), { onSource: onSourceChange, peerPool: ctx.peerPool });
   ctx.chainId = null;
   ctx.tokenCache.clear();
   ctx.originCache.clear();
@@ -232,6 +261,7 @@ const routes = [
 
 // A slow page never overwrites a newer one: only the newest render may paint.
 let renderSeq = 0;
+let activeRenders = 0;
 let liveGlobe = null;
 let nodeViewReady = false;
 let nodeViewBoot = null;
@@ -249,7 +279,7 @@ function renderNetwork() {
   gatewayInput.value = '';
   sourcePill.className = 'pill plain';
   sourcePill.textContent = 'Presence · node view, unverified';
-  sourcePill.title = 'Aggregated counts from the configured public read gateway';
+  sourcePill.title = 'Aggregated counts from the configured public presence source';
   notice.replaceChildren();
   foot.replaceChildren(h('p', { class: 'small muted' },
     'Counts are one node’s view, not a network census. No analytics or location services.'));
@@ -260,7 +290,8 @@ function renderNetwork() {
     globeRoot));
   const fixture = new URLSearchParams(location.search).get('globe') === 'fixture';
   liveGlobe = mountLiveGlobe(globeRoot, {
-    endpoint: loadGateway(store), fixture,
+    // This is the globe's separate unverified presence feed, never a chain read.
+    endpoint: loadGateway(store) || 'https://rpc.eastsea.xyz', fixture,
     ...(fixture ? { seed: 'fixture-smoke' } : {}),
   });
 }
@@ -285,16 +316,19 @@ async function render() {
   restoreExplorer();
   if (!nodeViewReady) { void bootNodeView(); return; }
   if (!ctx.node) { connect(); return; }
-  const hash = location.hash || '#/';
-  view.replaceChildren(loading(hash.startsWith('#/search/') ? searchText(ctx.locale, 'loading') : undefined));
-  let out;
+  activeRenders++;
   try {
-    const hit = routes.find(([re]) => re.test(hash));
-    out = hit ? await hit[1](hash.match(hit[0])) : notFoundView(ctx, `No page for ${hash.slice(0, 60)}.`);
-  } catch (e) {
-    out = errorView(ctx, e);
-  }
-  if (mine === renderSeq) view.replaceChildren(out);
+    const hash = location.hash || '#/';
+    view.replaceChildren(loading(hash.startsWith('#/search/') ? searchText(ctx.locale, 'loading') : undefined));
+    let out;
+    try {
+      const hit = routes.find(([re]) => re.test(hash));
+      out = hit ? await hit[1](hash.match(hit[0])) : notFoundView(ctx, `No page for ${hash.slice(0, 60)}.`);
+    } catch (e) {
+      out = errorView(ctx, e);
+    }
+    if (mine === renderSeq) view.replaceChildren(out);
+  } finally { activeRenders--; }
 }
 
 window.addEventListener('hashchange', render);
@@ -302,7 +336,7 @@ window.addEventListener('hashchange', render);
 // Keep the home page and a pending transaction current while someone watches;
 // a hidden tab or any other page (open disclosure blocks included) is left alone.
 pollCurrentPage(render, {
-  getState: () => ({ hidden: document.hidden, hash: location.hash, pending: ctx.pollNow }),
+  getState: () => ({ hidden: document.hidden || activeRenders > 0, hash: location.hash, pending: ctx.pollNow }),
 });
 
 // ---- theme ----
@@ -367,6 +401,12 @@ function bootNodeView() {
       ctx.sourcesRaw = await (await fetch('token-sources.json')).json();
     } catch { /* token origins remain unavailable */ }
     ctx.verifier = await detectVerifier(window);
+    let savedRelays = [];
+    try {
+      const value = JSON.parse(store?.getItem('aether-explorer.relays') || '[]');
+      if (Array.isArray(value) && value.every((url) => typeof url === 'string')) savedRelays = value;
+    } catch { /* use public relays */ }
+    await setupPeers(savedRelays);
     nodeViewReady = true;
     if (!isNetworkRoute()) connect();
   })();
@@ -374,3 +414,9 @@ function bootNodeView() {
 }
 if (isNetworkRoute()) render();
 else void bootNodeView();
+window.addEventListener('pagehide', () => ctx.peerPool?.close());
+// Bounded diagnostics for the devnet browser measurement; no telemetry.
+window.aetherReadDiagnostics = () => ({ source: ctx.node?.source, livePeers: ctx.peerPool?.livePeers || [],
+  peerEvents,
+  droppedPeers: [...(ctx.peerPool?.dropped || [])].map(([node, detail]) => ({ node, ...detail })),
+  firstVerifiedHeadAt: ctx.peerPool?.monotonicFirstVerifiedHeadAt ?? null, metrics: ctx.peerPool?.metrics || null });

@@ -5,7 +5,7 @@
 # What it runs, once --apply is given (never by default):
 #   1. `aether follow --public-read-only` — a follower that serves ONLY the
 #      explorer's read methods, with caps, bound to 127.0.0.1:<port>;
-#   2. `cloudflared tunnel` — the only exposure: rpc.eastsea.xyz -> 127.0.0.1:<port>.
+#   2. `cloudflared tunnel` — the operator's chosen hostname -> 127.0.0.1:<port>.
 #      Creates the named tunnel on first use; without DNS permissions it prints
 #      the CNAME the operator must add by hand.
 #
@@ -21,14 +21,14 @@
 #
 # Usage:
 #   scripts/run-read-gateway.sh                       # dry-run: print the plan
-#   scripts/run-read-gateway.sh --apply               # actually run (see runbook)
-#   scripts/run-read-gateway.sh --data DIR --port 18550 --hostname rpc.eastsea.xyz \
+#   scripts/run-read-gateway.sh --apply --hostname rpc.example.net
+#   scripts/run-read-gateway.sh --data DIR --port 18550 --hostname rpc.example.net \
 #       --tunnel eastsea-read --network network.json --from-rpc https://node1:18545
 set -euo pipefail
 
 DATA_DIR="/Volumes/workspace/eastsea-read-gateway"
 PORT=18550
-HOSTNAME="rpc.eastsea.xyz"
+HOSTNAME=""
 TUNNEL="eastsea-read"
 NETWORK=""    # network.json of the chain to follow (empty = the public devnet keys)
 FROM_RPC=()   # validator RPC(s) to follow through; empty = iroh discovery
@@ -48,6 +48,11 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+if [ "$APPLY" = 1 ] && [ -z "$HOSTNAME" ]; then
+  echo "--hostname is required for --apply (the explorer has no default gateway)" >&2
+  exit 2
+fi
 
 say() { printf '%s\n' "$*"; }
 section() { printf '\n== %s ==\n' "$*"; }

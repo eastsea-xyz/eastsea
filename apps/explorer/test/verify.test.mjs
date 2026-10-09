@@ -7,6 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NOT_COMMITTED, NOT_VERIFIED, detectVerifier, loadWasmVerifier, nativeVerifier, verdict, wasmAccount } from '../js/verify.js';
+import { DEFAULT_ENDPOINT, Node as RpcNode } from '../js/rpc.js';
 
 const ADDR = '0x1234567890abcdef1234567890abcdef12345678';
 const TX = `0x${'ab'.repeat(32)}`;
@@ -66,11 +67,12 @@ test('inside the app the native bridge answers, and wins over wasm', async () =>
   const io = { importFn: async () => { throw new Error('must not be reached'); } };
   const v = await detectVerifier(win, io);
   assert.equal(v.kind, 'native');
+  const localNode = { url: DEFAULT_ENDPOINT };
 
-  assert.deepEqual(await v.block({}, 6), { verified: true, height: 6, reason: '' });
+  assert.deepEqual(await v.block(localNode, 6), { verified: true, height: 6, reason: '' });
   // A refusal is a verdict, not a rejection — the badge says why.
-  assert.deepEqual(await v.account({}, ADDR), { verified: false, height: null, reason: 'certificate: expired' });
-  assert.deepEqual(await v.receipt({}, TX), { verified: false, height: null, reason: NOT_COMMITTED });
+  assert.deepEqual(await v.account(localNode, ADDR), { verified: false, height: null, reason: 'certificate: expired' });
+  assert.deepEqual(await v.receipt(localNode, TX), { verified: false, height: null, reason: NOT_COMMITTED });
   assert.deepEqual(asks, [['block', 6], ['account', ADDR]]);
 
   // The bridge rejecting (locked 4100, unauthorized 4200) is a refused verdict too.
@@ -81,14 +83,31 @@ test('inside the app the native bridge answers, and wins over wasm', async () =>
       receipt: () => Promise.reject(new Error('no')),
     } },
   }, io);
-  assert.deepEqual(await refusing.block({}, 6), { verified: false, height: null, reason: 'This page cannot use EastSea verification.' });
+  assert.deepEqual(await refusing.block(localNode, 6), { verified: false, height: null, reason: 'This page cannot use EastSea verification.' });
+});
+
+test('native checks cannot badge remote HTTP data after another read returns to loopback', async () => {
+  let nativeCalls = 0;
+  const check = async () => { nativeCalls++; return { verified: true, height: 6 }; };
+  const verifier = await detectVerifier({ eastsea: { verify: { block: check, account: check, receipt: check } } });
+  const remote = new RpcNode('https://personal.example', { fetch: async () => ({ ok: true,
+    json: async () => ({ result: { height: 6, hash: 'forged', balance: '999', verified: true } }) }) });
+  const displayed = await remote.call('aether_getBlock', [6]);
+  const current = { url: DEFAULT_ENDPOINT, kind: 'node' };
+  for (const [kind, key] of [['block', 6], ['account', ADDR], ['receipt', TX]]) {
+    assert.equal((await verifier[kind](current, key, displayed)).verified, false,
+      'the exact remote answer stays unverified after a concurrent source change');
+  }
+  assert.equal(nativeCalls, 0);
+  assert.equal((await verifier.block({ url: 'http://127.0.0.1:18546' }, 6)).verified, false,
+    'another local development node is not the native app node');
 });
 
 // ---- wasm: the module the extension uses ----
 
 const wasmIO = (mod, network = { chain_id: 7780 }) => ({
   importFn: async (url) => {
-    if (url === '../extension/wasm/aether_wasm.js') return mod;
+    if (url === new URL('../../extension/wasm/aether_wasm.js', import.meta.url).href) return mod;
     throw new Error(`no module at ${url}`);
   },
   fetch: async (url) => {

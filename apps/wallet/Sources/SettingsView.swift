@@ -57,6 +57,7 @@ struct SettingsView: View {
                     }
                     UnattendedSection()
                 }
+                PublicReadSection()
                 HistoryStorageSection()
                 ResourcesSection()
                 PresencePrivacySection()
@@ -178,6 +179,94 @@ private struct AccountPayoutSettings: View {
                 .disabled(store.state != .ready)
             }
             if let error { Text(error).font(.aeFootnote).foregroundStyle(Color.warn) }
+        }
+    }
+}
+
+/// The same preference file controls the app's follower and the unattended
+/// node. Changes are atomic and the public-read service reloads each request.
+struct PublicReadSection: View {
+    @State private var settings = PublicReadSettings.defaultValue
+    @State private var needsRepair = false
+    @State private var saveFailed = false
+
+    private let offeredLimits: [UInt64] = [64, 128, 256, 512, 1024]
+        .map { $0 * PublicReadSettings.bytesPerMiB }
+
+    private var enabled: Binding<Bool> {
+        Binding(get: { settings.enabled }, set: { value in
+            var next = settings
+            next.enabled = value
+            apply(next)
+        })
+    }
+
+    private var dailyBytes: Binding<UInt64> {
+        Binding(get: { settings.dailyBytes }, set: { value in
+            var next = settings
+            next.dailyBytes = value
+            apply(next)
+        })
+    }
+
+    private func limitInMiB(_ bytes: UInt64) -> String {
+        if bytes.isMultiple(of: PublicReadSettings.bytesPerMiB) {
+            return String(bytes / PublicReadSettings.bytesPerMiB)
+        }
+        return String(format: "%.2f", locale: Locale.current,
+                      Double(bytes) / Double(PublicReadSettings.bytesPerMiB))
+    }
+
+    var body: some View {
+        SettingsSection(LocalizedStringKey("Share chain data"), explanation: LocalizedStringKey("Your Mac shares finalized blocks with browsers while its node is running. Sharing is read-only and stops at your daily limit.")) {
+            SettingsControlRow(LocalizedStringKey("Help browsers read the chain")) {
+                Toggle(String(localized: "Help browsers read the chain"), isOn: enabled)
+            }
+            SettingsControlRow(LocalizedStringKey("Daily sharing limit")) {
+                Picker(String(localized: "Daily sharing limit"), selection: dailyBytes) {
+                    ForEach(offeredLimits, id: \.self) { bytes in
+                        Text("\(limitInMiB(bytes)) MiB").tag(bytes)
+                    }
+                    // Opening Settings never replaces an externally chosen
+                    // budget, including zero and values outside this list.
+                    if !offeredLimits.contains(settings.dailyBytes) {
+                        Text("\(limitInMiB(settings.dailyBytes)) MiB").tag(settings.dailyBytes)
+                    }
+                }
+                .disabled(!settings.enabled)
+            }
+            Text(String(localized: "Changes apply immediately. The limit resets at midnight UTC."))
+                .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                .fixedSize(horizontal: false, vertical: true)
+            if needsRepair {
+                Label(String(localized: "Sharing is paused because its saved settings could not be read. Turn sharing on to save them again."),
+                      systemImage: "exclamationmark.triangle")
+                    .font(.aeFootnote).foregroundStyle(Color.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if saveFailed {
+                Label(String(localized: "Could not save sharing settings. Change the setting to try again."),
+                      systemImage: "exclamationmark.triangle")
+                    .font(.aeFootnote).foregroundStyle(Color.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .onAppear {
+            let read = PublicReadSettings.read(in: NodeController.dataDir)
+            settings = read.settings
+            needsRepair = read.needsRepair
+            saveFailed = false
+        }
+    }
+
+    private func apply(_ next: PublicReadSettings) {
+        do {
+            try next.write(in: NodeController.dataDir)
+            settings = next
+            needsRepair = false
+            saveFailed = false
+        } catch {
+            saveFailed = true
         }
     }
 }

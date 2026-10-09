@@ -1,6 +1,6 @@
-# 공개 읽기 전용 게이트웨이 (rpc.eastsea.xyz)
+# 선택 사항: 운영자 자신의 읽기 전용 게이트웨이
 
-앱 없이 익스플로러를 여는 방문자를 위한 얇은 게이트웨이. 출처: `docs/research/public-read-access-2026-10-05.md` §8(a).
+익스플로러의 기본 경로는 여러 공개 iroh 노드의 검증된 읽기다 (`docs/ops/public-peer-reads.md`). 아래 HTTP 게이트웨이는 운영자가 직접 선택하는 대체 경로이며, 기본 호스트는 없다. `--apply`에는 `--hostname`이 필요하다. 출처: `docs/research/public-read-access-2026-10-05.md` §8(a).
 **이것은 "신뢰하는 공용 RPC"가 아니다.** 검증자가 아닌 팔로워 1대가 익스플로러가 쓰는 읽기 메서드만,
 상한을 붙여 대답한다. 화면의 표기는 "Public gateway · not verified"이고, 확장(`DEFAULT_RPCS`)에는
 들어가지 않는다(2026-09-29 결정). 쓰기는 존재하지 않는다: 어떤 메서드도 중계하지 않고 서명도 없다.
@@ -54,7 +54,7 @@ DNS 레코드)만 출력한다. 실제 실행은 `--apply`일 때뿐:
 scripts/run-read-gateway.sh                                    # dry-run: 계획만
 scripts/run-read-gateway.sh --apply \
   --data /Volumes/workspace/eastsea-read-gateway \
-  --port 18550 --hostname rpc.eastsea.xyz --tunnel eastsea-read \
+  --port 18550 --hostname rpc.example.net --tunnel eastsea-read \
   --network <네트워크의 network.json> --from-rpc <검증자 RPC>
 ```
 
@@ -66,7 +66,7 @@ scripts/run-read-gateway.sh --apply \
   권한 없음) 운영자가 추가할 레코드를 출력한다:
 
   ```
-  rpc.eastsea.xyz  CNAME  <tunnel-id>.cfargotunnel.com  (proxied)
+  rpc.example.net  CNAME  <tunnel-id>.cfargotunnel.com  (proxied)
   ```
 
 - Cloudflare에 레이트 리밋 규칙 1개를 둔다: 같은 IP 10초 창(연구 §8(a)-3, [CF5]). 이 규칙은 대시보드에서
@@ -110,13 +110,13 @@ nohup scripts/run-read-gateway.sh --apply ... >> /Volumes/workspace/eastsea-read
 
 ```bash
 # 1. 허용된 읽기가 대답한다
-curl -s https://rpc.eastsea.xyz -X POST -H 'Content-Type: application/json' \
+curl -s https://rpc.example.net -X POST -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"aether_status","params":[]}'
 # 2. 쓰기는 -32601 로 거부된다
-curl -s https://rpc.eastsea.xyz -X POST -H 'Content-Type: application/json' \
+curl -s https://rpc.example.net -X POST -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"aether_faucet","params":[]}'
 # 3. getLogs 창 상한은 -32002 로 거부된다
-curl -s https://rpc.eastsea.xyz -X POST -H 'Content-Type: application/json' \
+curl -s https://rpc.example.net -X POST -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x100000"}]}'
 ```
 
@@ -126,7 +126,7 @@ curl -s https://rpc.eastsea.xyz -X POST -H 'Content-Type: application/json' \
 ## 익스플로러 쪽 (함께 바뀐 것)
 
 - `apps/explorer/js/rpc.js`: 읽기는 순서 있는 소스로 간다 — 방문자 자신의 노드 `127.0.0.1:18545` 먼저,
-  그다음 Settings에서 바꿀 수 있는 게이트웨이(기본 `https://rpc.eastsea.xyz`). **전송 실패일 때만** 다음
+  그다음 Settings에서 바꿀 수 있는 게이트웨이(기본 `https://rpc.example.net`). **전송 실패일 때만** 다음
   소스로 넘어가고, 소스가 응답한 JSON-RPC 에러(게이트웨이의 -32601 같은)는 그대로 화면에 나온다.
   실패한 소스는 60초 동안 건너뛴다(차단된 loopback이 매 호출마다 타임아웃을 만들지 않게).
 - `apps/explorer/js/app.js`: 헤더 배지가 현재 소스를 말한다("Your Mac's node" / "Public gateway · not

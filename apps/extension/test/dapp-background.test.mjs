@@ -18,7 +18,7 @@ const tx = { from: OWN, to: CONTRACT, value: '0x1', gas: '0x186a0' };
 const typed = { types: { EIP712Domain: [{ name: 'name', type: 'string' }, { name: 'chainId', type: 'uint256' }], Ask: [{ name: 'text', type: 'string' }] }, primaryType: 'Ask', domain: { name: 'Example', chainId: 7781 }, message: { text: 'hello' } };
 
 async function worker() {
-  const f = { signed: 0, sent: 0, revert: false };
+  const f = { signed: 0, sent: 0, revert: false, peerBuilds: [], peerBuildGate: null };
   const local = new Map([['sites', { [ORIGIN]: { address: OWN } }]]), session = new Map();
   const storage = (map) => ({ get: async (key) => ({ [key]: structuredClone(map.get(key)) }), set: async (object) => { for (const [key, value] of Object.entries(object)) map.set(key, structuredClone(value)); }, remove: async (key) => map.delete(key) });
   const listen = { addListener: () => {} };
@@ -27,7 +27,8 @@ async function worker() {
     storage: { local: storage(local), session: storage(session), onChanged: { addListener: (fn) => storageListeners.push(fn) } }, windows: { create: (_opts, callback) => callback({ id: 1 }), get: async () => ({ id: 1 }), onRemoved: listen }, alarms: { create: () => {}, onAlarm: listen } };
   class Rpc {
     constructor() { f.rpc = this; this.chainId = 7781; this.generation = 0; this.urls = ['fixture']; }
-    setChain(chain, urls) { this.chainId = chain; this.urls = urls; this.generation++; }
+    setPeerPool(pool) { this.peerPool?.close(); this.peerPool = pool; }
+    setChain(chain, urls) { this.setPeerPool(null); this.chainId = chain; this.urls = urls; this.generation++; }
     setVerifier() { this.generation++; }
     async call(method) {
       if (method === 'aether_status') return { chain_id: this.chainId, base_fee: { exec: '0', prove: '0' } };
@@ -53,6 +54,12 @@ async function worker() {
     accountSigningSupport: () => true, prepareTypedMessage: (_public, json, chain) => JSON.stringify({ chain_id: Number(chain), account: OWN, signing_message: '1234', digest_hex: '0x' + 'aa'.repeat(32), typed_data: JSON.parse(json) }), attachTypedSignature: () => '0x' + 'aa'.repeat(128) };
   const src = (await readFile(new URL('../src/background.js', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '');
   const context = vm.createContext({ ...methods, ...wasm, wasm, init: async () => {}, DEFAULT_LOCK_MINUTES: 30, DEFAULT_RPCS: ['fixture'], Rpc, RpcError: Error, Vault, Wallet, DappSigning, pinStore, networkSettings, Brand, coinTicker, coinName, weiToAeth, t,
+    createPublicPeerPool: async (_env, settings) => {
+      const pool = { closed: false, close() { pool.closed = true; } };
+      f.peerBuilds.push({ relays: Array.from(settings.relays), pool });
+      if (f.peerBuildGate) await f.peerBuildGate;
+      return pool;
+    },
     chrome, fetch: async () => ({ json: async () => ({ chain_id: 7781 }) }), crypto: globalThis.crypto, structuredClone, URL, Map, Set, Date, Promise, console, setTimeout });
   vm.runInContext(src + '\nglobalThis.fixtureHooks = { pageRequest, ui, approvals, configured, setSite };', context);
   f.hooks = context.fixtureHooks;
@@ -133,3 +140,93 @@ for (const path of ['local setSite', 'storage permission events']) {
     assert.equal(f.sent, 0);
   });
 }
+
+test('unchanged settings preserve the reviewed dApp approval and existing peer pool', async () => {
+  const f = await worker();
+  const requested = f.hooks.pageRequest(ORIGIN, 'eth_sendTransaction', [tx]); requested.catch(() => {});
+  const [id] = await f.waiting();
+  const preview = await f.hooks.ui.preview({ id });
+  const generation = f.rpc.generation, pool = f.rpc.peerPool;
+  await f.hooks.ui.settings({ readRelays: [] });
+  assert.equal(f.rpc.generation, generation);
+  assert.equal(f.rpc.peerPool, pool);
+  assert.equal(pool.closed, false);
+  assert.equal(f.peerBuilds.length, 1);
+  assert.equal(f.hooks.approvals.has(id), true);
+  await f.hooks.ui.approve({ id, previewId: preview.previewId });
+  assert.equal(await requested, '0xsent');
+});
+
+test('relay settings changes reject open consent before the replacement pool finishes loading', async () => {
+  const f = await worker();
+  const requested = f.hooks.pageRequest(ORIGIN, 'eth_sendTransaction', [tx]); requested.catch(() => {});
+  const [id] = await f.waiting();
+  await f.hooks.ui.preview({ id });
+  const oldPool = f.rpc.peerPool;
+  let resume;
+  f.peerBuildGate = new Promise((resolve) => { resume = resolve; });
+  const setting = f.hooks.ui.settings({ readRelays: ['https://relay-one.example'] });
+  try {
+    await new Promise(setImmediate);
+    assert.equal(f.peerBuilds.length, 2);
+    assert.equal(f.hooks.approvals.has(id), false);
+    assert.equal(oldPool.closed, true);
+    await assert.rejects(requested, (error) => error.code === 4901);
+    assert.equal(f.signed, 0);
+    assert.equal(f.sent, 0);
+  } finally { resume(); await setting; }
+});
+
+test('unchanged settings during a peer load do not discard the replacement pool', async () => {
+  const f = await worker();
+  let resume;
+  f.peerBuildGate = new Promise((resolve) => { resume = resolve; });
+  const setting = f.hooks.ui.settings({ readRelays: ['https://relay-one.example'] });
+  try {
+    await new Promise(setImmediate);
+    const generation = f.rpc.generation;
+    await f.hooks.ui.settings({ readRelays: ['https://relay-one.example'] });
+    assert.equal(f.rpc.generation, generation);
+    assert.equal(f.peerBuilds.length, 2);
+  } finally { resume(); await setting; }
+  assert.equal(f.rpc.peerPool, f.peerBuilds[1].pool);
+  assert.equal(f.rpc.peerPool.closed, false);
+});
+
+test('a late peer load cannot replace the latest relay configuration', async () => {
+  const f = await worker();
+  let resume;
+  f.peerBuildGate = new Promise((resolve) => { resume = resolve; });
+  const earlier = f.hooks.ui.settings({ readRelays: ['https://relay-one.example'] });
+  try {
+    await new Promise(setImmediate);
+    f.peerBuildGate = null;
+    await f.hooks.ui.settings({ readRelays: ['https://relay-two.example'] });
+  } finally { resume(); await earlier; }
+  assert.equal(f.peerBuilds.length, 3);
+  assert.equal(f.peerBuilds[1].pool.closed, true);
+  assert.equal(f.rpc.peerPool, f.peerBuilds[2].pool);
+  assert.deepEqual(f.peerBuilds[2].relays, ['https://relay-two.example']);
+  assert.equal(f.rpc.peerPool.closed, false);
+});
+
+test('a relay change invalidates consumed consent while nonce preparation waits', async () => {
+  const f = await worker();
+  const requested = f.hooks.pageRequest(ORIGIN, 'eth_sendTransaction', [tx]); requested.catch(() => {});
+  const [id] = await f.waiting();
+  const preview = await f.hooks.ui.preview({ id });
+  let resume;
+  const held = new Promise((resolve) => { resume = resolve; });
+  const call = f.rpc.call.bind(f.rpc);
+  f.rpc.call = async (method, params) => { if (method === 'eth_getTransactionCount') await held; return call(method, params); };
+  const approving = f.hooks.ui.approve({ id, previewId: preview.previewId }); approving.catch(() => {});
+  try {
+    await new Promise(setImmediate);
+    assert.equal(f.hooks.approvals.has(id), false);
+    await f.hooks.ui.settings({ readRelays: ['https://relay-one.example'] });
+  } finally { resume(); }
+  await assert.rejects(approving, (error) => error.key === 'requestChanged');
+  await assert.rejects(requested, (error) => error.key === 'requestChanged');
+  assert.equal(f.signed, 0);
+  assert.equal(f.sent, 0);
+});

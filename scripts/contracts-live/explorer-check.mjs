@@ -59,7 +59,7 @@ await page.addInitScript(([url]) => {
   // runs so the very first render reads the local chain, not the default 18545.
   localStorage.setItem('aether-explorer.node', url);
   // Gateway fallback off: every view must come from the local chain, never
-  // from rpc.eastsea.xyz (an empty saved value is the explorer's "off").
+  // through the optional gateway (empty keeps it off).
   localStorage.setItem('aether-explorer.gateway', '');
 }, [RPC]);
 

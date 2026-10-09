@@ -10,5 +10,5 @@ export function networkSettings(defaultNetwork, { developerMode = false, develop
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('The local development port must be 1024–65535.');
     return { chainId: DEV_CHAIN_ID, urls: [`http://127.0.0.1:${port}`], development: true, port };
   }
-  return { chainId, urls: [...rpcs, ...DEFAULT_RPCS], development: false, port: null };
+  return { chainId, urls: [...DEFAULT_RPCS, ...rpcs], development: false, port: null };
 }

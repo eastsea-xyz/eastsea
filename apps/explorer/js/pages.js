@@ -1,7 +1,8 @@
 // The five views. Each is one async function: it fetches what the node serves,
 // then builds DOM through `h` (never HTML strings). Everything the RPC gives is
 // finalized except live presence, which is the node's current observation.
-// None is verified here, which is why every page carries its source line.
+// Certificate/proof provenance belongs to the exact displayed object; every
+// page carries its source line and labels uncommitted fields as unavailable.
 
 import { card, copyButton, dot, kv, message, pill, sourceLine, table, h } from './dom.js';
 import { coinTicker, displayTokenName, formatAeth, formatInt, formatRate, formatTokenAmount, localTime, droppedText, notIncludedText, shortHex, timeAgo, toBigInt, txRate } from './format.js';
@@ -9,6 +10,7 @@ import { TRANSFER_TOPIC, decodeApproval, decodeTransfer, revertReason, wordAddre
 import { looksLikeOfficial, officialTokens, originBadge, tokenInfo, tokenOrigin, totalSupply } from './erc20.js';
 import { NOT_COMMITTED } from './verify.js';
 import { PRESENCE_REGIONS, PRESENCE_ROLES, readPresence } from './presence.js';
+import { readVerdict } from './peers.js';
 
 /** A name or action link is handed to the installed wallet. This explorer
  * neither signs nor claims to have resolved the chain's name/app records. */
@@ -55,6 +57,7 @@ function withCopy(text) {
 
 /** `0x` if the node sent a bare hex digest (block summaries do). */
 export function ox(hex) {
+  if (hex == null) return '—';
   const s = String(hex || '');
   return s.startsWith('0x') ? s : `0x${s}`;
 }
@@ -94,38 +97,78 @@ function sortableLogs(logs) {
 
 // ---- home ----
 
+const recentPeerBlocks = new WeakMap();
+
+function peerHistory(node, height) {
+  let entry = recentPeerBlocks.get(node);
+  if (!entry) {
+    entry = { blocks: [], height: -1, task: null, error: null };
+    recentPeerBlocks.set(node, entry);
+  }
+  if (!entry.task && (height > entry.height || entry.error)) {
+    entry.height = height;
+    entry.task = node.call('aether_recentBlocks', [30]).then(blocks => {
+      if (!Array.isArray(blocks) || blocks.some(block => !readVerdict(block))) throw new Error('History has no verified certificate');
+      entry.blocks = blocks;
+      entry.error = null;
+    }).catch(error => { entry.error = error.message; }).finally(() => { entry.task = null; });
+  }
+  return entry;
+}
+
 export async function homeView(ctx) {
-  const [status, blocks, candidates, prover, presence] = await Promise.all([
-    ctx.node.call('aether_status'),
-    ctx.node.call('aether_recentBlocks', [30]),
+  const status = await ctx.node.call('aether_status');
+  const verifiedHead = !!readVerdict(status);
+  const [candidates, prover, presence] = verifiedHead ? [null, null, null] : await Promise.all([
     ctx.node.call('aether_candidates').catch(() => null),
     ctx.node.call('aether_proverStatus').catch(() => null),
     readPresence(ctx.node),
   ]);
+  const history = verifiedHead ? peerHistory(ctx.node, status.height) : null;
+  const blocks = history ? history.blocks : await ctx.node.call('aether_recentBlocks', [30]);
   const rate = txRate(blocks);
   const outdated = status.node_protocol < status.newest_scheduled;
 
   const tiles = h('div', { class: 'tiles' },
     tile('Finalized height', blockLink(status.height), `${timeAgo(status.timestamp_ms)} · finalized`, 'major es-plate'),
     tile('Transaction rate', `${formatRate(rate?.perSec)} tx/s`, rate ? `${formatInt(rate.txs)} txs across ${blocks.length} blocks` : `${blocks.length} block${blocks.length === 1 ? '' : 's'} in view`),
-    tile('Committee', candidates ? `${candidates.candidates.length} candidates` : '—', candidates ? `registry epoch ${formatInt(candidates.epoch)}` : 'registry unreadable'),
+    tile('Committee', candidates ? `${candidates.candidates.length} candidates` : '—', candidates ? `registry epoch ${formatInt(candidates.epoch)}` : verifiedHead ? 'registry proof unavailable' : 'registry unreadable'),
     tile('Protocol', `${status.protocol}`, [
-      h('span', { class: 'muted' }, `node ${status.node_protocol} · scheduled ${status.newest_scheduled}`),
+      h('span', { class: 'muted' }, verifiedHead ? 'from certified block' : `node ${status.node_protocol} · scheduled ${status.newest_scheduled}`),
       outdated ? pill('update available', 'warn') : null,
     ]),
-    tile('Mempool', formatInt(status.mempool), 'waiting for a block'),
-    tile('Base fee', `${formatInt(toBigInt(status.base_fee.exec))} wei`, `exec · prove ${formatInt(toBigInt(status.base_fee.prove))} wei`),
-    proverTile(prover),
+    tile('Mempool', status.mempool == null ? '—' : formatInt(status.mempool), verifiedHead ? 'uncommitted · unavailable' : 'waiting for a block'),
+    tile('Base fee', status.base_fee ? `${formatInt(toBigInt(status.base_fee.exec))} wei` : '—', status.base_fee ? `exec · prove ${formatInt(toBigInt(status.base_fee.prove))} wei` : 'state proof unavailable'),
+    verifiedHead ? tile('Prover', '—', 'uncommitted · unavailable') : proverTile(prover),
   );
 
   const chain = card('Chain', kv([
     ['Chain id', String(status.chain_id)],
     ['Hash function', status.hash_function],
-    ['State root', withCopy(ox(status.state_root))],
-    ['Prover escrow', `${formatAeth(status.prover_escrow)} ${coinTicker(status.chain_id)}`],
+    ['State root', status.state_root == null ? '— · state proof unavailable' : withCopy(ox(status.state_root))],
+    ...(verifiedHead ? [['Certified parent state root', withCopy(ox(status.parent_state_root))]] : []),
+    ['Prover escrow', status.prover_escrow == null ? '— · state proof unavailable' : `${formatAeth(status.prover_escrow)} ${coinTicker(status.chain_id)}`],
   ]));
 
-  const list = card(`Latest blocks`, table(
+  const listBody = h('div', {}, recentBlockTable(blocks));
+  if (history?.task) {
+    listBody.append(message('plain', 'Loading verified blocks…'));
+    history.task.then(() => listBody.replaceChildren(recentBlockTable(history.blocks),
+      ...(history.error ? [message('warn', `Verified history is unavailable: ${history.error}`)] : [])));
+  }
+  const list = card('Latest blocks', listBody);
+
+  const source = sourceLine(ctx.node, `chain ${status.chain_id} · finalized height ${formatInt(status.height)}`, status);
+  source.className += ' home-source';
+  return h('div', { class: 'stack' },
+    h('div', { class: 'page-heading' },
+      h('h1', { class: 'page-title' }, 'Network overview'),
+      h('p', {}, 'Finalized blocks, committee and node state.')),
+    source, tiles, liveNetwork(presence), list, chain);
+}
+
+function recentBlockTable(blocks) {
+  return table(
     ['Height', 'Hash', 'Proposer', 'Txs', 'Gas used', 'Age'],
     (blocks || []).map((b) => [
       blockLink(b.height),
@@ -134,15 +177,7 @@ export async function homeView(ctx) {
       formatInt(b.txs.length),
       formatInt(b.gas_used),
       timeAgo(b.timestamp_ms),
-    ])));
-
-  const source = sourceLine(ctx.node, `chain ${status.chain_id} · finalized height ${formatInt(status.height)}`);
-  source.classList.add('home-source');
-  return h('div', { class: 'stack' },
-    h('div', { class: 'page-heading' },
-      h('h1', { class: 'page-title' }, 'Network overview'),
-      h('p', {}, 'Finalized blocks, committee and node state.')),
-    source, tiles, liveNetwork(presence), list, chain);
+    ]));
 }
 
 function liveNetwork(presence) {
@@ -191,8 +226,9 @@ export async function blockView(ctx, height) {
   ]);
   if (!block) return unknownBlock(ctx, height);
 
-  const proof = proofCard(height, prover);
-  const certificate = await ctx.verifier?.block(ctx.node, height);
+  const verifiedBlock = !!readVerdict(block);
+  const proof = verifiedBlock ? card('Proof', message('plain', 'The block certificate is verified. Prover activity is uncommitted and unavailable from public peers.')) : proofCard(height, prover);
+  const certificate = await ctx.verifier?.block(ctx.node, height, block);
   const rows = await blockTxs(ctx, block);
   const prev = h('a', { href: `#/block/${height - 1}` }, `← ${formatInt(height - 1)}`);
   const next = h('a', { href: `#/block/${height + 1}` }, `${formatInt(height + 1)} →`);
@@ -206,13 +242,13 @@ export async function blockView(ctx, height) {
       : null,
     card('Header', kv([
       ['Height', formatInt(block.height)],
-      ['Status', h('span', { class: 'row tight' }, pill('finalized', 'good'), h('span', { class: 'muted small' }, 'served by this node'))],
+      ['Status', h('span', { class: 'row tight' }, pill('finalized', 'good'), h('span', { class: 'muted small' }, verifiedBlock ? 'verified certified bytes' : 'served by this node'))],
       ['Certificate', certificateBadge(ctx, certificate)],
       ['Hash', hashValue(ox(block.hash))],
       ['Parent', hashValue(ox(block.parent))],
       ['Proposer', addrLink(block.proposer)],
       ['Timestamp', `${localTime(block.timestamp_ms)} (${timeAgo(block.timestamp_ms)})`],
-      ['State root', withCopy(ox(block.state_root))],
+      ['State root', block.state_root == null ? '— · state proof unavailable' : withCopy(ox(block.state_root))],
       ['Parent state root', withCopy(ox(block.parent_state_root))],
       ['Transactions', formatInt(block.txs.length)],
       ['Gas used', `${formatInt(block.gas_used)} exec · ${formatInt(block.prove_gas)} prove`],
@@ -222,7 +258,7 @@ export async function blockView(ctx, height) {
     proof,
     card(`Transactions (${block.txs.length})`, rows.length ? table(['Status', 'Hash', 'Gas used', 'Notes'], rows)
       : message('plain', 'No transactions in this block.')),
-    sourceLine(ctx.node));
+    sourceLine(ctx.node, null, block));
 }
 
 async function unknownBlock(ctx, height) {
@@ -322,9 +358,9 @@ export async function txView(ctx, hash) {
   const receipt = r.receipt;
   const created = receipt.contract_address;
   const failedWhy = !receipt.success && /^0x08c379a0/.test(String(receipt.output)) ? ` — ${revertReason(String(receipt.output))}` : '';
-  // No block commits to receipts yet (crates/light block.rs): every verifier
-  // answers "not committed", and the row says so instead of pretending.
-  const proof = await ctx.verifier?.receipt(ctx.node, hash);
+  // Modern receipts have a certified Merkle root. Legacy blocks may still
+  // lack that commitment and must never earn a verified badge.
+  const proof = await ctx.verifier?.receipt(ctx.node, hash, r);
 
   return h('div', { class: 'stack' },
     h('h1', { class: 'page-title' }, 'Transaction'),
@@ -333,7 +369,7 @@ export async function txView(ctx, hash) {
       ['Status', receipt.success ? dot('done', 'success') : dot('failed', `failed${failedWhy}`)],
       ['Block', h('span', { class: 'row tight' }, blockLink(r.height), h('span', { class: 'muted small' }, '(finalized)'))],
       ['Certificate', h('span', { class: 'row tight' }, certificateBadge(ctx, proof),
-        proof?.reason === NOT_COMMITTED ? h('span', { class: 'muted small' }, 'no block commits to receipts yet') : null)],
+        proof?.reason === NOT_COMMITTED ? h('span', { class: 'muted small' }, 'this block has no receipt commitment') : null)],
       ['Gas used', `${formatInt(receipt.gas_used)} exec · ${formatInt(receipt.prove_gas)} prove`],
       ['Logs', formatInt(receipt.logs)],
       ['Contract created', created ? h('span', { class: 'row tight' }, addrLink(created), pill('creation', 'good')) : '—'],
@@ -342,7 +378,7 @@ export async function txView(ctx, hash) {
     card('Output', receipt.output && receipt.output !== '0x'
       ? h('details', {}, h('summary', {}, `${String(receipt.output).length / 2 - 1} bytes`), h('div', { class: 'mono wrap small' }, receipt.output))
       : h('span', { class: 'muted' }, 'none')),
-    sourceLine(ctx.node, `finalized in block ${formatInt(r.height)}`));
+    sourceLine(ctx.node, `finalized in block ${formatInt(r.height)}`, r));
 }
 
 /** Decoded events: ERC-20 `Transfer` and `Approval` by name and amount, every
@@ -388,7 +424,7 @@ export async function accountView(ctx, address) {
     tokenInfo(a, ctx.read),
     ctx.node.call('aether_rewards', [a, 10]).catch(() => []),
   ]);
-  const certificate = await ctx.verifier?.account(ctx.node, a);
+  const certificate = await ctx.verifier?.account(ctx.node, a, account);
 
   const els = h('div', { class: 'stack' },
     h('h1', { class: 'page-title' }, account.code_size > 0 ? 'Contract' : 'Account'),
@@ -401,11 +437,11 @@ export async function accountView(ctx, address) {
     card('State (finalized)', kv([
       ['Raw balance', `${toBigInt(account.balance).toString()} wei`],
       ['Nonce', formatInt(account.nonce)],
-      ['Code', account.code_size > 0 ? `${formatInt(account.code_size)} bytes` : 'none'],
+      ['Code', account.code_size == null ? 'code proof unavailable' : account.code_size > 0 ? `${formatInt(account.code_size)} bytes` : 'none'],
       ['At', h('span', { class: 'row tight' }, blockLink(account.height), h('span', { class: 'muted small' }, `state root ${shortHex(ox(account.state_root), 10, 6)}`))],
       ['Certificate', certificateBadge(ctx, certificate)],
     ])),
-    sourceLine(ctx.node, `height ${formatInt(account.height)}`));
+    sourceLine(ctx.node, `height ${formatInt(account.height)}`, account));
 
   const rewardsCard = rewardCard(rewards, coinTicker(ctx.chainId));
   if (rewardsCard) els.append(rewardsCard);
@@ -582,6 +618,6 @@ export function errorView(ctx, err) {
   return h('div', { class: 'stack' },
     h('h1', { class: 'page-title' }, 'No source answered'),
     message('error', err?.message || String(err)),
-    message('plain', 'This page reads your own node at 127.0.0.1:18545 first, then the public gateway (Settings). Install the EastSea app so your node runs, allow local network access when Chrome asks, or check the gateway address.'),
+    message('plain', 'This page tries your node at 127.0.0.1:18545, then verified public peers. Install the EastSea app or allow local network access when Chrome asks. Check that this deployment includes its WASM verifier and peer seeds; Settings also accepts your own optional gateway.'),
     sourceLine(ctx.node));
 }

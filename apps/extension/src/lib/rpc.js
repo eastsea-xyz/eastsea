@@ -1,4 +1,5 @@
 import { Brand } from './brand.js';
+import { isPublicRead } from './peers.js';
 // JSON-RPC to Aether nodes. The first endpoint that answers on the right chain
 // is used; one that does not answer sleeps 5 s, doubling to 60 s.
 
@@ -17,7 +18,7 @@ export class RpcError extends Error {
 
 export class Rpc {
   /** `urls`: endpoints in order; `fetchImpl` for tests. */
-  constructor(urls = DEFAULT_RPCS, { chainId = 7780, fetchImpl = (...a) => fetch(...a), now = () => Date.now(), verifyAccount = null, network = null, floorStore = null } = {}) {
+  constructor(urls = DEFAULT_RPCS, { chainId = 7780, fetchImpl = (...a) => fetch(...a), now = () => Date.now(), verifyAccount = null, network = null, floorStore = null, peerPool = null } = {}) {
     this.urls = [...new Set(urls.filter(Boolean))];
     this.chainId = chainId;
     this.fetch = fetchImpl;
@@ -31,11 +32,34 @@ export class Rpc {
     this.floorTask = Promise.resolve();
     this.generation = 0;
     this.verifiedAccounts = new Map();
+    this.peerPool = peerPool;
   }
 
   setVerifier(network) {
     this.network = network;
     this.generation++;
+  }
+
+  setPeerPool(pool) {
+    this.peerPool?.close?.();
+    this.peerPool = pool;
+  }
+
+  async publicRead(method, params, failure) {
+    if (!this.peerPool || !isPublicRead(method)) throw failure;
+    const pool = this.peerPool;
+    const generation = this.generation;
+    const chainId = this.chainId;
+    try {
+      const result = await pool.call(method, params);
+      if (generation !== this.generation || chainId !== this.chainId || pool !== this.peerPool) throw new Error('network changed during peer verification');
+      this.current = null; // writes and HTTP-local services still need an HTTP node
+      if (['aether_getAccount', 'eth_getBalance', 'eth_getTransactionCount'].includes(method)) {
+        const a = this.peerPool.accounts?.get(String(params[0]).toLowerCase());
+        if (a) this.verifiedAccounts.set(String(params[0]).toLowerCase(), { height: Number(a.certified_block), timestampMs: Number(a.timestamp_ms) });
+      }
+      return result;
+    } catch (e) { throw new RpcError(`No peer served a verified read: ${e?.message || e}`, 4900); }
   }
 
   setUrls(urls) {
@@ -45,6 +69,7 @@ export class Rpc {
   }
 
   setChain(chainId, urls) {
+    this.setPeerPool(null);
     this.chainId = chainId;
     this.generation++;
     this.verifiedAccounts.clear();
@@ -118,15 +143,18 @@ export class Rpc {
   /** Call `method`; a node error comes back as RpcError with the node's code. */
   async call(method, params = []) {
     if (this.verifyAccount && this.network && ['aether_getAccount', 'eth_getBalance', 'eth_getTransactionCount'].includes(method)) {
-      return this.callVerifiedAccount(method, params);
+      try { return await this.callVerifiedAccount(method, params); }
+      catch (e) { return this.publicRead(method, params, e); }
     }
-    const url = await this.endpoint();
+    let url;
+    try { url = await this.endpoint(); }
+    catch (e) { return this.publicRead(method, params, e); }
     let j;
     try {
       j = await this.post(url, method, params, TIMEOUT);
     } catch (e) {
       this.fail(url);
-      throw new RpcError(`node ${url} did not answer: ${e.message || e}`, 4900);
+      return this.publicRead(method, params, new RpcError(`node ${url} did not answer: ${e.message || e}`, 4900));
     }
     // An older node may not have this method yet: ask the others.
     if (j.error && j.error.code === -32601 && this.urls.length > 1) return this.callAny(method, params);

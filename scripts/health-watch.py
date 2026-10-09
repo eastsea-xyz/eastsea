@@ -28,7 +28,7 @@ How each is read (whichever the endpoint allows):
   releases aether_releaseEntries of --release-log (optional)
 
 Usage:
-  scripts/health-watch.py --rpc https://rpc.eastsea.xyz [--prover 0x...]
+  scripts/health-watch.py --rpc https://rpc.example.net [--prover 0x...]
   scripts/health-watch.py --rpc http://127.0.0.1:18545 --mac        # macOS notification
   scripts/health-watch.py --rpc URL --notify-cmd 'mail -s eastsea me@example.com'
   scripts/health-watch.py --replay scripts/tests/fixtures/health-watch-2026-10-05.json

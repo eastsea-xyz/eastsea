@@ -30,6 +30,7 @@ pub mod prover;
 pub mod prover_assignment;
 pub mod prover_input;
 pub mod prune;
+pub mod public_read;
 pub mod registrar_signer;
 pub mod release;
 pub mod registrations;

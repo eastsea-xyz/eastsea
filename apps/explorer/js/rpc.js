@@ -1,14 +1,15 @@
 // JSON-RPC 2.0 client for an EastSea node's HTTP endpoint
 // (crates/node/src/rpc.rs — POST /, any origin, read-only here: the explorer
-// signs nothing and sends nothing the mempool would take). Reads go through
-// an ordered list of sources — the visitor's own node first, then the public
-// read-only gateway (docs/ops/read-gateway.md). fetch and storage are
+// signs nothing and sends nothing the mempool would take). Reads try the
+// visitor's own node, verified public peers, then an optional personal gateway.
+// fetch and storage are
 // injectable so the tests run without a node (test/rpc.test.mjs).
 
+import { markHttpRead } from './peers.js';
+
 export const DEFAULT_ENDPOINT = 'http://127.0.0.1:18545';
-/** The public read-only gateway (a follower behind a tunnel, allowlisted and
- * capped by the node itself). Its answers are honest but unverified. */
-export const DEFAULT_GATEWAY = 'https://rpc.eastsea.xyz';
+/** A gateway exists only when the visitor enters their own in Settings. */
+export const DEFAULT_GATEWAY = '';
 const STORAGE_KEY = 'aether-explorer.node';
 const GATEWAY_KEY = 'aether-explorer.gateway';
 
@@ -53,9 +54,9 @@ export function loadGateway(storage) {
   try {
     const saved = storage?.getItem(GATEWAY_KEY);
     if (saved === '') return null; // explicitly off
-    return saved ? normalizeEndpoint(saved) : DEFAULT_GATEWAY;
+    return saved ? normalizeEndpoint(saved) : null;
   } catch {
-    return DEFAULT_GATEWAY;
+    return null;
   }
 }
 
@@ -78,7 +79,8 @@ export function orderedSources(nodeUrl, gatewayUrl) {
 /** The header badge text for a source: honest about what verified means. */
 export function sourceLabel(source) {
   if (source.kind === 'node') return "Your Mac's node";
-  if (source.kind === 'gateway') return 'Public gateway · not verified';
+  if (source.kind === 'peers') return `Public peers · verified${source.peers ? ` · ${source.peers} connected` : ''}`;
+  if (source.kind === 'gateway') return 'Your gateway · not verified';
   return 'Your node';
 }
 
@@ -88,7 +90,7 @@ export function sourceLabel(source) {
  * promises: name the two browser reasons, offer the two ways out. */
 export function localBlockedText() {
   return 'This page could not read your node at 127.0.0.1 — the browser blocked it (Chrome asks for local network access; Safari blocks http from an https page). '
-    + 'Install the EastSea app so your own node runs, answer Allow when Chrome asks, or keep reading through the public gateway below (unverified, but never a write).';
+    + 'Install the EastSea app so your own node runs, answer Allow when Chrome asks, or read from verified public peers. Settings also accepts your own optional gateway.';
 }
 
 export class RpcError extends Error {
@@ -141,7 +143,7 @@ export class Node {
       throw new RpcError('the node did not answer JSON (is this an EastSea node?)', -1);
     }
     if (body?.error) throw new RpcError(body.error.message, body.error.code);
-    return body?.result;
+    return markHttpRead(body?.result, { kind: this.url === DEFAULT_ENDPOINT ? 'node' : 'custom', url: this.url });
   }
 
   /** `eth_call(to, data) -> hex`, the reader the ERC-20 helpers take. */
@@ -166,42 +168,72 @@ export class FailoverNode {
    *   `onSource(node)` fires whenever the source in use changes; `now` is
    *   injectable so tests need no clock.
    */
-  constructor(sources, { fetch, timeoutMs, onSource, now = () => Date.now() } = {}) {
+  constructor(sources, { fetch, timeoutMs, onSource, peerPool = null, now = () => Date.now() } = {}) {
     if (!sources?.length) throw new Error('at least one source is needed');
     this.sources = sources.map((s) => ({ kind: s.kind, url: normalizeEndpoint(s.url), failedAt: null }));
     this.pool = this.sources.map((s) => new Node(s.url, { fetch, timeoutMs }));
     this.i = 0;
     this.onSource = onSource;
     this.now = now;
+    this.peerPool = peerPool;
+    this.usingPeers = false;
   }
 
   /** The source in use — what the header badge and source lines should say. */
-  get source() { return { kind: this.sources[this.i].kind, url: this.sources[this.i].url }; }
+  get source() { return this.usingPeers ? this.peerPool.source : { kind: this.sources[this.i].kind, url: this.sources[this.i].url }; }
 
   /** The endpoint in use (sourceLine and friends read this). */
-  get url() { return this.sources[this.i].url; }
+  get url() { return this.source.url; }
 
-  get kind() { return this.sources[this.i].kind; }
+  get kind() { return this.source.kind; }
 
   label() { return sourceLabel(this.source); }
 
+  verdict(kind, key) { return this.usingPeers ? this.peerPool.verdict(kind, key) : null; }
+
+  selectHttp(k) {
+    const from = this.kind;
+    const changed = this.usingPeers || k !== this.i;
+    this.usingPeers = false;
+    this.i = k;
+    if (changed) this.onSource?.(this, { from, to: this.kind });
+  }
+
   async call(method, params = []) {
+    let peerError = null;
+    const tryPeers = async () => {
+      if (!this.peerPool) return { answered: false };
+      try {
+        const result = await this.peerPool.call(method, params);
+        const from = this.kind;
+        this.usingPeers = true;
+        this.onSource?.(this, { from, to: 'peers' });
+        return { answered: true, result };
+      } catch (e) { peerError = e; return { answered: false }; }
+    };
+    let triedPeers = false;
     for (let k = 0; k < this.sources.length; k++) {
       const s = this.sources[k];
-      if (s.failedAt !== null && this.now() - s.failedAt < SOURCE_SKIP_MS) continue; // cooling down
-      if (k !== this.i) {
-        const from = this.sources[this.i].kind;
-        this.i = k;
-        this.onSource?.(this, { from, to: s.kind }); // the badge, and the loopback-help note
+      if (s.kind === 'gateway' && !triedPeers) {
+        triedPeers = true;
+        const answer = await tryPeers();
+        if (answer.answered) return answer.result;
       }
+      if (s.failedAt !== null && this.now() - s.failedAt < SOURCE_SKIP_MS) continue; // cooling down
       try {
-        return await this.pool[k].call(method, params);
+        const result = await this.pool[k].call(method, params);
+        this.selectHttp(k);
+        return markHttpRead(result, this.source);
       } catch (e) {
         if (!(e instanceof RpcError) || e.code !== -1) throw e; // the source answered
         s.failedAt = this.now();
       }
     }
-    throw new RpcError('no source answered (the node on this Mac and the public gateway are both unreachable)', -1);
+    if (!triedPeers) {
+      const answer = await tryPeers();
+      if (answer.answered) return answer.result;
+    }
+    throw new RpcError(`no source answered (your node, verified public peers and any configured gateway)${peerError ? `: ${peerError.message || peerError}` : ''}`, -1);
   }
 
   read(to, data) {

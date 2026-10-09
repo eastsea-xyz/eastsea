@@ -2572,9 +2572,18 @@ fn run_node(a: NodeArgs) {
         let _router = endpoint.clone().map(|ep| {
             tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT (serving read-only answers while catching up)");
             let st = served_state.clone();
+            let read_state = served_state.clone();
             let registry = aether_node::announce::checker(st.read().expect("served state").chain.clone());
             let p2p_target = links.then(|| loopback(port));
-            aether_net::serve_with_services(
+            let read = aether_node::public_read::service(
+                &ep,
+                std::path::Path::new(&data),
+                p2p.roster.nodes.clone(),
+                p2p.roster.nodes.clone(),
+                move || read_state.read().expect("served state").clone(),
+            );
+            aether_node::public_read::publish_contact(ep.clone(), std::path::Path::new(&data), chain.clone(), polynomial_identity);
+            aether_net::serve_with_services_and_public_read(
                 ep,
                 move |req| {
                     let st = st.read().expect("served state").clone();
@@ -2584,6 +2593,7 @@ fn run_node(a: NodeArgs) {
                 Some(registry),
                 presence.as_ref().map(|p| p.callback()),
                 app_bundles.as_ref().map(|service| service.handler()),
+                Some(read),
             )
         });
         if let Some(p) = &presence { p.start(presence_args.seeds(&p2p.roster.nodes)); }
@@ -3321,21 +3331,21 @@ fn run_follow(
         // Following over iroh, this Mac also serves wallets directly (capacity
         // review 2026-09-29): a public endpoint under its own persisted node
         // id, so phones spread their reads over follower Macs instead of
-        // asking the validators. `--from-rpc` followers have no iroh endpoint.
+        // asking the validators. HTTP upstreams still serve public peer reads.
         let peer_tracker = aether_net::peers::PeerTracker::new();
         // Signed presence uses the Mac's stable node key, while wallet RPC
         // keeps its separate transport key (resharing publishes the node key).
         let announce_keys = candidate_keys.as_ref()
             .map(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)))
             .transpose()?.map(Arc::new);
-        let mut wallet_ep = if from_rpc.is_empty() || presence_args.dev_presence_bind.is_some() {
+        let mut wallet_ep = {
             let secret = wallet_node_key(&node_key)?;
             Some(if let Some(addr) = presence_args.dev_presence_bind {
                 aether_net::bind_local(secret, addr, peer_tracker.clone()).await
             } else {
-                aether_net::bind_tracked(Some(secret), vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_APPS.to_vec()], peer_tracker.clone()).await
+                aether_net::bind_tracked(Some(secret), vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_APPS.to_vec(), aether_net::ALPN_READ.to_vec()], peer_tracker.clone()).await
             }.map_err(|e| e.to_string())?)
-        } else { None };
+        };
         let upstream = Arc::new(if from_rpc.is_empty() {
             Upstream::Iroh(aether_net::RpcClient::with_endpoint(wallet_ep.as_ref().expect("iroh follower endpoint").clone(), nodes.clone()).with_relay_diversity().await.map_err(|e| e.to_string())?, Default::default())
         } else {
@@ -3365,7 +3375,10 @@ fn run_follow(
         let served_state = Arc::new(std::sync::RwLock::new(None::<RpcState>));
         let _wallet_router = wallet_ep.clone().map(|ep| {
             let state = served_state.clone();
-            aether_net::serve_with_services(ep, move |req: Value| {
+            let read_state = served_state.clone();
+            let read = aether_node::public_read::service_when_ready(&ep, std::path::Path::new(&data),
+                nodes.clone(), vec![], move || read_state.read().expect("follower read state").clone());
+            aether_net::serve_with_services_and_public_read(ep, move |req: Value| {
                 let st = state.read().expect("follower served state").clone();
                 async move {
                     match st {
@@ -3373,7 +3386,7 @@ fn run_follow(
                         None => json!({"jsonrpc":"2.0","id":req.get("id").cloned().unwrap_or(Value::Null),"error":{"code":-32000,"message":"node is starting; try again after checkpoint sync"}}),
                     }
                 }
-            }, None, None, presence.as_ref().map(|p| p.callback()), app_bundles.as_ref().map(|service| service.handler()))
+            }, None, None, presence.as_ref().map(|p| p.callback()), app_bundles.as_ref().map(|service| service.handler()), Some(read))
         });
         if let Some(p) = &presence { p.start(presence_args.seeds(&nodes)); }
         // A new Mac starts from a certified snapshot instead of replaying history.
@@ -3479,6 +3492,10 @@ fn run_follow(
         if let Some(ep) = wallet_ep.take() {
             tracing::info!(node_id = %ep.id(), "serving wallets over iroh; announced to the validators every minute");
             let endpoint_id = ep.id();
+            let identity = st.chain.lock().identity;
+            if let Some(identity) = identity {
+                aether_node::public_read::publish_contact(ep.clone(), std::path::Path::new(&data), st.chain.clone(), &identity);
+            }
             let (announcer, keys) = (upstream.clone(), announce_keys.clone());
             tokio::spawn(async move {
                 if keys.is_none() {

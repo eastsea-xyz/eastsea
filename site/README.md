@@ -1,6 +1,6 @@
 # site/: EastSea 소개 페이지 (eastsea.xyz)
 
-공개 원페이지 소개 사이트다. 순수 HTML/CSS/바닐라 JS라서 **빌드 단계가 없다.** Cloudflare Pages 프로젝트
+공개 원페이지 소개 사이트다. 소개 페이지는 순수 HTML/CSS/바닐라 JS다. 같은 사이트의 `/explorer/`는 `scripts/build-extension.sh`와 `scripts/package-public-reader.sh`가 공유 검증기·공개 노드 읽기 리소스를 패키징한다 (자세히: `docs/ops/public-peer-reads.md`). Cloudflare Pages 프로젝트
 `eastsea-site`가 이 폴더를 그대로 서빙한다. 2026-10-07에 "Dawn almanac" 방향으로 다시 디자인했다.
 벤치마크와 결정 근거는 `docs/design/site-benchmark-2026-10-07.md`, 디자인 시스템은 `design/brand/SYSTEM.md`에 있다.
 
@@ -63,7 +63,8 @@ python3 -m http.server -d site                  # 미리보기 http://localhost:
   - 예시 미리보기: `?globe=fixture#live-network` (실제 연결 수가 아님을 표시한다).
   - 정식 공개 데이터 연결 전 `docs/design/38-live-globe.md`의 집계 전용 RPC 계약과 서버의 k=3 필터를 반드시 맞춰야 한다.
   - 공유 원본: `apps/explorer/live-globe/`. 수정 후 루트에서 `node scripts/sync-live-globe.mjs`; 체크는 `--check`. 서빙에는 빌드가 필요 없다.
-- **외부 요청:** 설정된 공개 RPC의 집계 읽기만 있다 (CDN·외부 지도·분석·쿠키 0). 글꼴도 자체 호스팅한다.
+- **외부 요청:** 소개 페이지의 실시간 지구본은 설정된 공개 RPC의 집계만 읽는다 (CDN·외부 지도·분석·쿠키 0). 글꼴도 자체 호스팅한다.
+  `/explorer/`의 체인 읽기는 내 노드를 먼저 시도한 뒤 공개 iroh 노드와 교체 가능한 WebSocket/pkarr 경로로 검증된 체인을 읽는다. 기본 HTTP 체인 게이트웨이는 없으며 지구본의 검증 안 된 집계 읽기는 별도이다.
   새 제목의 `돌` 한 글자는 `fonts/hahmlet-globe-subset.woff2`(기존 SIL OFL Hahmlet의 1,408바이트 보충 서브셋)로 제공하여 기존 제목용 서브셋을 변경하지 않았다.
 - **Lighthouse (2026-10-07, 로컬):**
   - 모바일: 성능 98, 접근성 100, 권장사항 100, SEO 100

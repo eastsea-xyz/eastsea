@@ -405,6 +405,9 @@
 		FFBBC30866E10BF4420F8C97 /* BrowserConfusables-15.1.txt in Resources */ = {isa = PBXBuildFile; fileRef = 226C835A4FDCEABCED67D380 /* BrowserConfusables-15.1.txt */; };
 		FFC971B49C6FF5C5C88E6924 /* TokenIconSpec.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA90633BCF8B2E2533B5D308 /* TokenIconSpec.swift */; };
 		FFDCEE5B772023FE8F16964B /* DiagnosticReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9B4EF5C90AED22256BDEE5A /* DiagnosticReport.swift */; };
+		3D5D8BADB1A2EE691CF9BBF3 /* PublicReadSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBDAB6AB8F3EFA05E7AEF813 /* PublicReadSettings.swift */; };
+		E794BBB6BF3B4B26944216D8 /* PublicReadSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBDAB6AB8F3EFA05E7AEF813 /* PublicReadSettings.swift */; };
+		7259D327618538045E4D222A /* PublicReadSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBDAB6AB8F3EFA05E7AEF813 /* PublicReadSettings.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -544,6 +547,7 @@
 		F6F83F1B96641D43A20AA2B6 /* glossary.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = glossary.md; sourceTree = "<group>"; };
 		FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenSend.swift; sourceTree = "<group>"; };
 		FF2FCB108BF603558C0364F5 /* WalletScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletScreens.swift; sourceTree = "<group>"; };
+		DBDAB6AB8F3EFA05E7AEF813 /* PublicReadSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublicReadSettings.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -677,6 +681,7 @@
 				94E4B4A2A4BDBBBBC6A12600 /* ProverFlags.swift */,
 				9DEBCE5EA044F272C9EA406C /* ProverMenu.swift */,
 				2F793BE9B59364FAC536170E /* ProverMenuText.swift */,
+				DBDAB6AB8F3EFA05E7AEF813 /* PublicReadSettings.swift */,
 				366F9021403DE8EF3505FEEC /* ReceiveAddressView.swift */,
 				AB4C9843D1CF8E29F627927D /* ReleaseApproval.swift */,
 				EAFE5C0C9F286BE048CFB147 /* ReleaseArtifact.swift */,
@@ -1097,6 +1102,7 @@
 				A6411E9B1827C2B1B6D286AE /* ProverFlags.swift in Sources */,
 				5D11F92088FEABAA0085ADCD /* ProverMenu.swift in Sources */,
 				F94514AB9C803644B61A44B7 /* ProverMenuText.swift in Sources */,
+				3D5D8BADB1A2EE691CF9BBF3 /* PublicReadSettings.swift in Sources */,
 				2DC88EF363713BF5F05BE9D3 /* ReceiveAddressView.swift in Sources */,
 				A079B1CBD1001C06EF207650 /* ReleaseApproval.swift in Sources */,
 				F6E74487E90D40B0E3715B06 /* ReleaseArtifact.swift in Sources */,
@@ -1224,6 +1230,7 @@
 				F29C55BEDA6F3D5563CC763F /* ProverFlags.swift in Sources */,
 				AD1A6990DBD4FC69E9F3E958 /* ProverMenu.swift in Sources */,
 				2ECB8DB6B22924E4D146ED97 /* ProverMenuText.swift in Sources */,
+				E794BBB6BF3B4B26944216D8 /* PublicReadSettings.swift in Sources */,
 				EBFD12A16F18B2E0F8BD146D /* ReceiveAddressView.swift in Sources */,
 				7B7EBC3EFD0B5F25E2C8CF67 /* ReleaseApproval.swift in Sources */,
 				5218C4A0249362A9C8CA9406 /* ReleaseArtifact.swift in Sources */,
@@ -1353,6 +1360,7 @@
 				B6002ECF68746BC997F245B2 /* ProverFlags.swift in Sources */,
 				F3667C9BCD3B016F232A69D8 /* ProverMenu.swift in Sources */,
 				119884C0924E5CF71D15D2B9 /* ProverMenuText.swift in Sources */,
+				7259D327618538045E4D222A /* PublicReadSettings.swift in Sources */,
 				E4402B93BE03DDB8A0AA67EE /* ReceiveAddressView.swift in Sources */,
 				7B0B4C28ED2F1AEF39804016 /* ReleaseApproval.swift in Sources */,
 				F7F5F097FEE87CD47BE2D8A7 /* ReleaseArtifact.swift in Sources */,

@@ -1,85 +1,97 @@
 # EastSea Explorer
 
-> 한국어 요약: EastSea 노드의 JSON-RPC를 읽는 정적 파일 블록 익스플로러. 빌드 단계
-> 없이 `python3 -m http.server`로 띄운다. 읽기는 순서대로 시도한다 — 이 Mac의 노드
-> (기본 `127.0.0.1:18545`) 먼저, 브라우저가 막으면 공개 읽기 전용 게이트웨이(기본
-> `https://rpc.eastsea.xyz`, Settings에서 변경)로. 분석·가격 정보 없음. 계정 잔액은
-> 지갑과 같은 wasm으로 위원회 인증서를 검증하고 통과할 때만 "verified"로 표시하며,
-> 나머지 데이터는 "노드 제공, 검증 안 됨"으로 표시한다.
-> `npm test`로 단위 테스트, `node test/live.mjs`로 실노드 스모크.
+> 한국어 요약: 정적 파일 블록 익스플로러. 이 Mac의 노드
+> (`127.0.0.1:18545`)를 먼저 읽고, 연결되지 않으면 공개 노드 배열에서
+> iroh WASM과 WebSocket 릴레이로 읽는다. 공개 노드의 응답은 번들에 고정된
+> 네트워크 신원, BLS 최종성 인증서와 Merkle 증명을 검증한 뒤 표시한다.
+> 체인 읽기에는 기본 HTTP 게이트웨이가 없다. Settings에 개인 게이트웨이와 릴레이 주소를 설정할 수 있다.
 
-A read-only block explorer for an EastSea chain, served as **static files** — no
-build step, no framework, no server-side code. The page in your browser reads
-through an ordered list of sources: your own node first (default
-`http://127.0.0.1:18545`, while the EastSea app runs), then — when this browser
-cannot reach loopback, or the node is down — the public read-only gateway
-(default `https://rpc.eastsea.xyz`, changeable in Settings; see
-`docs/ops/read-gateway.md`). The header badge always says which source answered.
-No analytics, no prices.
+Static files, no framework or server-side API. Reads try your own node first,
+then a rotating pool of public nodes over `eastsea/read/1`. The browser keeps
+at least three certified peers when three are available, rotates peers, and
+closes slow peers or peers that serve invalid certificates or display fields.
+Pipln runs no gateway or relay for this path. No analytics or prices.
+
+The pool starts from node IDs in bundled `network.json` and release hints in
+`public-read-peers.json`. The WASM transport resolves known IDs through signed
+pkarr HTTP packets. A certified peer can return more address hints with
+`aether_readPeers`; every discovered peer must supply its own valid certificate.
+Configured operator and relay hints guide diversity and carry no chain trust.
 
 ## Run
 
 ```bash
+# Package the wallet/light verifier and browser iroh transport first:
+scripts/build-extension.sh
 cd apps/explorer
 python3 -m http.server 8090
 # open http://localhost:8090
 ```
 
-Any static file server works; `npx serve` or a GitHub Pages deployment behave
-the same. Opening `index.html` straight from the filesystem also works in most
-browsers (the node's CORS allows it — see below), but a served origin is the
-supported path.
+Any static server can host the explorer. Include `wasm/`, `network.json`,
+`public-read-peers.json`, `token-sources.json`, the JS modules and styles.
+A deployment without the verifier cannot read public peers.
 
-The node must be reachable from the browser: the EastSea app's node listens on
-`127.0.0.1:18545` on this Mac while it runs. Point Settings at another URL to
-read a different node. When the browser blocks the loopback read (Chrome asks
-for local-network access and was denied, or Safari blocks http from an https
-page), the page says so plainly and reads the gateway instead — unverified, and
-never a write. Clear the gateway field in Settings to read your node only.
+Settings starts with `http://127.0.0.1:18545` and an empty gateway field.
+Chrome may ask for local network access; Safari may block an HTTP loopback
+request from an HTTPS page. Verified peers continue the read when loopback
+is unavailable. An explicitly configured personal HTTP gateway remains a
+fallback and is labeled unverified. The WebSocket relay list can be replaced;
+an empty list selects iroh's n0 public relays.
 
 ## Pages
 
 | Page | What it shows |
 |---|---|
-| Home | finalized height (hero), tx rate over the newest 30 blocks, committee (registry candidates + epoch), protocol (with node/scheduled versions and an update pill), mempool, base fee, prover status, Live network (anonymous cohort observations, withheld for groups smaller than three), latest blocks, chain facts |
+| Home | certified finalized height paints before coalesced verified history; local-node reads also show committee, scheduled protocol, mempool, base fees, prover status and anonymous Live network observations; unsupported public-peer fields stay unavailable |
 | Live network (`#/network`) | privacy-safe continent totals on a draggable WebGL globe, opted-in countries only at k ≥ 3, accessible list, static reduced-motion map; public gateway presence only, separate from account/peer reads |
 | Block | every header field the RPC serves, neighbor links, this node's prover view of the block's proof, the transactions with their receipts (a pruned block shows what the era record still carries) |
 | Transaction | receipt (status, gas, contract creation, output), events decoded as ERC-20 `Transfer`/`Approval` with symbol and amount, raw logs for anything else |
 | Account | balance/nonce/code with a committee-certificate badge (`verified by committee certificate` only when the wallet's own wasm check passed — `js/verify.js`), token detection, latest rewards (`aether_rewards`), ERC-20 transfers to/from the address in the node's log window |
 | Token | name/symbol/decimals/total supply, the origin badge and impersonation warning exactly as the wallet shows them, recent transfers |
-| Search | apps and `.sea` names via `aether_search`; height, `0x`-address, or tx hash keeps its direct lookup, and a hash with no receipt is matched against the newest block hashes |
+| Search | apps via `aether_search`; canonical `.sea` name pages keep indexed results beside the wallet handoff; height, `0x`-address, or tx hash keeps its direct lookup, and a hash with no receipt is matched against the newest block hashes |
 
 Enter an app title, description, or `.sea` name in the header search bar, or open
-`#/search/harbor.sea`. The page reads `aether_search` and `aether_searchInfo` from
-the selected RPC source and preserves the node's neutral order. It shows
+`#/search/harbor.sea`; existing search bookmarks remain valid. Name and action
+links offer a wallet handoff, with payments approved in the wallet. The index
+reads `aether_search` and `aether_searchInfo` from a configured HTTP node or
+personal gateway and preserves the node's neutral order. Public peers have no
+supported index proof and do not supply these records. The page shows
 lookalike warnings and incomplete index or usage coverage. A content-hash label
 means only that a nonzero hash was recorded, not safety or certificate verification.
 Search UI strings are in English, Korean, Japanese, Simplified Chinese, and Spanish.
 The node builds its index from chain records without a central search server or
 runtime manifest downloads; see [the search design](../../docs/design/app-search.md).
 
-## Honest labels
+## Verified data
 
-The account balance is the one thing this explorer verifies in the browser: the
-same wasm the wallet extension ships (copied into `wasm/` by
-`scripts/build-extension.sh`) runs the committee-certificate check — pinned
-identity, chain, finalized height, ten-minute freshness, and the state proof
-behind the balance — and the badge says `verified by committee certificate`
-only when it passed. Everything else is honest about being unverified: pages
-say "Data read from the node at …, not light-client verified", and when the
-source is the public gateway the header badge says so too ("Public gateway ·
-not verified"). Proof status on a block is that node's prover's view, not an
-on-chain record. Token badges follow the wallet's zero-trust policy:
-*Launchpad · unverified* is the wallet's label for launchpad tokens, not a
-judgement of fraud, and an "official list" badge only means the address is in
-the bundled `token-sources.json` (kept in sync with `apps/wallet` and
-`apps/extension`).
+Public reads construct displayed header fields from certified block bytes,
+compare RPC summaries with those bytes, and verify receipt and account Merkle
+proofs. A wrong answer closes that peer and another peer is tried. The head
+uses a persistent verified-height floor and a freshness check; the session
+retains its floor even when browser storage is denied. Historical block and
+receipt checks verify inclusion without requiring the old block to be fresh.
+
+Verification badges belong to the exact object that passed verification.
+A JSON field named `verified` and a concurrent change of source cannot grant
+a badge to an HTTP answer.
+
+The certified header commits to its **parent state root**. An unproved current
+state root, base fees, prover escrow and code size are omitted from public
+reads. Mempool, prover activity and presence are uncommitted and unavailable.
+Token contract calls, log scans, rewards and registry summaries need your own
+node: the public client does not display responses without a supported proof.
+Receipt proofs for legacy blocks without a receipt commitment are unavailable.
+The explorer signs nothing and relays no transactions.
 
 The wasm and `network.json` (the pinned committees) are build products here;
 without them the account page says `not verified`, never pretends.
 
 The **Live network** route polls `aether_presence` at the configured public
-gateway while visible. Presence is an unverified, frozen cohort observation,
+presence source while visible. This separate presence-only transport retains
+`https://rpc.eastsea.xyz` as its default and uses a personal gateway override
+when configured. That host is never a default source for certified chain reads
+or transaction submission. Presence is an unverified, frozen cohort observation,
 separate from consensus. The privacy producer serves thresholded schema-2
 counts; the integration adapts that aggregate contract to the globe. Missing
 geography and quality evidence must remain unavailable, and withheld counts
@@ -109,8 +121,9 @@ bound to loopback. In practice:
 `aether_getAccount`, `aether_candidates`, `aether_proverStatus`, `aether_presence`,
 `aether_rewards`, `aether_history`, `aether_search`, `aether_searchInfo`, `eth_call`, `eth_getLogs`,
 `eth_blockNumber`, and `aether_getFinalized` (the account page's certificate
-check, `js/verify.js`). Node-side notes are in `crates/node/src/rpc.rs`; the
-explorer adds no node RPCs.
+check, `js/verify.js`). The public reader also uses `aether_getBlockProof`,
+`aether_getReceiptProof` and `aether_readPeers`. Node-side notes are in
+`crates/node/src/rpc.rs` and `docs/ops/public-peer-reads.md`.
 
 Two windows to know about: `eth_getLogs` scans at most the newest 2,000
 finalized blocks (token/account transfer lists are labeled with that), and
@@ -119,12 +132,12 @@ as era records, and heights below what it ever kept simply don't. The public
 gateway caps these the same way and refuses everything else — its allowlist
 and caps are in `docs/ops/read-gateway.md`.
 
-## Tests
+## Tests and measurements
 
 ```bash
 cd apps/explorer
-npm test              # decoding/formatting/search/RPC units (node --test, offline)
-node test/live.mjs    # renders every page against a real node (default 127.0.0.1:18545)
+npm test
+node test/live.mjs http://127.0.0.1:18545  # optional local-node page smoke
 ```
 
 The unit tests cover the pure helpers: ABI word parsing and `Transfer`/
@@ -134,6 +147,15 @@ classifier and resolver, the live presence shape and unavailable states,
 continent breakdowns and ten-second polling, and the JSON-RPC client (injected
 `fetch`, endpoint persistence, error and timeout paths). `test/live.mjs` is a manual smoke test
 in a minimal DOM stub — it is deliberately not part of `npm test`.
+The offline suite also covers peer-only reads, three-peer maintenance, discovery,
+diversity hints, wrong-header and slow-peer removal, field sanitization,
+verified-height replay protection, optional gateway persistence, and existing
+decoding/formatting/search behavior. The lane's devnet/headless browser runner
+adds real certificate and WebSocket transport checks.
+
+`window.aetherReadDiagnostics()` reports the current source, peer IDs and
+protocol-level head/block read timing. It sends no telemetry. Full cold-page
+latencies and WASM sizes are recorded by the browser/devnet measurement runner.
 
 Globe tests cover country folding/duplicate buckets, sanitized output, stable
 session jitter, safe request envelopes, bundle drift, local land geometry and
@@ -160,13 +182,16 @@ explorer.css        paper/navy reading surface, quiet rows and responsive layout
 token-sources.json  copy of the wallet's token sources (keep in sync)
 network.json        copy of the extension's pinned committees (verify.js)
 wasm/               the wallet wasm (build product; scripts/build-extension.sh)
+public-read-peers.json release peer discovery hints (not chain trust)
 js/dom.js           DOM builder — text only, never HTML from chain data
-js/rpc.js           JSON-RPC client, endpoint+gateway persistence, failover
+js/rpc.js           local HTTP, verified peer and optional gateway failover
+js/peers.js         shared certified peer reader, discovery, floors and quarantine
 js/verify.js        the account page's committee-certificate check (wasm)
 js/format.js        amounts, numbers, times (BigInt-exact)
 js/abi.js           ABI words, selectors, ERC-20 event decoding, revert reasons
 js/erc20.js         token metadata, origin scan, badges, impersonation check
 js/search.js        search classification and hash resolution
+js/sea-url.mjs      canonical name/action parsing, copied from apps/shared
 js/presence.js      versioned live presence reads, roles and relay regions
 js/polling.js       visible home and pending-transaction polling (10 seconds)
 js/app-search.js    apps/names RPC results, warnings and index coverage
@@ -184,3 +209,9 @@ tokens. Account balances use the shared navy plate; metadata uses semantic
 label/value lists. A read gets one finite loading acknowledgement, and Reduce
 Motion leaves a static indicator. The existing RPC reads and polling remain
 owned by the model; the presentation adds no reads or network sources.
+
+`js/peers.js` is the shared public reader, copied into the extension and hosted
+site by packaging. `js/rpc.js` handles local HTTP reads, optional gateway
+settings and source selection. `js/verify.js` loads the pinned network and
+verifier; `js/pages.js` renders proof-backed results and explicit unavailable
+fields. `js/app.js` provides routing, settings and polling.

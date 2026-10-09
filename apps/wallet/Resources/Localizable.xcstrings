@@ -43073,6 +43073,230 @@
           }
         }
       }
+    },
+    "%@ MiB": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ MiB"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ MiB"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ MiB"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ MiB"
+          }
+        }
+      }
+    },
+    "Changes apply immediately. The limit resets at midnight UTC.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "変更はすぐに適用されます。上限は毎日UTCの午前0時にリセットされます。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "변경 사항은 바로 적용돼요. 하루 한도는 UTC 자정에 초기화돼요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更改立即生效。限额每天在 UTC 午夜重置。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "變更立即生效。上限每天於 UTC 午夜重設。"
+          }
+        }
+      }
+    },
+    "Could not save sharing settings. Change the setting to try again.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共有設定を保存できませんでした。設定を変更してもう一度お試しください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "공유 설정을 저장하지 못했어요. 설정을 변경해 다시 시도해 주세요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法保存共享设置。请更改设置后重试。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法儲存分享設定。請變更設定後重試。"
+          }
+        }
+      }
+    },
+    "Daily sharing limit": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1日の共有上限"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "하루 공유 한도"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每日共享限额"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每日分享上限"
+          }
+        }
+      }
+    },
+    "Help browsers read the chain": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ブラウザによるチェーンの読み取りを支援"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "브라우저의 체인 조회 돕기"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "帮助浏览器读取区块链"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "協助瀏覽器讀取區塊鏈"
+          }
+        }
+      }
+    },
+    "Share chain data": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "チェーンデータを共有"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "체인 데이터 공유"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共享链数据"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分享鏈上資料"
+          }
+        }
+      }
+    },
+    "Sharing is paused because its saved settings could not be read. Turn sharing on to save them again.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存された設定を読み取れないため、共有を一時停止しています。共有をオンにすると設定を再保存できます。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "저장된 설정을 읽을 수 없어 공유를 멈췄어요. 공유를 켜면 설정을 다시 저장해요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取已保存的设置，因此共享已暂停。开启共享可重新保存设置。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法讀取儲存的設定，因此已暫停分享。開啟分享即可重新儲存設定。"
+          }
+        }
+      }
+    },
+    "Your Mac shares finalized blocks with browsers while its node is running. Sharing is read-only and stops at your daily limit.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ノードの稼働中、このMacは確定済みブロックをブラウザに共有します。共有は読み取り専用で、1日の上限に達すると停止します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "노드가 실행 중일 때 이 Mac이 확정된 블록을 브라우저에 공유해요. 조회용 데이터만 공유하며, 하루 한도에 도달하면 멈춰요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "节点运行期间，你的 Mac 会向浏览器共享已最终确认的区块。共享仅供读取，达到每日限额后即停止。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "節點執行時，你的 Mac 會向瀏覽器分享已最終確認的區塊。分享的資料僅供讀取，達到每日上限時即停止。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

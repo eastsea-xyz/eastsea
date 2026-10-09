@@ -392,11 +392,13 @@ impl NetworkFile {
                     };
                     // Every key and node id must parse, or no genesis.
                     reserve.bytes()?;
-                    // No validator of this network is also a reserve key (red
-                    // team, finding 3): a key that is both would sit in the
-                    // committee and in the reserve, so the founder's Mac would
-                    // run it either way and the overlap would hide from the
-                    // independent-operator count.
+                    // No genesis validator is also a reserve key (red team,
+                    // finding 3). Also check the initial current roster: a clean
+                    // frozen list must not hide an initial reserve seat. Later
+                    // rounds legitimately seat reserves, even in staged files
+                    // with no epoch boundary recorded yet.
+                    let genesis = self.genesis_validators.as_ref().unwrap_or(&self.validators);
+                    let initial = (self.round == 0 || self.identity.is_none() || self.output.is_none()).then_some(&self.validators);
                     let plain = |k: &str| k.trim_start_matches("0x").to_lowercase();
                     let same_node = |a: &str, b: &str| {
                         match (a.parse::<EndpointId>(), b.parse::<EndpointId>()) {
@@ -405,12 +407,14 @@ impl NetworkFile {
                         }
                     };
                     for (key, node) in &reserve.members {
-                        for (i, v) in self.validators.iter().enumerate() {
-                            if plain(&v.key) == plain(key) {
-                                return Err(format!("validator {}: its key is also a reserve key", i + 1));
-                            }
-                            if same_node(&v.node, node) {
-                                return Err(format!("validator {}: its node id is also a reserve key's", i + 1));
+                        for roster in std::iter::once(genesis).chain(initial) {
+                            for (i, v) in roster.iter().enumerate() {
+                                if plain(&v.key) == plain(key) {
+                                    return Err(format!("validator {}: its key is also a reserve key", i + 1));
+                                }
+                                if same_node(&v.node, node) {
+                                    return Err(format!("validator {}: its node id is also a reserve key's", i + 1));
+                                }
                             }
                         }
                     }

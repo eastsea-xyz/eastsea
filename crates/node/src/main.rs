@@ -668,8 +668,10 @@ enum Cmd {
         /// registrar node runs `aether run --dev-registrar` (no Apple DeviceCheck).
         #[arg(long, conflicts_with = "registrar")]
         dev_registrar: bool,
-        /// Founder reserve keys (validator.pub.json, up to 3, one Mac): seated only while fewer
-        /// than four independent operators qualify. Needs --node-rewards and --reserve-operator.
+        /// Founder reserve keys (validator.pub.json, up to 3, one Mac): from protocol 4, eligible standby
+        /// while at most four independent operators qualify; fill missing seats or a larger
+        /// committee's survival need. Never join a full four-seat committee.
+        /// Needs --node-rewards and --reserve-operator.
         #[arg(long = "reserve", requires = "reserve_operator")]
         reserve: Vec<String>,
         /// The founder's operator address (its own registered Macs are not independent).
@@ -1628,7 +1630,26 @@ fn main() {
                 eprintln!("{e}"); std::process::exit(aether_node::supervisor::EXIT_LOCKED);
             });
             p2p_args(index, validators, network, &data, port, peers, link_base, offline)
-                .map(|(p2p, chain_id, _, _, genesis)| run_dkg(p2p, chain_id, data, round, genesis))
+                .and_then(|(p2p, chain_id, _, _, genesis)| {
+                    // A running committee may contain reserve keys after a handoff,
+                    // but a fresh DKG must never bootstrap with a reserve participant.
+                    // Check the actual roster even on retries of a completed round.
+                    if let Some(reserve) = &genesis.reserve {
+                        use commonware_codec::Encode;
+                        for (key, node) in reserve.bytes()? {
+                            for (i, (validator_key, validator_node)) in p2p.roster.keys.iter().zip(&p2p.roster.nodes).enumerate() {
+                                if validator_key.encode().as_ref() == key.as_slice() {
+                                    return Err(format!("validator {}: its key is also a reserve key", i + 1));
+                                }
+                                if validator_node.as_bytes() == &node {
+                                    return Err(format!("validator {}: its node id is also a reserve key's", i + 1));
+                                }
+                            }
+                        }
+                    }
+                    run_dkg(p2p, chain_id, data, round, genesis);
+                    Ok(())
+                })
         }
         Cmd::Receipt { hash, rpc } => call(&rpc, "aether_getReceipt", json!([hash])).map(|v| println!("{}", pretty(&v))),
     };

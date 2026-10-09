@@ -14,7 +14,7 @@
 #      on-chain ReleaseLog whose storage is verified against a certified
 #      state root (aether_releaseEntries + aether storage).
 #   2. A scheduled committee upgrade (3-of-4 BLS partials, scripts/
-#      testnet-activate.sh flow) to protocol 4 activates at exactly the
+#      testnet-activate.sh flow) to protocol 5 activates at exactly the
 #      signed height, blocks keep finalizing through the switch, and 2-of-4
 #      partials do not combine.
 #   3. The validator left on the old release stops cleanly one block before
@@ -148,7 +148,7 @@ export AETHER_PROVER="$BIN/aether-prover"
 # has no dev-b3 subcommand; only the feature build reads them.
 p1=$(AETHER_DEV_PROTOCOL=9 AETHER_DEV_UPGRADE_NOTICE=1 "$PLAIN" protocol)
 p2=$(AETHER_DEV_PROTOCOL=9 AETHER_DEV_UPGRADE_NOTICE=1 "$A" protocol)
-[ "$p1" = 3 ] && ok "plain build ignores AETHER_DEV_PROTOCOL (claims $p1)" || bad "plain build claims protocol $p1 (want 3)"
+[ "$p1" = 4 ] && ok "plain build ignores AETHER_DEV_PROTOCOL (claims $p1)" || bad "plain build claims protocol $p1 (want 4)"
 [ "$p2" = 9 ] && ok "drill build claims AETHER_DEV_PROTOCOL ($p2)" || bad "drill build claims $p2 (want 9)"
 if "$PLAIN" dev-b3 "$0" >/dev/null 2>&1; then bad "plain build has the dev-b3 subcommand"; else ok "plain build has no dev-b3 subcommand"; fi
 h1=$(AETHER_DEV_PROTOCOL=9 "$A" dev-b3 Cargo.toml)
@@ -165,14 +165,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-section "1. a four-validator rehearsal chain (chain $CHAIN, protocol 3, 1 s blocks)"
+section "1. a four-validator rehearsal chain (chain $CHAIN, protocol 4, 1 s blocks)"
 rm -rf "$D"; mkdir -p "$D/peers"
 for i in 1 2 3 4; do "$A" keygen --data "$D/g$i" >/dev/null; done
 mkdir -p "$D/faucet"
 "$A" faucet-key --data "$D/faucet" > "$D/faucet.addr"
 faucet=$(awk '/^faucet address/ {print $3}' "$D/faucet.addr")
 founder=$("$A" dev-accounts | awk '$1 == "dev" && $2 == 1 {print $3}')
-"$A" network --chain-id "$CHAIN" --protocol 3 --epoch-blocks "$EPOCH_BLOCKS" --history 2 --node-rewards --dev-registrar \
+"$A" network --chain-id "$CHAIN" --protocol 4 --epoch-blocks "$EPOCH_BLOCKS" --history 2 --node-rewards --dev-registrar \
   --faucet "$faucet" \
   "$D"/g1/validator.pub.json "$D"/g2/validator.pub.json "$D"/g3/validator.pub.json "$D"/g4/validator.pub.json \
   > "$D/genesis.json"
@@ -199,7 +199,7 @@ IDENTITY=$(sed -n 's/^committee identity: //p' "$D/dkg1.log" | head -1)
 [ -n "$IDENTITY" ] || IDENTITY=$(python3 -c 'import json;print(json.load(open("'"$D"'/network.json"))["identity"])')
 
 NODE_PID[0]=0; NODE_PID[1]=0; NODE_PID[2]=0; NODE_PID[3]=0
-start_node() { # <1-4> <binary> ["AETHER_DEV_PROTOCOL value, empty = claim 3"]
+start_node() { # <1-4> <binary> ["AETHER_DEV_PROTOCOL value, empty = claim 4"]
   local i=$1 bin=$2 claim=$3 others="" j args env
   for j in 1 2 3 4; do [ "$j" = "$i" ] || others+="${others:+,}http://127.0.0.1:${rpcp[$((j - 1))]}"; done
   args=(run --exit-with-parent --data "$D/g$i" --network "$D/network.json" --ceremony "$D/ceremony-check.json"
@@ -225,7 +225,7 @@ else
   bad "the validators disagree at height $h: $roots"
 fi
 node_proto_0=$(node_proto "${rpcp[0]}")
-[ "$node_proto_0" = 3 ] && ok "every node starts claiming protocol 3 (node_protocol $node_proto_0)" || bad "node_protocol is $node_proto_0 (want 3)"
+[ "$node_proto_0" = 4 ] && ok "every node starts claiming protocol 4 (node_protocol $node_proto_0)" || bad "node_protocol is $node_proto_0 (want 4)"
 
 # ---------------------------------------------------------------------------
 section "2. builder release approval (design 19): 2-of-3, emergency 3-of-3, on-chain ReleaseLog"
@@ -406,67 +406,67 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-section "3. scheduled committee upgrade to protocol 4 (short dev notice)"
+section "3. scheduled committee upgrade to protocol 5 (short dev notice)"
 # Simulated releases: wrappers that claim a protocol this tree does not
-# implement. r4/r5/r6 differ only in the claim; each has its own bytes (hash).
-for v in 4 5 6; do
+# implement. r5/r6/r7 differ only in the claim; each has its own bytes (hash).
+for v in 5 6 7; do
   printf '#!/bin/sh\nexport AETHER_DEV_PROTOCOL=%s\nexec "%s" "$@"\n' "$v" "$A" > "$BIN/aether-r$v"
   chmod +x "$BIN/aether-r$v"
 done
-printf '#!/bin/sh\necho "simulated bad release r6: refusing to start" >&2\nexit 1\n' > "$BIN/aether-bad"
+printf '#!/bin/sh\necho "simulated bad release r7: refusing to start" >&2\nexit 1\n' > "$BIN/aether-bad"
 chmod +x "$BIN/aether-bad"
-b3r4=$("$A" dev-b3 "$BIN/aether-r4")
+b3r5=$("$A" dev-b3 "$BIN/aether-r5")
 h=$(height "${rpcp[0]}")
 H1=$((h + 50))
-python3 - "$CHAIN" "$H1" "$b3r4" > "$D/upgrade4.json" <<'PYEOF'
+python3 - "$CHAIN" "$H1" "$b3r5" > "$D/upgrade5.json" <<'PYEOF'
 import json, sys
 chain, at, b3 = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
-json.dump({"chain_id": chain, "protocol": 4, "activate_at": at,
-           "releases": [{"platform": "macos-arm64-dmg", "version": "drill-r4",
-                          "blake3": b3, "url": "https://drill.invalid/r4.dmg"}],
-           "notes": "drill: scheduled switch to protocol 4"}, sys.stdout)
+json.dump({"chain_id": chain, "protocol": 5, "activate_at": at,
+           "releases": [{"platform": "macos-arm64-dmg", "version": "drill-r5",
+                          "blake3": b3, "url": "https://drill.invalid/r5.dmg"}],
+           "notes": "drill: scheduled switch to protocol 5"}, sys.stdout)
 PYEOF
-for i in 1 2 3; do "$A" upgrade-sign --data "$D/g$i" --network "$D/network.json" "$D/upgrade4.json" > "$D/p4-$i.json" || true; done
-if "$A" upgrade-combine --network "$D/network.json" "$D/p4-1.json" "$D/p4-2.json" > "$D/t.json" 2>&1; then
+for i in 1 2 3; do "$A" upgrade-sign --data "$D/g$i" --network "$D/network.json" "$D/upgrade5.json" > "$D/p5-$i.json" || true; done
+if "$A" upgrade-combine --network "$D/network.json" "$D/p5-1.json" "$D/p5-2.json" > "$D/t.json" 2>&1; then
   bad "2-of-4 committee partials combined into a signature"
 else
   ok "2-of-4 committee partials do not combine (threshold is 3)"
 fi
-if "$A" upgrade-combine --network "$D/network.json" "$D/p4-1.json" "$D/p4-2.json" "$D/p4-3.json" > "$D/signed4.json" 2>"$D/combine4.err"; then
-  vout=$("$A" upgrade-verify --network "$D/network.json" "$D/signed4.json" 2>&1 || true)
+if "$A" upgrade-combine --network "$D/network.json" "$D/p5-1.json" "$D/p5-2.json" "$D/p5-3.json" > "$D/signed5.json" 2>"$D/combine5.err"; then
+  vout=$("$A" upgrade-verify --network "$D/network.json" "$D/signed5.json" 2>&1 || true)
 else
-  vout="combine failed: $(tr '\n' ' ' < "$D/combine4.err" 2>/dev/null)"
+  vout="combine failed: $(tr '\n' ' ' < "$D/combine5.err" 2>/dev/null)"
   bad "3-of-4 partials did not combine ($vout)"
 fi
-for i in 1 2 3 4; do mkdir -p "$D/g$i/upgrades"; [ -s "$D/signed4.json" ] && cp "$D/signed4.json" "$D/g$i/upgrades/protocol-4.json" || true; done
+for i in 1 2 3 4; do mkdir -p "$D/g$i/upgrades"; [ -s "$D/signed5.json" ] && cp "$D/signed5.json" "$D/g$i/upgrades/protocol-5.json" || true; done
 sched=""
 end=$((SECONDS + 90))
 while [ "$SECONDS" -lt "$end" ]; do
-  sched=$(rpc aether_status '[]' "${rpcp[0]}" | jget '"yes" if [4, '"$H1"'] in d["result"].get("schedule", []) else "no"')
+  sched=$(rpc aether_status '[]' "${rpcp[0]}" | jget '"yes" if [5, '"$H1"'] in d["result"].get("schedule", []) else "no"')
   [ "$sched" = yes ] && break
   sleep 1
 done
-if [ "$sched" = yes ]; then ok "3-of-4 committee signature on chain: protocol 4 activates at $H1 ($vout)"; else bad "the signed upgrade never reached the chain (schedule '$sched')"; fi
+if [ "$sched" = yes ]; then ok "3-of-4 committee signature on chain: protocol 5 activates at $H1 ($vout)"; else bad "the signed upgrade never reached the chain (schedule '$sched')"; fi
 
-echo "-- rolling v1-v3 onto r4 (validators claim protocol 4), v4 stays on protocol 3"
+echo "-- rolling v1-v3 onto r5 (validators claim protocol 5), v4 stays on protocol 4"
 for i in 1 2 3; do
   hb=$(height "${rpcp[$((i - 1))]}")
-  start_node "$i" "$BIN/aether-r4" ""
-  wait_height "${rpcp[$((i - 1))]}" $((hb + 2)) 120 || bad "validator $i did not rejoin on r4"
+  start_node "$i" "$BIN/aether-r5" ""
+  wait_height "${rpcp[$((i - 1))]}" $((hb + 2)) 120 || bad "validator $i did not rejoin on r5"
 done
-ok "v1-v3 restarted on r4 (AETHER_DEV_PROTOCOL=4) and rejoined"
-# Watch the switch itself: protocol 3 below H1, 4 from H1, chain unbroken.
-seen3=no seen4=no
+ok "v1-v3 restarted on r5 (AETHER_DEV_PROTOCOL=5) and rejoined"
+# Watch the switch itself: protocol 4 below H1, 5 from H1, chain unbroken.
+seen4=no seen5=no
 while [ "$(height "${rpcp[0]}")" -lt $((H1 + 2)) ]; do
   hh=$(height "${rpcp[0]}"); pp=$(proto "${rpcp[0]}")
-  if [ "$hh" -lt "$H1" ] && [ "$pp" = 3 ]; then seen3=yes; fi
-  if [ "$hh" -ge "$H1" ] && [ "$pp" = 4 ]; then seen4=yes; fi
+  if [ "$hh" -lt "$H1" ] && [ "$pp" = 4 ]; then seen4=yes; fi
+  if [ "$hh" -ge "$H1" ] && [ "$pp" = 5 ]; then seen5=yes; fi
   sleep 0.3
 done
-if [ "$seen3" = yes ] && [ "$seen4" = yes ]; then
-  ok "protocol 3 below $H1, exactly 4 from $H1 (observed live)"
+if [ "$seen4" = yes ] && [ "$seen5" = yes ]; then
+  ok "protocol 4 below $H1, exactly 5 from $H1 (observed live)"
 else
-  bad "the switch was not observed (seen3 $seen3, seen4 $seen4)"
+  bad "the switch was not observed (seen4 $seen4, seen5 $seen5)"
 fi
 parent=$(bfield "$H1" parent "${rpcp[0]}"); prev=$(bfield $((H1 - 1)) hash "${rpcp[0]}")
 cont=yes
@@ -483,7 +483,7 @@ for k in 0 1 2; do roots+="$(bfield "$((H1 + 2))" state_root "${rpcp[$k]}") "; d
 [ "$(printf '%s\n' $roots | sort -u | grep -c .)" = 1 ] && ok "upgraded validators agree on the root after the switch" || bad "upgraded validators disagree: $roots"
 
 # ---------------------------------------------------------------------------
-section "4. the node left on protocol 3 stops cleanly, then rejoins on r4"
+section "4. the node left on protocol 4 stops cleanly, then rejoins on r5"
 v4pid=${NODE_PID[3]}
 end=$((SECONDS + 60))
 while kill -0 "$v4pid" 2>/dev/null && [ "$SECONDS" -lt "$end" ]; do sleep 1; done
@@ -502,41 +502,41 @@ if [ "$h4" -ge $((H1 - 2)) ] && [ "$h4" -le $((H1 - 1)) ] && [ "$r4head" = "$cha
 else
   bad "v4 stopped at a foreign head ($h4 vs window $((H1 - 2))..$((H1 - 1)), hash ${r4head:0:12} vs ${chain4:0:12})"
 fi
-start_node 4 "$BIN/aether-r4" ""
-if wait_height "${rpcp[3]}" $((H1 + 2)) 180 && [ "$(node_proto "${rpcp[3]}")" = 4 ]; then
-  ok "v4 rejoined on r4, caught up past the switch, node_protocol 4"
+start_node 4 "$BIN/aether-r5" ""
+if wait_height "${rpcp[3]}" $((H1 + 2)) 180 && [ "$(node_proto "${rpcp[3]}")" = 5 ]; then
+  ok "v4 rejoined on r5, caught up past the switch, node_protocol 5"
 else
-  bad "v4 did not rejoin on r4 (height $(height "${rpcp[3]}"), node_protocol $(node_proto "${rpcp[3]}"))"
+  bad "v4 did not rejoin on r5 (height $(height "${rpcp[3]}"), node_protocol $(node_proto "${rpcp[3]}"))"
 fi
 r1=$(bfield "$((H1 + 2))" state_root "${rpcp[0]}"); r4v=$(bfield "$((H1 + 2))" state_root "${rpcp[3]}")
 [ "$r1" = "$r4v" ] && ok "rejoined v4 agrees on the post-switch state root" || bad "v4 root after rejoin differs: $r1 vs $r4v"
 
 # ---------------------------------------------------------------------------
-section "5. emergency upgrade to protocol 5 (epoch notice, B4: n-f approvals)"
+section "5. emergency upgrade to protocol 6 (epoch notice, B4: n-f approvals)"
 # The rule since B4 (upgrade::verify_emergency): n-f independent ed25519
 # approvals from current committee members — 3 of 4 on this chain. 2 approvals
 # cannot pass even with a valid committee BLS signature: the third partial
 # below is the same share signature with its emergency_approval stripped.
 h=$(height "${rpcp[0]}")
 H2=$((h + 75))
-b3r5=$("$A" dev-b3 "$BIN/aether-r5")
-python3 - "$CHAIN" "$H2" "$b3r5" > "$D/upgrade5.json" <<'PYEOF'
+b3r6=$("$A" dev-b3 "$BIN/aether-r6")
+python3 - "$CHAIN" "$H2" "$b3r6" > "$D/upgrade6.json" <<'PYEOF'
 import json, sys
 chain, at, b3 = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
-json.dump({"chain_id": chain, "protocol": 5, "activate_at": at, "emergency": True,
-           "releases": [{"platform": "macos-arm64-dmg", "version": "drill-r5",
-                          "blake3": b3, "url": "https://drill.invalid/r5.dmg"}],
-           "notes": "drill: emergency switch to protocol 5"}, sys.stdout)
+json.dump({"chain_id": chain, "protocol": 6, "activate_at": at, "emergency": True,
+           "releases": [{"platform": "macos-arm64-dmg", "version": "drill-r6",
+                          "blake3": b3, "url": "https://drill.invalid/r6.dmg"}],
+           "notes": "drill: emergency switch to protocol 6"}, sys.stdout)
 PYEOF
-for i in 1 2 3 4; do "$A" upgrade-sign --data "$D/g$i" --network "$D/network.json" "$D/upgrade5.json" > "$D/p5-$i.json" || true; done
-python3 - "$D/p5-3.json" "$D/p5-3-noed.json" <<'PYEOF' || true
+for i in 1 2 3 4; do "$A" upgrade-sign --data "$D/g$i" --network "$D/network.json" "$D/upgrade6.json" > "$D/p6-$i.json" || true; done
+python3 - "$D/p6-3.json" "$D/p6-3-noed.json" <<'PYEOF' || true
 import json, sys
 p = json.load(open(sys.argv[1]))
 del p["emergency_approval"]  # a BLS partial that did not countersign the emergency
 json.dump(p, open(sys.argv[2], "w"))
 PYEOF
 emsg=""
-if "$A" upgrade-combine --network "$D/network.json" "$D/p5-1.json" "$D/p5-2.json" "$D/p5-3-noed.json" > "$D/t.json" 2>"$D/emergency-2of4.err"; then
+if "$A" upgrade-combine --network "$D/network.json" "$D/p6-1.json" "$D/p6-2.json" "$D/p6-3-noed.json" > "$D/t.json" 2>"$D/emergency-2of4.err"; then
   bad "2-of-4 emergency approvals combined (B4 needs n-f = 3)"
 else
   emsg=$(tr '\n' ' ' < "$D/emergency-2of4.err")
@@ -545,84 +545,84 @@ else
     *) ok "2-of-4 emergency approvals refused (B4 n-f): ${emsg:0:60}" ;;
   esac
 fi
-if "$A" upgrade-combine --network "$D/network.json" "$D/p5-1.json" "$D/p5-2.json" "$D/p5-3.json" > "$D/signed5.json" 2>"$D/combine5.err" \
-   && "$A" upgrade-verify --network "$D/network.json" "$D/signed5.json" > /dev/null 2>&1; then
+if "$A" upgrade-combine --network "$D/network.json" "$D/p6-1.json" "$D/p6-2.json" "$D/p6-3.json" > "$D/signed6.json" 2>"$D/combine6.err" \
+   && "$A" upgrade-verify --network "$D/network.json" "$D/signed6.json" > /dev/null 2>&1; then
   ok "3-of-4 emergency approvals combined and verified (B4: committee n-f)"
 else
-  bad "3-of-4 emergency approvals did not combine/verify ($(tr '\n' ' ' < "$D/combine5.err" 2>/dev/null))"
-fi
-for i in 1 2 3 4; do [ -s "$D/signed5.json" ] && cp "$D/signed5.json" "$D/g$i/upgrades/protocol-5.json" || true; done
-sched=no
-end=$((SECONDS + 90))
-while [ "$SECONDS" -lt "$end" ]; do
-  sched=$(rpc aether_status '[]' "${rpcp[0]}" | jget '"yes" if [5, '"$H2"'] in d["result"].get("schedule", []) else "no"')
-  [ "$sched" = yes ] && break
-  sleep 1
-done
-[ "$sched" = yes ] && ok "4-of-4 emergency upgrade on chain: protocol 5 at $H2 (epoch notice $EPOCH_BLOCKS, not 604,800)" || bad "emergency upgrade never reached the chain"
-for i in 1 2 3 4; do
-  hb=$(height "${rpcp[$((i - 1))]}")
-  start_node "$i" "$BIN/aether-r5" ""
-  wait_height "${rpcp[$((i - 1))]}" $((hb + 2)) 120 || bad "validator $i did not rejoin on r5"
-done
-ok "all four validators restarted on r5 and rejoined"
-if wait_height "${rpcp[0]}" $((H2 + 3)) 240 && [ "$(proto "${rpcp[0]}")" = 5 ]; then
-  ok "protocol 5 activated at $H2 and blocks kept finalizing"
-else
-  bad "emergency switch failed (height $(height "${rpcp[0]}"), protocol $(proto "${rpcp[0]}"))"
-fi
-
-# ---------------------------------------------------------------------------
-section "6. bad release, rollback before the switch, then a clean switch to 6"
-h=$(height "${rpcp[0]}")
-H3=$((h + 75))
-b3r6=$("$A" dev-b3 "$BIN/aether-r6")
-python3 - "$CHAIN" "$H3" "$b3r6" > "$D/upgrade6.json" <<'PYEOF'
-import json, sys
-chain, at, b3 = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
-json.dump({"chain_id": chain, "protocol": 6, "activate_at": at,
-           "releases": [{"platform": "macos-arm64-dmg", "version": "drill-r6",
-                          "blake3": b3, "url": "https://drill.invalid/r6.dmg"}],
-           "notes": "drill: switch to protocol 6 (first build is bad)"}, sys.stdout)
-PYEOF
-for i in 1 2 3; do "$A" upgrade-sign --data "$D/g$i" --network "$D/network.json" "$D/upgrade6.json" > "$D/p6-$i.json" || true; done
-if ! "$A" upgrade-combine --network "$D/network.json" "$D/p6-1.json" "$D/p6-2.json" "$D/p6-3.json" > "$D/signed6.json" 2>"$D/combine6.err" \
-   || ! "$A" upgrade-verify --network "$D/network.json" "$D/signed6.json" > /dev/null 2>&1; then
-  bad "protocol-6 partials did not combine/verify ($(tr '\n' ' ' < "$D/combine6.err" 2>/dev/null))"
+  bad "3-of-4 emergency approvals did not combine/verify ($(tr '\n' ' ' < "$D/combine6.err" 2>/dev/null))"
 fi
 for i in 1 2 3 4; do [ -s "$D/signed6.json" ] && cp "$D/signed6.json" "$D/g$i/upgrades/protocol-6.json" || true; done
 sched=no
 end=$((SECONDS + 90))
 while [ "$SECONDS" -lt "$end" ]; do
-  sched=$(rpc aether_status '[]' "${rpcp[0]}" | jget '"yes" if [6, '"$H3"'] in d["result"].get("schedule", []) else "no"')
+  sched=$(rpc aether_status '[]' "${rpcp[0]}" | jget '"yes" if [6, '"$H2"'] in d["result"].get("schedule", []) else "no"')
   [ "$sched" = yes ] && break
   sleep 1
 done
-[ "$sched" = yes ] && ok "protocol 6 scheduled at $H3 (signed before anything is installed)" || bad "protocol 6 never reached the chain"
-
-echo "-- v1 installs the bad r6: it must refuse to start (operator sees it at once)"
-start_node 1 "$BIN/aether-bad" ""
-brc=0; wait "${NODE_PID[0]}" 2>/dev/null || brc=$?
-if [ "$brc" != 0 ] && [ "$brc" != 127 ]; then ok "bad release refuses to start (exit $brc); the other three keep quorum"; else bad "bad release exited $brc"; fi
-start_node 1 "$BIN/aether-r5" ""   # rollback to the previous release
-hb=$(height "${rpcp[0]}")
-if wait_height "${rpcp[0]}" $((hb + 2)) 120 && wait_height "${rpcp[0]}" $((H3 - 20)) 240; then
-  ok "rollback to r5 before the switch: v1 rejoined and followed (chain unharmed)"
-else
-  bad "v1 did not rejoin after the rollback (height $(height "${rpcp[0]}") vs switch $H3)"
-fi
-[ "$(node_proto "${rpcp[0]}")" = 5 ] || bad "chain lost head after the bad release (protocol $(proto "${rpcp[0]}"))"
-
-echo "-- installing the good r6 on everyone before $H3"
+[ "$sched" = yes ] && ok "4-of-4 emergency upgrade on chain: protocol 6 at $H2 (epoch notice $EPOCH_BLOCKS, not 604,800)" || bad "emergency upgrade never reached the chain"
 for i in 1 2 3 4; do
   hb=$(height "${rpcp[$((i - 1))]}")
   start_node "$i" "$BIN/aether-r6" ""
   wait_height "${rpcp[$((i - 1))]}" $((hb + 2)) 120 || bad "validator $i did not rejoin on r6"
 done
-if wait_height "${rpcp[0]}" $((H3 + 3)) 300 && [ "$(proto "${rpcp[0]}")" = 6 ]; then
-  ok "protocol 6 activated at $H3 with everyone on r6; blocks kept finalizing"
+ok "all four validators restarted on r6 and rejoined"
+if wait_height "${rpcp[0]}" $((H2 + 3)) 240 && [ "$(proto "${rpcp[0]}")" = 6 ]; then
+  ok "protocol 6 activated at $H2 and blocks kept finalizing"
 else
-  bad "switch to 6 failed (height $(height "${rpcp[0]}"), protocol $(proto "${rpcp[0]}"))"
+  bad "emergency switch failed (height $(height "${rpcp[0]}"), protocol $(proto "${rpcp[0]}"))"
+fi
+
+# ---------------------------------------------------------------------------
+section "6. bad release, rollback before the switch, then a clean switch to 7"
+h=$(height "${rpcp[0]}")
+H3=$((h + 75))
+b3r7=$("$A" dev-b3 "$BIN/aether-r7")
+python3 - "$CHAIN" "$H3" "$b3r7" > "$D/upgrade7.json" <<'PYEOF'
+import json, sys
+chain, at, b3 = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+json.dump({"chain_id": chain, "protocol": 7, "activate_at": at,
+           "releases": [{"platform": "macos-arm64-dmg", "version": "drill-r7",
+                          "blake3": b3, "url": "https://drill.invalid/r7.dmg"}],
+           "notes": "drill: switch to protocol 7 (first build is bad)"}, sys.stdout)
+PYEOF
+for i in 1 2 3; do "$A" upgrade-sign --data "$D/g$i" --network "$D/network.json" "$D/upgrade7.json" > "$D/p7-$i.json" || true; done
+if ! "$A" upgrade-combine --network "$D/network.json" "$D/p7-1.json" "$D/p7-2.json" "$D/p7-3.json" > "$D/signed7.json" 2>"$D/combine7.err" \
+   || ! "$A" upgrade-verify --network "$D/network.json" "$D/signed7.json" > /dev/null 2>&1; then
+  bad "protocol-7 partials did not combine/verify ($(tr '\n' ' ' < "$D/combine7.err" 2>/dev/null))"
+fi
+for i in 1 2 3 4; do [ -s "$D/signed7.json" ] && cp "$D/signed7.json" "$D/g$i/upgrades/protocol-7.json" || true; done
+sched=no
+end=$((SECONDS + 90))
+while [ "$SECONDS" -lt "$end" ]; do
+  sched=$(rpc aether_status '[]' "${rpcp[0]}" | jget '"yes" if [7, '"$H3"'] in d["result"].get("schedule", []) else "no"')
+  [ "$sched" = yes ] && break
+  sleep 1
+done
+[ "$sched" = yes ] && ok "protocol 7 scheduled at $H3 (signed before anything is installed)" || bad "protocol 7 never reached the chain"
+
+echo "-- v1 installs the bad r7: it must refuse to start (operator sees it at once)"
+start_node 1 "$BIN/aether-bad" ""
+brc=0; wait "${NODE_PID[0]}" 2>/dev/null || brc=$?
+if [ "$brc" != 0 ] && [ "$brc" != 127 ]; then ok "bad release refuses to start (exit $brc); the other three keep quorum"; else bad "bad release exited $brc"; fi
+start_node 1 "$BIN/aether-r6" ""   # rollback to the previous release
+hb=$(height "${rpcp[0]}")
+if wait_height "${rpcp[0]}" $((hb + 2)) 120 && wait_height "${rpcp[0]}" $((H3 - 20)) 240; then
+  ok "rollback to r6 before the switch: v1 rejoined and followed (chain unharmed)"
+else
+  bad "v1 did not rejoin after the rollback (height $(height "${rpcp[0]}") vs switch $H3)"
+fi
+[ "$(node_proto "${rpcp[0]}")" = 6 ] || bad "chain lost head after the bad release (protocol $(proto "${rpcp[0]}"))"
+
+echo "-- installing the good r7 on everyone before $H3"
+for i in 1 2 3 4; do
+  hb=$(height "${rpcp[$((i - 1))]}")
+  start_node "$i" "$BIN/aether-r7" ""
+  wait_height "${rpcp[$((i - 1))]}" $((hb + 2)) 120 || bad "validator $i did not rejoin on r7"
+done
+if wait_height "${rpcp[0]}" $((H3 + 3)) 300 && [ "$(proto "${rpcp[0]}")" = 7 ]; then
+  ok "protocol 7 activated at $H3 with everyone on r7; blocks kept finalizing"
+else
+  bad "switch to 7 failed (height $(height "${rpcp[0]}"), protocol $(proto "${rpcp[0]}"))"
 fi
 roots=""
 for k in 0 1 2 3; do roots+="$(bfield "$((H3 + 2))" state_root "${rpcp[$k]}") "; done

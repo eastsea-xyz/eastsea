@@ -147,12 +147,12 @@ fn a_handoff_binds_to_the_roster_the_chain_committed() {
 
 #[test]
 fn overdue_seats_stop_the_credit_with_a_warning() {
-    // Finding 6's other half: four independent operators qualify while the
+    // Finding 6's other half: five independent operators qualify while the
     // reserve keys still sit — the handoff home never completed — and past the
     // two epochs of grace the chain says so where an operator sees it, in its
     // log (the payouts stopping is mainnet_rules' `…while_its_mac_sleeps`).
     let (founder, rkeys, rmembers) = reserve_set();
-    let mut n = net(Some(Reserve { operator: founder, members: rmembers }), Some(vec![mac_entry(0), mac_entry(1)]));
+    let mut n = Net::new(Opts { chain_id: CHAIN, node_rewards: true, epoch_blocks: E, macs: 6, min_streak: Some(0), history_v2: false, protocol: 1, fees: false, reserve: Some(Reserve { operator: founder, members: rmembers }), committee: Some(vec![mac_entry(0), mac_entry(1)]) });
     // Two seats stand, three independents register: the boundary commits their
     // roster (one reserve key fills the fourth seat) and the handoff seats it.
     let regs = (0..3).map(|i| n.register(i)).collect();
@@ -164,16 +164,17 @@ fn overdue_seats_stop_the_credit_with_a_warning() {
     n.run_to(carried.height + aether_node::handoff::DELAY);
     assert_eq!(aether_rewards::seated(&n.parent.state).0, 1, "one reserve key still seated");
 
-    // The fourth independent qualifies: nobody needs the seat, and with no
+    // The fourth and fifth independents qualify (Mac 4 is the founder and
+    // never registers): nobody needs the seat, and with no
     // handoff delivered the count climbs — 1, 2 (grace), then 3, where the
     // credit stops and the warning goes out.
-    let reg = n.register(3);
-    n.step(vec![reg], None, vec![]);
+    let regs = [3, 5].iter().map(|&i| n.register(i)).collect();
+    n.step(regs, None, vec![]);
     assert_eq!(aether_node::rotation::independent(
         &aether_node::rotation::eligible(&n.parent.state, n.parent.height / E + 1, 0),
         |k| aether_node::rotation::operators(&n.parent.state).get(k).cloned(),
         &Reserve::of(&n.parent.state).unwrap(),
-    ), 4, "four independent operators qualify");
+    ), 5, "five independent operators qualify");
     let log = Log(Arc::default());
     let capture = tracing_subscriber::fmt()
         .with_ansi(false)

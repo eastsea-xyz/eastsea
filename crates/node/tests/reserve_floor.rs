@@ -327,10 +327,9 @@ fn the_credit_expiry_starts_at_five_and_never_erases_the_reserve_set() {
     );
 }
 
-// This value must be captured with the production reserve-floor rule reverted,
-// then pinned before the old-rules fail-once run of the activation test. The
-// transcript covers both reserve-bearing histories through FORK_HEIGHT - 1.
-const EXPECTED_PRE_FOUR_RESERVE_TRANSCRIPT: &str = "BASELINE_PENDING";
+// Captured against released production rules at e900960 with this fixture.
+// Both reserve-bearing histories are pinned through FORK_HEIGHT - 1.
+const EXPECTED_PRE_FOUR_RESERVE_TRANSCRIPT: &str = "dfe517a8f386bbe378a358f01c766c61efa41c0c92556e8b46345f8c30e97e72";
 const RESERVE_FORK_HEIGHT: u64 = 8 * E;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -528,9 +527,13 @@ fn reserve_floor_activates_only_at_the_signed_fork_and_replays_the_old_committee
         );
         assert_eq!(h.net.parent.next_protocol(), 4);
         assert_eq!(rewards::committee(&h.net.parent.state), h.running);
-        // The range ends mid-epoch, after honest answers advanced last_epoch.
-        // Query the upcoming boundary rather than reusing its previous epoch.
-        let operators = independents_at(&h.net, RESERVE_FORK_HEIGHT / E);
+        // Prepare the boundary on a clone so epoch-8 stability is closed
+        // without changing any captured protocol-3 frame.
+        let view = h.net.view();
+        let reserve = Reserve::of(&view).unwrap();
+        let pool = rotation::eligible(&view, RESERVE_FORK_HEIGHT / E, 0);
+        let ops = rotation::operators(&view);
+        let operators = rotation::independent(&pool, |key| ops.get(key).cloned(), &reserve);
         if h.credit {
             assert_eq!(operators, 4);
             assert_eq!(rewards::overdue(&h.net.parent.state).0, 7);

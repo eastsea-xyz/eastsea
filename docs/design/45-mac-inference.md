@@ -1,6 +1,6 @@
 # 45. AI inference on EastSea Macs (2026-10-09)
 
-**Status: research/design proposal only.** No implementation or performance/security gate has passed. Intended delivery: **the first upgrade after mainnet**, without delaying genesis. The founder asked on 2026-10-09: “이 블록체인 네트워크가 단순 스마트계약과 거래만 하는 네트워크면 자원낭비가 아닐까? ai model도 얹을 수 있나?”
+**Status: not adopted.** This is a reference design only. The red-team review [mac-ai-redteam-2026-10-09](../research/mac-ai-redteam-2026-10-09.md) recommends **NO-GO** for a paid public inference marketplace and **LATER** for optional inference on the owner's own Mac. Nothing here is scheduled. Reopening requires the red team's gates (§8) and a new founder decision. No implementation or performance/security gate has passed. The founder asked on 2026-10-09: “이 블록체인 네트워크가 단순 스마트계약과 거래만 하는 네트워크면 자원낭비가 아닐까? ai model도 얹을 수 있나?”
 
 Yes. A willing Mac can use spare Metal/unified-memory capacity for a requested model while EastSea settles payment and samples the result. Macs already perform useful Jolt/Metal block proving. Inference is a secondary, optional workload; spare capacity is not a reason to compromise validation, proving or the owner's normal use.
 

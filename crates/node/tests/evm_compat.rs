@@ -4,11 +4,12 @@
 
 use aether_crypto::{P256Signer, Signer};
 use aether_execution::{
-    aether_account_code, aether_account_code_v2, call, encode_execute, execute_block, predeploys,
+    aether_account_code, aether_account_code_v2, call, encode_execute, execute_block,
     sign_call_with, BlockContext, CallResult, EvmCall, FeePolicy, Receipt, WorldState,
     AETHER_ACCOUNT,
 };
 use aether_types::{Address, Bytes, FeeVector, GasVector, B256, U256};
+use aether_node::predeploys;
 use alloy_primitives::{address, keccak256};
 use alloy_sol_types::{sol, SolCall, SolValue};
 
@@ -86,17 +87,17 @@ impl Harness {
             assert_eq!(state.code_hash(&address), hash);
         }
         // Compiled from contracts/test/fixtures/EvmCompat.sol with solc
-        // 0.8.19, Paris, optimizer 200; regenerate as described in fixtures/README.md.
+        // 0.8.19, Paris, optimizer 200; regenerate as described in fixtures/evm-compat/README.md.
         state
             .set_code(
                 TOKEN,
-                runtime(include_str!("fixtures/evm_compat_token.bin.hex")),
+                runtime(include_str!("fixtures/evm-compat/evm_compat_token.bin.hex")),
             )
             .unwrap();
         state
             .set_code(
                 NFT,
-                runtime(include_str!("fixtures/evm_compat_nft.bin.hex")),
+                runtime(include_str!("fixtures/evm-compat/evm_compat_nft.bin.hex")),
             )
             .unwrap();
         Self {

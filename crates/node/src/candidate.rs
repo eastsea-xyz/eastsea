@@ -214,7 +214,7 @@ impl Outbox {
     /// encrypt before a follower, validator or HTTP endpoint sees any token.
     async fn reattest(&self, token: &str, chain_id: u64, registrar: &aether_crypto::PublicKey, public_params: Vec<Value>) -> Result<Value, String> {
         for _ in 0..2 {
-            let descriptor: aether_crypto::registrar::EncryptionKey = serde_json::from_value(self.registrar_call("aether_registrarEncryptionKey", json!([])).await?)
+            let descriptor: aether_net::registrar::EncryptionKey = serde_json::from_value(self.registrar_call("aether_registrarEncryptionKey", json!([])).await?)
                 .map_err(|_| "registrar encryption key unavailable")?;
             let params = crate::devicecheck::encrypt_token_request(token, &descriptor, chain_id, registrar, "aether_reattest", public_params.clone())?;
             match self.registrar_call("aether_reattest", params).await {

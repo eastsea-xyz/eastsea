@@ -27,11 +27,11 @@ required-features = ["bindgen"]
 
 [dependencies]
 aether-types.workspace = true
-aether-crypto = { workspace = true, features = ["registrar-encryption"] }
+aether-crypto.workspace = true
 aether-execution.workspace = true
 aether-light.workspace = true
 aether-state.workspace = true
-aether-net.workspace = true
+aether-net = { workspace = true, features = ["registrar-encryption"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 anyhow = "1"
 rand.workspace = true

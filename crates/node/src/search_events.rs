@@ -3,10 +3,9 @@
 //! registry's record. Text is a publisher claim, never fetched from a hint URL.
 
 use crate::search::{SearchEvent, SearchMetadata};
-use aether_execution::{CallTargets, Event, Receipt, WorldState};
-use aether_types::{Address, TxEnvelope, B256};
+use aether_execution::{Event, Receipt, WorldState};
+use aether_types::{Address, B256};
 use alloy_primitives::keccak256;
-use std::collections::BTreeSet;
 
 const GRACE: u64 = 30 * 24 * 60 * 60;
 
@@ -239,42 +238,24 @@ pub fn decode_from_source(
         .collect()
 }
 
-/// Successful finalized execution only. The inspector supplies actual direct
-/// and internal calls in transaction order, including silent account batches.
+/// Decode metadata from successful finalized receipts. The released executor
+/// supplies no call trace, so every success marks usage coverage incomplete.
+/// Direct recipients and log emitters cannot establish internal-call activity.
 pub fn block_events(
-    txs: &[TxEnvelope],
     receipts: &[Receipt],
-    traces: &[CallTargets],
     state: &WorldState,
     sources: &crate::search_sources::SearchSources,
     at: u64,
 ) -> Vec<SearchEvent> {
     let mut events = vec![SearchEvent::Tick { at }];
-    for (i, (tx, receipt)) in txs.iter().zip(receipts).enumerate() {
+    for receipt in receipts {
         if !receipt.success {
             continue;
         }
         for log in &receipt.events {
             events.extend(decode_from_source(log, state, sources, at));
         }
-        let mut called = BTreeSet::new();
-        if let Some(trace) = traces.get(i) {
-            called.extend(trace.addresses.iter().copied());
-            if !trace.complete {
-                events.push(SearchEvent::UsageIncomplete { at });
-            }
-        } else {
-            events.push(SearchEvent::UsageIncomplete { at });
-        }
-        events.extend(
-            called
-                .into_iter()
-                .map(|contract| SearchEvent::ContractCalled {
-                    contract,
-                    caller: tx.header.sender,
-                    at,
-                }),
-        );
+        events.push(SearchEvent::UsageIncomplete { at });
     }
     events
 }

@@ -87,12 +87,12 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
         ),
         rule(
             "standard predeploys",
-            aether_execution::predeploys::installed(|a| state.code(a)),
+            crate::predeploys::installed(|a| state.code(a)),
             format!(
                 "the CREATE2 deployer ({:#x}), Multicall3 ({:#x}) and Permit2 ({:#x}) hold their exact Ethereum mainnet runtime code",
-                aether_execution::predeploys::CREATE2_DEPLOYER,
-                aether_execution::predeploys::MULTICALL3,
-                aether_execution::predeploys::PERMIT2
+                crate::predeploys::CREATE2_DEPLOYER,
+                crate::predeploys::MULTICALL3,
+                crate::predeploys::PERMIT2
             ),
         ),
         rule(
@@ -1436,7 +1436,7 @@ mod tests {
     fn binding_refuses_a_chain_id_swapped_in_transit() {
         let (output, identity) = ceremony_output();
         let checked = final_file(0, Some(output.clone()), Some(identity.clone()));
-        let (bytes, record) = record_for(&checked);
+        let (_, record) = record_for(&checked);
         let mut swapped = checked.clone();
         swapped.chain_id = 7_802;
         let share = crate::dkg::KeyFile { round: 0, output, identity, share: "00".into() };
@@ -1849,7 +1849,7 @@ mod tests {
     /// the shipped 7780 genesis without node rewards and history v2.
     #[test]
     fn standard_predeploys_are_on_a_new_genesis_only() {
-        use aether_execution::predeploys::{self, CREATE2_DEPLOYER, CREATE2_DEPLOYER_CODE_HASH, MULTICALL3, MULTICALL3_CODE_HASH, PERMIT2, PERMIT2_CODE_HASH};
+        use crate::predeploys::{self, CREATE2_DEPLOYER, CREATE2_DEPLOYER_CODE_HASH, MULTICALL3, MULTICALL3_CODE_HASH, PERMIT2, PERMIT2_CODE_HASH};
         let state = mainnet().genesis_state();
         assert_eq!(
             format!("{:#x}", state.code_hash(&CREATE2_DEPLOYER)),

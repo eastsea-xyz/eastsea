@@ -227,7 +227,6 @@ impl Snapshot {
             timestamp: 0,
             state,
             receipts: vec![],
-            call_targets: vec![],
             tx_hashes: vec![],
             gas: Default::default(),
             new_slots: 0,

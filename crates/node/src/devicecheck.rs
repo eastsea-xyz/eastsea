@@ -7,7 +7,7 @@
 //! if not, marks it. One Mac = one node identity, the anchor of the contribution
 //! rank. The key (.p8, "DeviceCheck" key of the team) never leaves the registrar.
 
-use aether_crypto::registrar::{EncryptionKey, RecipientSecret, TokenEnvelope};
+use aether_net::registrar::{EncryptionKey, RecipientSecret, TokenEnvelope};
 use base64::Engine as _;
 use p256::ecdsa::{signature::Signer as _, Signature, SigningKey};
 use p256::pkcs8::DecodePrivateKey as _;
@@ -383,7 +383,7 @@ pub fn encrypted_token(params: &Value) -> Result<TokenEnvelope, String> {
     if value["recipient"].as_str().is_none_or(|s| s.len() != 66)
         || value["ephemeral"].as_str().is_none_or(|s| s.len() != 66)
         || value["nonce"].as_str().is_none_or(|s| s.len() != 24)
-        || value["ciphertext"].as_str().is_none_or(|s| s.len() > 2 * (aether_crypto::registrar::MAX_TOKEN_BYTES + 16)) {
+        || value["ciphertext"].as_str().is_none_or(|s| s.len() > 2 * (aether_net::registrar::MAX_TOKEN_BYTES + 16)) {
         return Err("param 0 must be a bounded encrypted DeviceCheck token".into());
     }
     let envelope: TokenEnvelope = serde_json::from_value(value.clone()).map_err(|_| "param 0 must be an encrypted DeviceCheck token")?;
@@ -394,16 +394,16 @@ pub fn encrypted_token(params: &Value) -> Result<TokenEnvelope, String> {
 fn token_context(chain_id: u64, method: &str, params: &Value) -> Result<Vec<u8>, String> {
     let params = params.as_array().ok_or("DeviceCheck params must be an array")?;
     let public = serde_json::to_vec(&params[1..]).map_err(|_| "invalid DeviceCheck params")?;
-    Ok(aether_crypto::registrar::request_context(chain_id, method, &public))
+    Ok(aether_net::registrar::request_context(chain_id, method, &public))
 }
 
 /// The node (candidate loop and development CLI) encrypts before any RPC.
 /// `registrar` is the key from authenticated finalized state/configuration.
 pub fn encrypt_token_request(token: &str, descriptor: &EncryptionKey, chain_id: u64, registrar: &aether_crypto::PublicKey, method: &str, public_params: Vec<Value>) -> Result<Value, String> {
     let key = descriptor.authenticate(chain_id, registrar)?;
-    let context = aether_crypto::registrar::request_context(chain_id, method, &serde_json::to_vec(&public_params).map_err(|_| "invalid DeviceCheck params")?);
+    let context = aether_net::registrar::request_context(chain_id, method, &serde_json::to_vec(&public_params).map_err(|_| "invalid DeviceCheck params")?);
     let seed = p256::elliptic_curve::zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
-    let envelope = aether_crypto::registrar::seal(token, &key, &context, &seed, rand::random())?;
+    let envelope = aether_net::registrar::seal(token, &key, &context, &seed, rand::random())?;
     let mut params = vec![serde_json::to_value(envelope).map_err(|_| "invalid encrypted DeviceCheck token")?];
     params.extend(public_params);
     Ok(Value::Array(params))

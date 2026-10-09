@@ -1,8 +1,9 @@
 //! R18: inspect JSON handled and emitted by the actual RPC relay path.
 use super::*;
-use aether_crypto::{registrar::{EncryptionKey, RecipientSecret}, P256Signer, PublicKey, Signer as _};
+use aether_crypto::{P256Signer, PublicKey, Signer as _};
+use aether_net::registrar::{EncryptionKey, RecipientSecret};
 use commonware_codec::Encode as _;
-use commonware_cryptography::{Signer as _, PrivateKey as _};
+use commonware_cryptography::Signer as _;
 use std::sync::Mutex;
 
 type Captured = Arc<Mutex<Vec<Value>>>;
@@ -22,7 +23,10 @@ fn fixture() -> (RpcState, Arc<crate::devicecheck::Registrar>, PublicKey, std::p
     let public = signer.public_key();
     let (x, y) = aether_crypto::p256_xy(&public.bytes).unwrap();
     let mut st = bare_state();
-    aether_execution::registry::set_registrar(&mut st.chain.lock().finalized.state, (x, y));
+    {
+        let mut chain = st.chain.lock();
+        aether_execution::registry::set_registrar(&mut Arc::make_mut(&mut chain.finalized).state, (x, y));
+    }
     let registrar = Arc::new(crate::devicecheck::Registrar::new(None, crate::devicecheck::Registry::open(dir.join("registrations.json")),
         Arc::new(crate::registrar_signer::FileSigner::from_seed(&[4; 32]).unwrap()), 7781));
     st.registrar = Some(registrar.clone());
@@ -103,7 +107,7 @@ async fn registration_and_reattest_relays_see_ciphertext_on_success_and_failure(
     plaintext_registration[0] = json!(token);
     let mut plaintext_daily = json!([token, hex::encode(voting), 0, "00"]);
     let mut oversized = registration;
-    oversized[0]["ciphertext"] = json!("aa".repeat(aether_crypto::registrar::MAX_TOKEN_BYTES + 17));
+    oversized[0]["ciphertext"] = json!("aa".repeat(aether_net::registrar::MAX_TOKEN_BYTES + 17));
     for (method, p) in [("aether_registerDevice", plaintext_registration), ("aether_reattest", plaintext_daily.take()), ("aether_registerDevice", oversized)] {
         let response = remote(&relay, method, p).await;
         assert_eq!(response["error"]["code"], -32602);

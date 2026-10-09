@@ -669,6 +669,9 @@ async fn single(st: &RpcState, req: Value, local_wallet: bool) -> Value {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let method = normalize_method(req.get("method").and_then(Value::as_str).unwrap_or_default());
     let params = req.get("params").cloned().unwrap_or(Value::Array(vec![]));
+    if !local_wallet && method == "aether_setPresenceRegion" {
+        return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"presence region settings are local-only"}});
+    }
     if !local_wallet && method == "aether_setPresenceCountry" {
         return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"presence country settings are local-only"}});
     }
@@ -1147,6 +1150,16 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
     match method {
         "aether_peers" => Ok(st.presence.as_ref().map(|p| p.peer_snapshot()).unwrap_or_else(|| json!([]))),
         "aether_presence" => Ok(st.presence.as_ref().map(|p| p.snapshot()).unwrap_or_else(crate::presence::unavailable)),
+        "aether_setPresenceRegion" => {
+            let region = match p.as_array().map(Vec::as_slice) {
+                Some([Value::Null]) => None,
+                Some([Value::String(s)]) => Some(s.clone()),
+                _ => return Err((-32602, "params: [UN M49 sub-region code or null]".into())),
+            };
+            let presence = st.presence.as_ref().ok_or_else(|| (-32000, "no iroh presence endpoint on this node".into()))?;
+            presence.set_region(region).map_err(|e| (-32602, e))?;
+            Ok(json!({"ok":true}))
+        }
         "aether_setPresenceCountry" => {
             let country = match p.as_array().map(Vec::as_slice) {
                 Some([Value::Null]) => None,
@@ -1801,7 +1814,7 @@ mod compression_tests {
         st.finality = Finality::Archive(Arc::new(crate::follow::FinalityArchive::new(Some(store.clone()))));
         {
             let mut g = st.chain.lock();
-            g.store = Some(store);
+            g.set_test_archive_store(store);
             g.blocks.clear();
             g.receipts.clear();
             let mut head = (*g.finalized).clone();
@@ -2403,6 +2416,8 @@ mod release_tests {
             prover: None,
             shards: None,
             public_read_only: false,
+            presence: None,
+            app_bundles: None,
         }
     }
 

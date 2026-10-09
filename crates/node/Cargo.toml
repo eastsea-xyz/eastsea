@@ -13,14 +13,14 @@ path = "src/main.rs"
 [dependencies]
 aether-types.workspace = true
 aether-hash.workspace = true
-aether-crypto = { workspace = true, features = ["registrar-encryption"] }
+aether-crypto.workspace = true
 aether-state.workspace = true
 aether-execution.workspace = true
 aether-rewards.workspace = true
 aether-light.workspace = true
 aether-proving.workspace = true
 aether-consensus.workspace = true
-aether-net.workspace = true
+aether-net = { workspace = true, features = ["registrar-encryption"] }
 alloy-primitives.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -83,6 +83,7 @@ test-seam = []
 dev-drill = []
 
 [dev-dependencies]
+alloy-sol-types = { version = "=1.7.3", default-features = false }
 aether-test-support = { path = "../test-support" }
 rand_chacha = "0.10"
 # Tests drive a Router by hand (oneshot) to hold responses outstanding —

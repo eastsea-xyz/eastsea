@@ -18,7 +18,8 @@ pub const MAX_ENTRIES: usize = 4096;
 const MIN_UPDATE_SECONDS: u64 = 10;
 const FANOUT: usize = 8;
 const SCOPE: &str = "unverified cohort observation";
-const REGIONS: [&str; 8] = [
+const SUBREGIONS: [&str; 17] = ["015", "021", "030", "034", "035", "039", "053", "054", "057", "061", "143", "145", "151", "154", "155", "202", "419"];
+const REGIONS: [&str; 25] = [
     "asia",
     "europe",
     "north_america",
@@ -27,12 +28,29 @@ const REGIONS: [&str; 8] = [
     "oceania",
     "unknown",
     "world",
+    "015",
+    "021",
+    "030",
+    "034",
+    "035",
+    "039",
+    "053",
+    "054",
+    "057",
+    "061",
+    "143",
+    "145",
+    "151",
+    "154",
+    "155",
+    "202",
+    "419",
 ];
 
 // Marketing release version, for local diagnostics only. It is not gossiped.
 pub const NODE_VERSION: &str = match option_env!("AETHER_VERSION") {
     Some(v) => v,
-    None => "0.7.4",
+    None => "0.7.3",
 };
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -259,6 +277,7 @@ pub struct Presence {
     pub peers: aether_net::peers::PeerTracker,
     role: Role,
     country: Mutex<Option<String>>,
+    region: Mutex<Option<String>>,
     table: Mutex<Table>,
     validators: BTreeSet<EndpointId>,
     local_settings: std::sync::atomic::AtomicBool,
@@ -294,6 +313,7 @@ impl Presence {
             peers,
             role,
             country: Mutex::new(country.filter(|c| validate_country(Some(c)).is_ok())),
+            region: Mutex::new(None),
             table: Mutex::new(Table::new(network)),
             validators: validators.into_iter().collect(),
             local_settings: std::sync::atomic::AtomicBool::new(true),
@@ -314,6 +334,17 @@ impl Presence {
         Ok(())
     }
 
+    /// The default Mac sub-region is independent of optional country consent.
+    pub fn set_region(&self, region: Option<String>) -> Result<(), String> {
+        if !self.local_settings.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("region settings need a loopback-only HTTP server".into());
+        }
+        validate_region(region.as_deref())?;
+        *self.region.lock().expect("presence region") = region;
+        // Preserve the frozen release window when a local preference changes.
+        Ok(())
+    }
+
     pub fn disable_country_settings(&self) {
         self.local_settings
             .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -322,6 +353,9 @@ impl Presence {
     fn own_region(&self) -> &'static str {
         if let Some(country) = self.country.lock().expect("presence country").as_deref() {
             return country_region(country);
+        }
+        if let Some(region) = self.region.lock().expect("presence region").as_deref() {
+            return SUBREGIONS.iter().copied().find(|code| *code == region).unwrap_or("unknown");
         }
         self.endpoint
             .addr()
@@ -501,16 +535,36 @@ pub fn validate_country(country: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-/// A local optional country choice becomes a continent, never a country field.
-/// Ambiguous, transcontinental and unlisted codes remain unknown.
+/// Only canonical UN M49 sub-region codes are accepted; broader relay labels
+/// remain read-only compatibility data. No country or location lookup is made.
+pub fn validate_region(region: Option<&str>) -> Result<(), String> {
+    if region.is_some_and(|code| !SUBREGIONS.contains(&code)) {
+        return Err("region must be a canonical UN M49 sub-region code, or null".into());
+    }
+    Ok(())
+}
+
+/// Local country choice maps to its statistical sub-region, never a public
+/// country field. Source: https://unstats.un.org/unsd/methodology/m49/overview/
 fn country_region(country: &str) -> &'static str {
     for (region, countries) in [
-        ("asia", "AE AF BD BH BN BT CN HK ID IL IN IQ IR JO JP KH KP KR KW LA LB LK MM MN MO MV MY NP OM PH PK PS QA SA SG TH TL TW VN YE"),
-        ("europe", "AD AL AT AX BA BE BG BY CH CZ DE DK EE ES FI FO FR GB GG GI GR HR HU IE IM IS IT JE LI LT LU LV MC MD ME MK MT NL NO PL PT RO RS SE SI SJ SK SM UA VA"),
-        ("north_america", "AG AI AW BB BL BM BQ BS BZ CA CR CU CW DM DO GD GL GP GT HN HT JM KN KY LC MF MQ MS MX NI PA PM PR SV SX TC TT US VC VG VI"),
-        ("south_america", "AR BO BR CL CO EC FK GF GY PE PY SR UY VE"),
-        ("africa", "AO BF BI BJ BW CD CF CG CI CM CV DJ DZ EG EH ER ET GA GH GM GN GQ GW KE KM LR LS LY MA MG ML MR MU MW MZ NA NE NG RE RW SC SD SH SL SN SO SS ST SZ TD TG TN TZ UG YT ZA ZM ZW"),
-        ("oceania", "AS AU CK FJ FM GU KI MH MP NC NF NR NU NZ PF PG PN PW SB TK TO TV VU WF WS"),
+        ("015", "DZ EG EH LY MA SD TN"),
+        ("021", "BM CA GL PM US"),
+        ("030", "CN HK JP KP KR MN MO"),
+        ("034", "AF BD BT IN IR LK MV NP PK"),
+        ("035", "BN ID KH LA MM MY PH SG TH TL VN"),
+        ("039", "AD AL BA ES GI GR HR IT ME MK MT PT RS SI SM VA"),
+        ("053", "AU CC CX HM NF NZ"),
+        ("054", "FJ NC PG SB VU"),
+        ("057", "FM GU KI MH MP NR PW UM"),
+        ("061", "AS CK NU PF PN TK TO TV WF WS"),
+        ("143", "KG KZ TJ TM UZ"),
+        ("145", "AE AM AZ BH CY GE IL IQ JO KW LB OM PS QA SA SY TR YE"),
+        ("151", "BG BY CZ HU MD PL RO RU SK UA"),
+        ("154", "AX DK EE FI FO GB GG IE IM IS JE LT LV NO SE SJ"),
+        ("155", "AT BE CH DE FR LI LU MC NL"),
+        ("202", "AO BF BI BJ BW CD CF CG CI CM CV DJ ER ET GA GH GM GN GQ GW IO KE KM LR LS MG ML MR MU MW MZ NA NE NG RE RW SC SH SL SN SO SS ST SZ TD TF TG TZ UG YT ZA ZM ZW"),
+        ("419", "AG AI AR AW BB BL BO BQ BR BS BV BZ CL CO CR CU CW DM DO EC FK GD GF GP GS GT GY HN HT JM KN KY LC MF MQ MS MX NI PA PE PR PY SR SV SX TC TT UY VC VE VG VI"),
     ] {
         if countries.split_ascii_whitespace().any(|code| code == country) {
             return region;
@@ -752,10 +806,16 @@ mod tests {
 
     #[test]
     fn country_stays_local_and_only_yields_a_broad_region() {
-        assert_eq!(country_region("KR"), "asia");
-        assert_eq!(country_region("US"), "north_america");
-        assert_eq!(country_region("AU"), "oceania");
-        assert_eq!(country_region("RU"), "unknown");
+        assert_eq!(country_region("KR"), "030");
+        assert_eq!(country_region("US"), "021");
+        assert_eq!(country_region("AU"), "053");
+        assert_eq!(country_region("RU"), "151");
+        assert_eq!(country_region("TR"), "145");
+        assert_eq!(country_region("CY"), "145");
+        assert_eq!(country_region("KZ"), "143");
+        assert_eq!(country_region("AQ"), "unknown");
+        for code in SUBREGIONS { assert!(validate_region(Some(code)).is_ok()); }
+        for code in ["asia", "KR", "30", "000", "015 "] { assert!(validate_region(Some(code)).is_err()); }
         for c in ["kr", "ZZ", "Korea", "127.0.0.1"] {
             assert!(validate_country(Some(c)).is_err());
         }
@@ -892,7 +952,9 @@ mod tests {
                 serde_json::to_value(&received.aggregate).unwrap()
             );
             assert!(!serialized.to_string().contains(&server.id().to_string()));
+            presence.set_region(Some("030".into())).unwrap();
             presence.set_country(None).unwrap();
+            assert_eq!(presence.own_region(), "030", "declining country retains the default region");
             assert_eq!(
                 presence.snapshot(),
                 serialized["result"],
@@ -901,6 +963,7 @@ mod tests {
             assert!(presence.set_country(Some("ZZ".into())).is_err());
             presence.disable_country_settings();
             assert!(presence.set_country(Some("US".into())).is_err());
+            assert!(presence.set_region(Some("021".into())).is_err());
             assert_eq!(
                 presence.peer_snapshot(),
                 json!([]),

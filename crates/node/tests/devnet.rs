@@ -7,7 +7,7 @@
 use aether_test_support::{Port, TestChild};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -383,7 +383,7 @@ struct RpcSocket {
 
 impl RpcSocket {
     fn connect(net: &Net, node: usize) -> Self {
-        let mut stream = TcpStream::connect(("127.0.0.1", net.rpc[node])).expect("connect RPC websocket");
+        let mut stream = TcpStream::connect(("127.0.0.1", net.rpc[node].port())).expect("connect RPC websocket");
         stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         stream.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
         let request = format!(
@@ -1551,9 +1551,9 @@ fn rel24_follower_rejects_a_stale_path_and_waits_for_two_current_sources() {
     let stale = source(3, true);
     let fresh = source(head, true);
     let corroborator = source(head, false);
-    let port = free_port();
+    let port = Port::reserve().expect("reserve test port");
     let data = net.dir.join("follower");
-    let log = std::fs::File::create(net.dir.join("rel24-follower.log")).unwrap();
+    let log = net.dir.join("rel24-follower.log");
     let from = format!("{},{},{}", stale.url, fresh.url, corroborator.url);
     let child = spawn_logged(log, &["follow".into(), "--from-rpc".into(), from,
         "--data".into(), data.to_str().unwrap().into(), "--rpc-port".into(), port.to_string()]);

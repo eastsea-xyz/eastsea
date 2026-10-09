@@ -25,6 +25,7 @@ pub mod inclusion;
 pub mod key_binding;
 pub mod p2p;
 pub mod presence;
+pub mod predeploys;
 pub mod prover;
 pub mod prover_assignment;
 pub mod prover_input;

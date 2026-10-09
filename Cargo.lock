@@ -90,13 +90,10 @@ version = "0.2.0"
 dependencies = [
  "aether-types",
  "alloy-primitives",
- "chacha20poly1305",
  "ed25519-dalek",
- "hex",
  "k256 0.14.0",
  "p256 0.14.0",
  "proptest",
- "serde",
  "sha2 0.11.0",
 ]
 
@@ -189,13 +186,17 @@ dependencies = [
 name = "aether-net"
 version = "0.2.0"
 dependencies = [
+ "aether-crypto",
  "anyhow",
+ "chacha20poly1305",
  "commonware-codec",
  "commonware-cryptography",
  "hex",
  "iroh",
  "iroh-mainline-address-lookup",
+ "p256 0.14.0",
  "rand 0.9.5",
+ "serde",
  "serde_json",
  "sha2 0.11.0",
  "tokio",
@@ -220,6 +221,7 @@ dependencies = [
  "aether-test-support",
  "aether-types",
  "alloy-primitives",
+ "alloy-sol-types",
  "axum",
  "base64 0.22.1",
  "blake3",

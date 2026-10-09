@@ -6,11 +6,6 @@ license.workspace = true
 version.workspace = true
 publish = false
 
-[features]
-# Only wallet/node transport needs this; prover guests keep the default signer
-# surface. These packages and versions already exist in Cargo.lock.
-registrar-encryption = ["dep:chacha20poly1305", "dep:serde", "dep:hex"]
-
 [dependencies]
 aether-types.workspace = true
 p256.workspace = true
@@ -18,9 +13,6 @@ k256.workspace = true
 ed25519-dalek.workspace = true
 alloy-primitives.workspace = true
 sha2 = "0.11"
-chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc", "zeroize"], optional = true }
-serde = { workspace = true, optional = true }
-hex = { version = "0.4", optional = true }
 
 [dev-dependencies]
 proptest.workspace = true

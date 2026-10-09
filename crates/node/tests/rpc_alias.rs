@@ -90,6 +90,7 @@ const METHODS: &[&str] = &[
     "aether_sendRegistration",
     "aether_sendTransaction",
     "aether_setPresenceCountry",
+    "aether_setPresenceRegion",
     "aether_search",
     "aether_searchInfo",
     "aether_shard",
@@ -323,5 +324,43 @@ fn browser_headers_cannot_change_country_via_single_calls_aliases_or_batches() {
             assert_eq!(answers[2]["id"], 23);
             assert_eq!(answers[2]["result"]["available"], false);
         }
+    });
+}
+
+#[test]
+fn region_preference_is_native_local_for_both_aliases_and_batches() {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let st = state();
+    rt.block_on(async {
+        for method in ["aether_setPresenceRegion", "eastsea_setPresenceRegion"] {
+            let request = json!({"jsonrpc":"2.0","id":17,"method":method,"params":["030"]});
+            assert_eq!(rpc::handle_value(&st, request.clone()).await["error"]["code"], -32000);
+            let remote = rpc::handle_remote_value(&st, request).await;
+            assert_eq!(remote["error"]["code"], -32601);
+            assert!(remote["error"]["message"].as_str().unwrap().contains("local-only"));
+        }
+        for header in ["origin", "sec-fetch-site"] {
+            use tower::ServiceExt as _;
+            let request = axum::http::Request::builder().method("POST").uri("/")
+                .header("content-type", "application/json").header(header, "https://example.invalid")
+                .body(axum::body::Body::from(serde_json::to_vec(&json!({
+                    "id":21,"method":"eastsea_setPresenceRegion","params":["030"]
+                })).unwrap())).unwrap();
+            let response = rpc::http_router(st.clone()).oneshot(request).await.unwrap();
+            let body = axum::body::to_bytes(response.into_body(), rpc::PUBLIC_MAX_BODY).await.unwrap();
+            let value: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["error"]["code"], -32601, "browser header {header} cannot mutate region");
+            assert!(value["error"]["message"].as_str().unwrap().contains("local-only"));
+        }
+        let response = rpc::handle_remote_value(&st, json!([
+            {"id":1,"method":"aether_setPresenceRegion","params":["030"]},
+            {"id":2,"method":"eastsea_setPresenceRegion","params":[null]},
+            {"id":3,"method":"aether_presence","params":[]}
+        ])).await;
+        assert_eq!(response[0]["id"],1);
+        assert_eq!(response[1]["id"],2);
+        assert_eq!(response[0]["error"]["code"],-32601);
+        assert_eq!(response[1]["error"]["code"],-32601);
+        assert_eq!(response[2]["result"]["available"],false);
     });
 }

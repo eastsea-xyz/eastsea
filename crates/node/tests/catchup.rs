@@ -999,7 +999,7 @@ fn a_member_that_slept_does_not_beacon_until_caught_up() {
         CHAIN,
     ));
     let descriptor = registrar.encryption_key().unwrap();
-    let (x, y) = aether_execution::registry::registrar(&src.lock().finalized.state);
+    let (x, y) = aether_execution::registry::registrar(&src.chain.lock().finalized.state);
     let registrar_key = aether_crypto::PublicKey { scheme: aether_types::SignerScheme::P256, bytes: [&[4u8][..], &x, &y].concat() };
     let params = aether_node::devicecheck::encrypt_token_request("dev", &descriptor, CHAIN, &registrar_key, "aether_registerDevice", vec![
         json!(operator), json!(hex::encode(keys.validator_key())), json!(hex::encode(keys.node_id())),

@@ -135,6 +135,9 @@ impl ResourceArgs {
 /// permits a devnet test without DHT publishing, relays or real node data.
 #[derive(clap::Args, Clone, Debug, Default)]
 struct PresenceArgs {
+    /// Broad Mac Region setting, sent without a country preference.
+    #[arg(long, value_parser = parse_presence_region)]
+    presence_region: Option<String>,
     #[arg(long, value_parser = parse_presence_country)]
     presence_country: Option<String>,
     /// Existing logical node key directory; never creates or changes keys.
@@ -144,6 +147,11 @@ struct PresenceArgs {
     dev_presence_bind: Option<SocketAddr>,
     #[arg(long, hide = true, requires = "dev_presence_bind", value_parser = parse_presence_peer)]
     dev_presence_peer: Vec<aether_net::EndpointAddr>,
+}
+
+fn parse_presence_region(s: &str) -> Result<String, String> {
+    aether_node::presence::validate_region(Some(s))?;
+    Ok(s.into())
 }
 
 fn parse_presence_country(s: &str) -> Result<String, String> {
@@ -1333,7 +1341,7 @@ fn main() {
             let public = vec![json!(operator), json!(hex::encode(vk)), json!(hex::encode(nid)), json!(beaconer), json!(ownership)];
             let mut attestation = None;
             for _ in 0..2 {
-                let descriptor: aether_crypto::registrar::EncryptionKey = serde_json::from_value(call(&registrar_rpc, "aether_registrarEncryptionKey", json!([]))?)
+                let descriptor: aether_net::registrar::EncryptionKey = serde_json::from_value(call(&registrar_rpc, "aether_registrarEncryptionKey", json!([]))?)
                     .map_err(|_| "registrar encryption key unavailable")?;
                 let params = aether_node::devicecheck::encrypt_token_request(&token, &descriptor, chain_id, &registrar_key, "aether_registerDevice", public.clone())?;
                 match call(&registrar_rpc, "aether_registerDevice", params) {
@@ -2536,6 +2544,9 @@ fn run_node(a: NodeArgs) {
             ep, peer_tracker, aether_node::presence::Role::Validator, p2p.roster.nodes.clone(),
             format!("{}:{}", chain_id, cfg.group), presence_args.presence_country.clone(),
         ));
+        if let Some(p) = &presence {
+            p.set_region(presence_args.presence_region.clone()).expect("validated M49 region");
+        }
         let served_state = std::sync::Arc::new(std::sync::RwLock::new(rpc::RpcState {
             chain: chain.clone(),
             app_bundles: app_bundles.clone(),
@@ -3327,6 +3338,9 @@ fn run_follow(
                 ep, peer_tracker, identity, role, nodes.clone(), format!("{}:{}", chain_id, cfg.group), presence_args.presence_country.clone(),
             )
         });
+        if let Some(p) = &presence {
+            p.set_region(presence_args.presence_region.clone())?;
+        }
         if bind.is_some_and(|ip| !ip.is_loopback()) {
             if let Some(p) = &presence { p.disable_country_settings(); }
         }

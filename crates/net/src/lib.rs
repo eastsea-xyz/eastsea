@@ -46,6 +46,8 @@ use std::time::{Duration, Instant};
 pub mod paths;
 pub mod peers;
 pub mod presence;
+#[cfg(feature = "registrar-encryption")]
+pub mod registrar;
 pub mod tunnel;
 
 pub use presence::{presence_exchange, PresenceCallback, PresenceProtocol, ALPN_PRESENCE, MAX_PRESENCE_MESSAGE};

@@ -117,6 +117,7 @@ fn current_reserve_overlap_is_rejected(node_only: bool) {
         max_committee: None,
         genesis_validators: Some(initial),
         release: None,
+        search: None,
     };
     assert!(
         file.genesis().is_ok(),

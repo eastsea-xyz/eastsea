@@ -193,7 +193,7 @@ impl ChainConfig {
             // deployer, Multicall3 and Permit2 at their Ethereum addresses with
             // their exact mainnet runtime code, so deterministic deployments,
             // multicall tooling and Permit2 signatures work unchanged.
-            for (address, code, _) in aether_execution::predeploys::all() {
+            for (address, code, _) in crate::predeploys::all() {
                 s.set_code(address, code).expect("standard predeploy");
             }
         }
@@ -270,8 +270,6 @@ pub struct Executed {
     pub timestamp: u64,
     pub state: WorldState,
     pub receipts: Vec<Receipt>,
-    /// Derived execution observations, never serialized or committed.
-    pub call_targets: Vec<aether_execution::CallTargets>,
     pub tx_hashes: Vec<TxHash>,
     pub gas: GasVector,
     /// New storage slots counted against this block's 512-slot cap.
@@ -814,6 +812,15 @@ pub struct Inner {
     pub relaxed: bool,
 }
 
+#[cfg(test)]
+impl Inner {
+    /// Attach an isolated archive copy for RPC representation measurements.
+    /// No production build can replace a chain's genesis-bound store this way.
+    pub(crate) fn set_test_archive_store(&mut self, store: Arc<Store>) {
+        self.store = Some(store);
+    }
+}
+
 #[derive(Clone)]
 pub struct Chain(pub Arc<Mutex<Inner>>);
 
@@ -865,7 +872,6 @@ impl Chain {
             timestamp: 0,
             state,
             receipts: vec![],
-            call_targets: vec![],
             tx_hashes: vec![],
             gas: GasVector::default(),
             new_slots: 0,
@@ -1015,7 +1021,6 @@ impl Chain {
                     timestamp: summary.as_ref().map(|b| b.timestamp_ms).unwrap_or_default(),
                     state,
                     receipts: vec![],
-                    call_targets: vec![],
                     tx_hashes: summary.as_ref().map(|b| b.txs.clone()).unwrap_or_default(),
                     gas: GasVector::default(),
                     new_slots: 0,
@@ -2853,7 +2858,6 @@ impl Chain {
             timestamp: block.timestamp,
             state: out.state,
             receipts: out.receipts,
-            call_targets: out.call_targets,
             tx_hashes,
             gas: out.gas,
             new_slots: out.new_slots,
@@ -3017,7 +3021,6 @@ impl Chain {
             state: exec.state.clone(),
             bal: payload.bal.clone(),
             receipts: exec.receipts.clone(),
-            call_targets: exec.call_targets.clone(),
             gas: exec.gas,
             persistent_bytes: exec.persistent_bytes,
             new_slots: exec.new_slots,
@@ -3182,7 +3185,7 @@ impl Chain {
         let search = self.lock().search.clone();
         let search_sources = self.lock().search_sources.clone();
         let mut search_index = search.lock().expect("search index");
-        let search_events = crate::search_events::block_events(&payload.txs, &exec.receipts, &exec.call_targets, &exec.state, &search_sources, block.timestamp / 1000);
+        let search_events = crate::search_events::block_events(&exec.receipts, &exec.state, &search_sources, block.timestamp / 1000);
         let search_delta = search_index.apply_batch(&search_events);
         let (store, history_v2, compact_swaps, previous_history, relaxed) = {
             let g = self.lock();

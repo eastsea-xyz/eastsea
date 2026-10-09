@@ -218,6 +218,7 @@ fn state(chain: Chain, bundles: Arc<Service>) -> RpcState {
         shards: None,
         app_bundles: Some(bundles),
         public_read_only: false,
+        presence: None,
     }
 }
 

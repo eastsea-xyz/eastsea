@@ -111,6 +111,8 @@ fn state(rewards: bool) -> RpcState {
         prover: None,
         shards: None,
         public_read_only: false,
+        presence: None,
+        app_bundles: None,
     }
 }
 

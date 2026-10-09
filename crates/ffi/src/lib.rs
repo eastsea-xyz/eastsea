@@ -2088,7 +2088,7 @@ pub fn prepare_register_node(
     let public_params = vec![json!(operator), json!(hex_lower(&key)), json!(hex_lower(&node)), json!(beaconer), json!(ownership)];
     let mut attestation = None;
     for _ in 0..2 {
-        let descriptor: aether_crypto::registrar::EncryptionKey = parse(&registrar_rpc_call("aether_registrarEncryptionKey", json!([]))?, "registrar encryption key")?;
+        let descriptor: aether_net::registrar::EncryptionKey = parse(&registrar_rpc_call("aether_registrarEncryptionKey", json!([]))?, "registrar encryption key")?;
         let params = encrypted_registration_params(&device_token, chain_id, &registrar, &descriptor, &public_params)?;
         match registrar_rpc_call("aether_registerDevice", params) {
             Ok(a) => { attestation = Some(a); break; }
@@ -2176,12 +2176,12 @@ fn registrar_from_proofs(anchor: &VerifiedBlock, replies: &[Value; 2], pinned: O
     Ok(proven)
 }
 
-fn encrypted_registration_params(token: &str, chain_id: u64, registrar: &PublicKey, descriptor: &aether_crypto::registrar::EncryptionKey, public_params: &[Value]) -> R<Value> {
+fn encrypted_registration_params(token: &str, chain_id: u64, registrar: &PublicKey, descriptor: &aether_net::registrar::EncryptionKey, public_params: &[Value]) -> R<Value> {
     let recipient = descriptor.authenticate(chain_id, registrar).map_err(WalletError::Verification)?;
     let json = serde_json::to_vec(public_params).map_err(|_| WalletError::Invalid("registration params".into()))?;
-    let context = aether_crypto::registrar::request_context(chain_id, "aether_registerDevice", &json);
+    let context = aether_net::registrar::request_context(chain_id, "aether_registerDevice", &json);
     let seed = p256::elliptic_curve::zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
-    let envelope = aether_crypto::registrar::seal(token, &recipient, &context, &seed, rand::random()).map_err(WalletError::Invalid)?;
+    let envelope = aether_net::registrar::seal(token, &recipient, &context, &seed, rand::random()).map_err(WalletError::Invalid)?;
     let mut params = vec![serde_json::to_value(envelope).map_err(|_| WalletError::Invalid("encrypted token".into()))?];
     params.extend_from_slice(public_params);
     Ok(Value::Array(params))
@@ -2209,7 +2209,8 @@ fn registrar_rpc_call(method: &str, params: Value) -> R<Value> {
 #[cfg(test)]
 mod registration_privacy_tests {
     use super::*;
-    use aether_crypto::{registrar::{EncryptionKey, RecipientSecret}, P256Signer, Signer as _};
+    use aether_crypto::{P256Signer, Signer as _};
+    use aether_net::registrar::{EncryptionKey, RecipientSecret};
 
     #[test]
     fn wallet_registration_json_contains_ciphertext_and_requires_the_authenticated_registrar() {
@@ -2223,7 +2224,7 @@ mod registration_privacy_tests {
         assert!(!serialized.contains(token));
         assert!(params[0].is_object());
         let envelope = serde_json::from_value(params[0].clone()).unwrap();
-        let context = aether_crypto::registrar::request_context(7781, "aether_registerDevice", &serde_json::to_vec(&public).unwrap());
+        let context = aether_net::registrar::request_context(7781, "aether_registerDevice", &serde_json::to_vec(&public).unwrap());
         assert_eq!(&**secret.open(&envelope, &context).unwrap(), token);
         let wrong = P256Signer::from_seed(&[6; 32]).unwrap();
         assert!(encrypted_registration_params(token, 7781, &wrong.public_key(), &descriptor, &public).is_err());

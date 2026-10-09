@@ -6,7 +6,7 @@
 //! ChaCha20-Poly1305. Caller-supplied ephemeral seeds/nonces must be fresh and
 //! unpredictable. No token or recipient secret is part of the signed key.
 
-use crate::{verify, CryptoError, PublicKey};
+use aether_crypto::{verify, CryptoError, PublicKey};
 use chacha20poly1305::{aead::{Aead, Payload}, ChaCha20Poly1305, KeyInit as _};
 use p256::elliptic_curve::{sec1::ToSec1Point as _, zeroize::Zeroizing};
 use serde::{Deserialize, Serialize};
@@ -163,7 +163,7 @@ fn derive(secret: &p256::SecretKey, peer: &[u8], recipient: &[u8], ephemeral: &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{P256Signer, Signer as _};
+    use aether_crypto::{P256Signer, Signer as _};
 
     #[test]
     fn registrar_key_requires_chain_signer_and_token_requires_full_context() {

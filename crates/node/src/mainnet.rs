@@ -87,13 +87,21 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
         ),
         rule(
             "standard predeploys",
-            crate::predeploys::installed(|a| state.code(a)),
-            format!(
+            if cfg.protocol >= 4 {
+                crate::predeploys::installed(|a| state.code(a))
+            } else {
+                aether_execution::predeploys::installed(|a| state.code(a))
+            },
+            if cfg.protocol >= 4 { format!(
                 "the CREATE2 deployer ({:#x}), Multicall3 ({:#x}) and Permit2 ({:#x}) hold their exact Ethereum mainnet runtime code",
                 crate::predeploys::CREATE2_DEPLOYER,
                 crate::predeploys::MULTICALL3,
                 crate::predeploys::PERMIT2
-            ),
+            ) } else { format!(
+                "the CREATE2 deployer ({:#x}) and Multicall3 ({:#x}) hold their exact Ethereum mainnet runtime code",
+                aether_execution::predeploys::CREATE2_DEPLOYER,
+                aether_execution::predeploys::MULTICALL3
+            ) },
         ),
         rule(
             "registrar key",
@@ -1860,6 +1868,7 @@ mod tests {
         // Frozen fixture pins captured against released production at e900960.
         assert_eq!(historical.state.root().to_string(), "0x907a1724ed2122a0df608a0d0cadfea69286af7cb5603cead4ba5b0de92fa1f3");
         assert_eq!(hex::encode(genesis.digest().as_ref()), "f002bc1a5dc7b9e4f45ce310a455bd5a0569731d388ccc15820d0139b0507869");
+        assert!(check(&cold.cfg()).into_iter().find(|r| r.name == "standard predeploys").unwrap().ok);
         // The new implementation can run protocol 4, but a cold participant
         // must still use the original protocol-3 genesis facts and root.
         assert!(cold.lock().protocol >= 4);

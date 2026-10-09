@@ -6,6 +6,10 @@ struct ReleaseManifest: Decodable {
     struct Artifact: Decodable {
         let name: String
         let sha256: String
+        let size: UInt64?
+        let url: String?
+        let webseeds: [String]?
+        let peers: [String]?
     }
     let artifacts: [Artifact]
     let build: String
@@ -15,11 +19,16 @@ struct ReleaseManifest: Decodable {
     let platform: String
     let sparkleEdSignature: String
     let version: String
+    let installAfterHeight: UInt64?
+    let restartSlotHeight: UInt64?
+    let channel: String?
 
     enum CodingKeys: String, CodingKey {
-        case artifacts, build, emergency, platform, version
+        case artifacts, build, emergency, platform, version, channel
         case chainId = "chain_id", logAddress = "log_address"
         case sparkleEdSignature = "sparkle_ed_signature"
+        case installAfterHeight = "install_after_height"
+        case restartSlotHeight = "restart_slot_height"
     }
 }
 
@@ -38,8 +47,24 @@ struct ReleaseProof {
     let publishedBlock: UInt64
     let publishedAt: UInt64
     let emergency: Bool
-    let stateHeight: UInt64
+    var stateHeight: UInt64
     let certifiedTimestampMs: UInt64
+    var certifiedBlock: UInt64
+
+    init(manifestSha256: String, archiveSha256: String, signaturesSha256: String,
+         publishedBlock: UInt64, publishedAt: UInt64, emergency: Bool, stateHeight: UInt64,
+         certifiedTimestampMs: UInt64, certifiedBlock: UInt64? = nil) {
+        self.manifestSha256 = manifestSha256
+        self.archiveSha256 = archiveSha256
+        self.signaturesSha256 = signaturesSha256
+        self.publishedBlock = publishedBlock
+        self.publishedAt = publishedAt
+        self.emergency = emergency
+        self.stateHeight = stateHeight
+        self.certifiedTimestampMs = certifiedTimestampMs
+        let following = stateHeight.addingReportingOverflow(1)
+        self.certifiedBlock = certifiedBlock ?? (following.overflow ? 0 : following.partialValue)
+    }
 }
 
 enum ReleaseDecision: Equatable {
@@ -67,6 +92,15 @@ struct ReleaseTrust: Equatable {
     static var missingPin: String { String(localized: "Updates are off: this copy of the app cannot check which updates the network approved.") }
     static let threshold = 2
     static let emergencyThreshold = 3
+
+    /// Recovery never starts wallet polling. Only an unpinned legacy testnet
+    /// may install without that status; a known conflicting chain still fails.
+    func allowsUpdateShutdown(configuredChainId: UInt64, observedChainId: UInt64?, recovery: Bool) -> Bool {
+        guard configuredChainId == chainId else { return false }
+        if let observedChainId { return observedChainId == chainId }
+        return recovery && legacy && (chainId == 7_777 || chainId == 7_780)
+            && logAddress.isEmpty && codeHash.isEmpty && builderKeys.isEmpty
+    }
 
     static func parse(_ data: Data) -> ReleaseTrust? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -120,13 +154,34 @@ enum ReleaseApproval {
         return value
     }
 
+    /// Count only distinct pinned keys whose P-256 signature verifies over
+    /// these exact manifest bytes. RPC approval counters are never consulted.
+    static func approvedSigners(manifestData: Data, signaturesData: Data, pinnedKeys: [String]) -> Int? {
+        guard manifestData.count <= 16_384, signaturesData.count <= 4_096,
+              pinnedKeys.count == 3, Set(pinnedKeys.map { $0.lowercased() }).count == 3,
+              let signatures = try? JSONDecoder().decode([ReleaseBuilderSignature].self, from: signaturesData),
+              signatures.count <= 3 else { return nil }
+        let allowed = Set(pinnedKeys.map { $0.lowercased() })
+        var valid = Set<String>()
+        for signed in signatures {
+            let keyHex = signed.publicKey.lowercased()
+            guard allowed.contains(keyHex), !valid.contains(keyHex),
+                  let keyData = bytes(keyHex), keyData.count == 65,
+                  let signatureData = bytes(signed.signature), signatureData.count == 64,
+                  let key = try? P256.Signing.PublicKey(x963Representation: keyData),
+                  let signature = try? P256.Signing.ECDSASignature(rawRepresentation: signatureData),
+                  key.isValidSignature(signature, for: manifestData) else { return nil }
+            valid.insert(keyHex)
+        }
+        return valid.count
+    }
+
     static func decide(manifestData: Data, signaturesData: Data, archiveSha256: String,
                        version: String, build: String, sparkleSignature: String,
                        chainId: UInt64, logAddress: String, pinnedKeys: [String],
                        proof: ReleaseProof) -> ReleaseDecision {
         guard manifestData.count <= 16_384, signaturesData.count <= 4_096,
               let manifest = try? JSONDecoder().decode(ReleaseManifest.self, from: manifestData),
-              let signatures = try? JSONDecoder().decode([ReleaseBuilderSignature].self, from: signaturesData),
               manifest.chainId == chainId, manifest.logAddress.lowercased() == logAddress.lowercased(),
               manifest.platform == "macos-arm64-dmg", manifest.version == version,
               manifest.build == build, manifest.sparkleEdSignature == sparkleSignature,
@@ -142,19 +197,9 @@ enum ReleaseApproval {
               proof.publishedAt > 0, proof.certifiedTimestampMs / 1000 >= proof.publishedAt else {
             return .rejected
         }
-        let allowed = Set(pinnedKeys.map { $0.lowercased() })
-        var valid = Set<String>()
-        for signed in signatures {
-            let keyHex = signed.publicKey.lowercased()
-            guard allowed.contains(keyHex), !valid.contains(keyHex),
-                  let keyData = bytes(keyHex), keyData.count == 65,
-                  let signatureData = bytes(signed.signature), signatureData.count == 64,
-                  let key = try? P256.Signing.PublicKey(x963Representation: keyData),
-                  let signature = try? P256.Signing.ECDSASignature(rawRepresentation: signatureData),
-                  key.isValidSignature(signature, for: manifestData) else { return .rejected }
-            valid.insert(keyHex)
-        }
-        guard valid.count >= (manifest.emergency ? 3 : 2) else { return .rejected }
+        guard let valid = approvedSigners(manifestData: manifestData, signaturesData: signaturesData,
+                                         pinnedKeys: pinnedKeys),
+              valid >= (manifest.emergency ? 3 : 2) else { return .rejected }
         if manifest.emergency { return .ready }
         let readyAt = proof.publishedAt.addingReportingOverflow(waitSeconds)
         guard !readyAt.overflow else { return .rejected }

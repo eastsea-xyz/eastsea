@@ -42519,6 +42519,66 @@
           }
         }
       }
+    },
+    "EastSea %@": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "동해 %@"
+          }
+        }
+      }
+    },
+    "The approved update could not be downloaded yet.": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "승인된 업데이트를 아직 다운로드하지 못했어요."
+          }
+        }
+      }
+    },
+    "The downloaded update does not match the approved file.": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "다운로드한 업데이트가 승인된 파일과 일치하지 않아요."
+          }
+        }
+      }
+    },
+    "This update cannot install before its approved restart slot.": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 업데이트는 승인된 재시작 순서가 되기 전에 설치할 수 없어요."
+          }
+        }
+      }
+    },
+    "This update does not have the required builder approvals.": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 업데이트는 필요한 빌더 승인을 받지 못했어요."
+          }
+        }
+      }
+    },
+    "This update does not match the release approved by the network.": {
+      "localizations": {
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 업데이트는 네트워크가 승인한 릴리스와 일치하지 않아요."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

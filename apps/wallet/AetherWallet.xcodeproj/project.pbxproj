@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0019E275BB5EC3B095E0D2E5 /* ChainRelease.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACD17A658AA498EC220708B8 /* ChainRelease.swift */; };
 		0036F32386E0305CE88F8958 /* WalletOperationGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FFD3F1372CAD02D3BEE9825 /* WalletOperationGate.swift */; };
 		0087B71D472FCD97109FFF10 /* network.json in Resources */ = {isa = PBXBuildFile; fileRef = AB6E5651AC1948FECDAE69D4 /* network.json */; };
 		00916EE5FC15D1B19DBB0410 /* NodeStatusPulse.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57F8158E746534D8072D2248 /* NodeStatusPulse.swift */; };
@@ -121,6 +122,7 @@
 		4A38D77DAC5908D77F8ABCD7 /* NodeAppContentSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 692A3FB8D3D1FE40E7DB8664 /* NodeAppContentSource.swift */; };
 		4AD619C1DDE268E9CF2A4342 /* InstallLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD1FD85FD2537EBDD04207CB /* InstallLocation.swift */; };
 		4B1B1B11958DDFA7D45F5C84 /* UnattendedDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716005AD711FCD432A9A487C /* UnattendedDecision.swift */; };
+		4B1B3CBB1915F9E122DC5167 /* ChainRelease.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACD17A658AA498EC220708B8 /* ChainRelease.swift */; };
 		4B762BDBFAA7147981B389E3 /* WalletOperationGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FFD3F1372CAD02D3BEE9825 /* WalletOperationGate.swift */; };
 		4B99F9F3618F840AF9C56A88 /* InstallLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD1FD85FD2537EBDD04207CB /* InstallLocation.swift */; };
 		4B9BE8229B345232894A7201 /* BlockDataMove.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22B41822FE8F6639B446F669 /* BlockDataMove.swift */; };
@@ -136,6 +138,7 @@
 		50D901679B54ED9BD526B43E /* Spinners.swift in Sources */ = {isa = PBXBuildFile; fileRef = 462C807FB20A46B9919AE925 /* Spinners.swift */; };
 		50FCE833A99F8C09BF4A3713 /* LiveGlobeBundlePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 753F1FE687335BF1EE608B7F /* LiveGlobeBundlePolicy.swift */; };
 		5122DFBC2932FE2AD6A7ED2A /* RewardShine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95D09F2C91C3A4A3AC639CB4 /* RewardShine.swift */; };
+		5218C4A0249362A9C8CA9406 /* ReleaseArtifact.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAFE5C0C9F286BE048CFB147 /* ReleaseArtifact.swift */; };
 		5332251E1E361F3DD570B235 /* BrowserOriginPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97C7694B38BBE822C2A238C5 /* BrowserOriginPolicy.swift */; };
 		53441545BA0EF816037EF095 /* EarningsExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04312C5DE9BE7FCAABC3D93 /* EarningsExport.swift */; };
 		54062937CE93BAE0320B6E39 /* AccountRemovalBalance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 689809A042F3C0489F1ABAB7 /* AccountRemovalBalance.swift */; };
@@ -160,6 +163,7 @@
 		61DC285767F6ECF4490C34F5 /* DiagnosticReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9B4EF5C90AED22256BDEE5A /* DiagnosticReport.swift */; };
 		62110FB226EA204D1FC25857 /* LaunchTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD07906A3AB0D5B6C186E863 /* LaunchTracker.swift */; };
 		628CEDDF862CADCC4A0F0013 /* NodeStorageMove.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCCF1F47D93BC537C786731A /* NodeStorageMove.swift */; };
+		62980A42C697215A1C0D5C2B /* ChainRelease.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACD17A658AA498EC220708B8 /* ChainRelease.swift */; };
 		62C0EB42A22A219AA8C899E8 /* AccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA13E722CBD1C5DF66502A8F /* AccountStore.swift */; };
 		6344C6C82744F51AAA12F78E /* HealthCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CA691B4DF93F089CF5537C7 /* HealthCheck.swift */; };
 		63908C6CE6F7E5B1FA3B8D4D /* BrowserCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA3D848A2BF6E9713AF265C0 /* BrowserCommands.swift */; };
@@ -379,9 +383,11 @@
 		F3A9DE4D75DD260C79AACF60 /* NetworkUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAF12832C2145F7B5553F13A /* NetworkUpgrade.swift */; };
 		F4A393005FD47DFF451F645B /* DappRPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5857D341B9E0488989CD9031 /* DappRPC.swift */; };
 		F5D803ED94B649009D54712A /* DesignPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 260B382C7E1D4499BE9AE870 /* DesignPreview.swift */; };
+		F6E74487E90D40B0E3715B06 /* ReleaseArtifact.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAFE5C0C9F286BE048CFB147 /* ReleaseArtifact.swift */; };
 		F758D5E0F7B69666554837C6 /* NodeReleaseIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83EC4FD42C1350C11F06ECC4 /* NodeReleaseIdentity.swift */; };
 		F77A93613D9CB470B7B09934 /* AppLanguage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D0345A892236AF981D15AE5 /* AppLanguage.swift */; };
 		F7B46D8D6A07A992EBDC9C88 /* LiveGlobe in Resources */ = {isa = PBXBuildFile; fileRef = C2034155A1378AA31DF1D188 /* LiveGlobe */; };
+		F7F5F097FEE87CD47BE2D8A7 /* ReleaseArtifact.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAFE5C0C9F286BE048CFB147 /* ReleaseArtifact.swift */; };
 		F7FF2B4A81D1B0E7CCBC9D98 /* MigrationStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CA7F0040DAE7F5B39B01A7D /* MigrationStatus.swift */; };
 		F838114788C0EABD8CAE8571 /* glossary.md in Resources */ = {isa = PBXBuildFile; fileRef = F6F83F1B96641D43A20AA2B6 /* glossary.md */; };
 		F94514AB9C803644B61A44B7 /* ProverMenuText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F793BE9B59364FAC536170E /* ProverMenuText.swift */; };
@@ -499,6 +505,7 @@
 		AA017029CBA36810DE47F6DE /* TokenGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenGuard.swift; sourceTree = "<group>"; };
 		AB4C9843D1CF8E29F627927D /* ReleaseApproval.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseApproval.swift; sourceTree = "<group>"; };
 		AB6E5651AC1948FECDAE69D4 /* network.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = network.json; sourceTree = "<group>"; };
+		ACD17A658AA498EC220708B8 /* ChainRelease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChainRelease.swift; sourceTree = "<group>"; };
 		AD1FD85FD2537EBDD04207CB /* InstallLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallLocation.swift; sourceTree = "<group>"; };
 		B38A846EB23F0C4A52BF8A78 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B3A81F3C56454A393E1476EB /* DesignEffects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignEffects.swift; sourceTree = "<group>"; };
@@ -533,6 +540,7 @@
 		F47737A17B8A82CC00921CD5 /* name-sources.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "name-sources.json"; sourceTree = "<group>"; };
 		F6EF58CE162A676154BCD846 /* LiveGlobePresence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveGlobePresence.swift; sourceTree = "<group>"; };
 		F5D62F230E0B680D8ABF0FC5 /* DappApprovalViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DappApprovalViews.swift; sourceTree = "<group>"; };
+		EAFE5C0C9F286BE048CFB147 /* ReleaseArtifact.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseArtifact.swift; sourceTree = "<group>"; };
 		F6F83F1B96641D43A20AA2B6 /* glossary.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = glossary.md; sourceTree = "<group>"; };
 		FE00FF7FDD47F623CE4B55A0 /* TokenSend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenSend.swift; sourceTree = "<group>"; };
 		FF2FCB108BF603558C0364F5 /* WalletScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletScreens.swift; sourceTree = "<group>"; };
@@ -625,6 +633,7 @@
 				407C3252EC0DD6F886E76AE7 /* BundledPageScheme.swift */,
 				8AF1E81B7EA1D00430D5D6BB /* CandidateEligibilityText.swift */,
 				87BD832EE8990B2380C0EF86 /* ChainActivity.swift */,
+				ACD17A658AA498EC220708B8 /* ChainRelease.swift */,
 				3C192196B8C44174CC74F27E /* Clock.swift */,
 				B38A846EB23F0C4A52BF8A78 /* ContentView.swift */,
 				F5D62F230E0B680D8ABF0FC5 /* DappApprovalViews.swift */,
@@ -670,6 +679,7 @@
 				2F793BE9B59364FAC536170E /* ProverMenuText.swift */,
 				366F9021403DE8EF3505FEEC /* ReceiveAddressView.swift */,
 				AB4C9843D1CF8E29F627927D /* ReleaseApproval.swift */,
+				EAFE5C0C9F286BE048CFB147 /* ReleaseArtifact.swift */,
 				9D1303552378BB828A2C9D21 /* ReleaseUpdateGate.swift */,
 				424591AA2690FB9457CF62DA /* ResendIntent.swift */,
 				C3A70AF889C5ACB1DDB2AF45 /* ResizeBenchmark.swift */,
@@ -1036,6 +1046,7 @@
 				277DEB11DFE5D619E8464655 /* BundledPageScheme.swift in Sources */,
 				31BEE39CD9C49733D2A9627C /* CandidateEligibilityText.swift in Sources */,
 				3EF6E8CB8686359FE5CEA244 /* ChainActivity.swift in Sources */,
+				0019E275BB5EC3B095E0D2E5 /* ChainRelease.swift in Sources */,
 				5FC931C5B50114A80F16DF82 /* Clock.swift in Sources */,
 				16504A4054237817545767F0 /* ContentView.swift in Sources */,
 				3DA584ED1786E7437EA5226F /* DappApprovalViews.swift in Sources */,
@@ -1088,6 +1099,7 @@
 				F94514AB9C803644B61A44B7 /* ProverMenuText.swift in Sources */,
 				2DC88EF363713BF5F05BE9D3 /* ReceiveAddressView.swift in Sources */,
 				A079B1CBD1001C06EF207650 /* ReleaseApproval.swift in Sources */,
+				F6E74487E90D40B0E3715B06 /* ReleaseArtifact.swift in Sources */,
 				3A02CDFD35AF42A3DBBCE824 /* ReleaseUpdateGate.swift in Sources */,
 				1CC133C57B599BA2B10B7D4A /* ResendIntent.swift in Sources */,
 				E8E7A825FBFD8C349EA8E74A /* ResizeBenchmark.swift in Sources */,
@@ -1161,6 +1173,7 @@
 				D93D51A6DF41C50870291DF8 /* BundledPageScheme.swift in Sources */,
 				1DEAD3BC4669A9A5768A9F9C /* CandidateEligibilityText.swift in Sources */,
 				5CEBF6505C021AB256CB40C0 /* ChainActivity.swift in Sources */,
+				62980A42C697215A1C0D5C2B /* ChainRelease.swift in Sources */,
 				2812D5A852BB453B534FD54D /* Clock.swift in Sources */,
 				91AC8DF6060514CA9725F73F /* ContentView.swift in Sources */,
 				6FCF3459A1723C98DB160D43 /* DappApprovalViews.swift in Sources */,
@@ -1213,6 +1226,7 @@
 				2ECB8DB6B22924E4D146ED97 /* ProverMenuText.swift in Sources */,
 				EBFD12A16F18B2E0F8BD146D /* ReceiveAddressView.swift in Sources */,
 				7B7EBC3EFD0B5F25E2C8CF67 /* ReleaseApproval.swift in Sources */,
+				5218C4A0249362A9C8CA9406 /* ReleaseArtifact.swift in Sources */,
 				1A01BCF495388CB4F912A2C2 /* ReleaseUpdateGate.swift in Sources */,
 				08B1577287B0B8BA0FD673CA /* ResendIntent.swift in Sources */,
 				4879A3E96C3973F455334C7E /* ResizeBenchmark.swift in Sources */,
@@ -1288,6 +1302,7 @@
 				0FAF813471F7AD7680988BEE /* BundledPageScheme.swift in Sources */,
 				8C6464DAC3BE51BF1C16CB04 /* CandidateEligibilityText.swift in Sources */,
 				5A2FF36B2D89573A00075F88 /* ChainActivity.swift in Sources */,
+				4B1B3CBB1915F9E122DC5167 /* ChainRelease.swift in Sources */,
 				00F35CE007D35B5FB3793AD6 /* Clock.swift in Sources */,
 				3C5180BEE4BF629CA69AF4CE /* ContentView.swift in Sources */,
 				9E9F36DCAF2D7260A09D94C5 /* DappApprovalViews.swift in Sources */,
@@ -1340,6 +1355,7 @@
 				119884C0924E5CF71D15D2B9 /* ProverMenuText.swift in Sources */,
 				E4402B93BE03DDB8A0AA67EE /* ReceiveAddressView.swift in Sources */,
 				7B0B4C28ED2F1AEF39804016 /* ReleaseApproval.swift in Sources */,
+				F7F5F097FEE87CD47BE2D8A7 /* ReleaseArtifact.swift in Sources */,
 				0C3F5D5E82BA80E5FBCEFB6A /* ReleaseUpdateGate.swift in Sources */,
 				A92FEDE9AA150A6ACA8C92A2 /* ResendIntent.swift in Sources */,
 				5EE841156B2F7713648B6E61 /* ResizeBenchmark.swift in Sources */,

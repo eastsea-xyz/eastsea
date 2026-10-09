@@ -96,7 +96,7 @@ extension WalletModel {
         address = accountStore.activeAccount?.address ?? DesignPreview.primaryAddress
         let secondary = accountStore.activeAccount?.id == 2
         let now = Date()
-        status = ChainStatus(chainId: 7780, height: 184_210, stateRoot: "0x", mempool: 0, transferFeeWei: "21000000000000", upgradesJson: "[]", supportedProtocol: 3, faucet: nil)
+        status = ChainStatus(chainId: 7780, height: 184_210, stateRoot: "0x", mempool: 0, transferFeeWei: "21000000000000", upgradesJson: "[]", releaseJson: "null", supportedProtocol: 3, faucet: nil)
         account = VerifiedAccount(address: address, balanceWei: empty ? "0" : (secondary ? "3250000000000000000" : "12500000000000000000"), nonce: secondary ? 0 : 3,
                                   stateHeight: 184_209, certifiedBlock: 184_210, stateRoot: "0x", validators: 4)
         chainPausedSince = v == "paused" ? now.addingTimeInterval(-240) : nil

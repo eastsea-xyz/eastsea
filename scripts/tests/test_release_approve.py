@@ -125,6 +125,9 @@ class ReleaseApprovalScriptTests(unittest.TestCase):
             release.prepare(args)
             data = manifest.read_bytes()
             self.assertEqual(data, release.canonical(json.loads(data)))
+            archive = next(item for item in json.loads(data)["artifacts"] if item["name"] == "EastSea.dmg")
+            self.assertEqual(archive["size"], dmg.stat().st_size,
+                "the signed manifest gives the chain-triggered downloader its exact size")
             inventory = manifest.with_suffix(".inventory.json")
             self.assertEqual(release.sha256(inventory), json.loads(data)["bundle_inventory_sha256"])
             release.compare(Namespace(manifest=str(manifest), other=[str(manifest)]))

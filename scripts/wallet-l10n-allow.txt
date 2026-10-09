@@ -70,3 +70,4 @@ text: the node refused: node keys found in the block-data folder \(chainDataPath
 text:  (died of the app's SIGUSR1 wake-up: an older node without the handler)
 text: moving block data from \(source.path) to \(target.path)
 text: Test Doubloon     # Brand.coinName on 7780 (English); Korean screens use networkCoinName (테스트 더블룬)
+text: 404 Not Found     # HTTP status reason sent to Sparkle, never user-facing copy

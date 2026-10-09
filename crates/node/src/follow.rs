@@ -633,7 +633,12 @@ impl Upstream {
             }
             return Err("no corroborated certified head".into());
         }
+        self.net_height_with_release(ours, None).await
+    }
+
+    async fn net_height_with_release(&self, ours: u64, chain: Option<&Chain>) -> Result<u64, String> {
         let ask_one = |v: Value| -> Result<u64, String> {
+            if let Some(chain) = chain { chain.discover_release_hint(&v["release"]); }
             v["height"].as_u64().ok_or_else(|| "no upstream height".to_string())
         };
         match self.raw() {
@@ -1453,6 +1458,12 @@ async fn advance(
         // sources (PA7-06): a single false-low-tip answer used to cap the
         // fetch at our own height, so a round "succeeded" fetching nothing.
         let hint = upstream.trusted_height(set, ours).await?;
+        // Release bytes remain discovery; this probe cannot replace the
+        // corroborated certificate height used for fetching and backfill.
+        let watches_releases = chain.lock().release_watcher.pin.is_some();
+        if watches_releases {
+            let _ = upstream.net_height_with_release(ours, Some(chain)).await;
+        }
         // The claimed height is a fetch hint, not a fact (audit 7 A7-4):
         // what this round OBSERVES (and jumps toward) is the trusted
         // reading, while the pipeline below still fetches toward the

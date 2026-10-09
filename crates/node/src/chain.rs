@@ -682,6 +682,8 @@ pub struct Inner {
     pub cfg: ChainConfig,
     /// Node-local bounded delivery; consensus only publishes a height reference.
     pub push: Arc<crate::rpc_push::Hub>,
+    /// Non-consensus discovery derived from pinned release commitments.
+    pub(crate) release_watcher: crate::release::Watcher,
     executed: HashMap<Digest, Arc<Executed>>,
     execution_sizes: HashMap<Digest, u64>,
     pub finalized: Arc<Executed>,
@@ -907,6 +909,7 @@ impl Chain {
         let inner = Inner {
             cfg,
             push: Arc::new(crate::rpc_push::Hub::default()),
+            release_watcher: crate::release::Watcher::default(),
             executed,
             execution_sizes,
             finalized: exec,
@@ -1135,6 +1138,37 @@ impl Chain {
         self.lock().cfg.clone()
     }
 
+    /// Install the network.json release pin without changing genesis or
+    /// consensus metadata. Recovered payloads are untrusted until reverified.
+    pub fn watch_releases(&self, network: Option<&Value>) {
+        let mut g = self.lock();
+        let pin = crate::release::Watcher::pinned(network, g.cfg.chain_id);
+        if g.release_watcher.pin == pin { return; }
+        let mut watcher = crate::release::Watcher::new(pin);
+        if watcher.pin.is_some() {
+            if let Some(store) = &g.store {
+                if let Ok(Some(bytes)) = store.meta(crate::release::CACHE_KEY) {
+                    watcher.restore(&bytes, &g.finalized.state, g.cfg.chain_id, g.finalized.height);
+                }
+            }
+            // Also recover a payload when a commit landed before its cache
+            // write or this RPC attached after the publication was finalized.
+            for (_, receipt) in g.receipts.values() {
+                watcher.discover(std::slice::from_ref(receipt), &g.finalized.state, g.cfg.chain_id, g.finalized.height);
+            }
+        }
+        g.release_watcher = watcher;
+    }
+
+    /// Checkpoint followers can receive exact payload bytes in the status
+    /// they already request. An upstream claim never supplies approval.
+    pub fn discover_release_hint(&self, value: &Value) {
+        let mut g = self.lock();
+        let finalized = g.finalized.clone();
+        let chain_id = g.cfg.chain_id;
+        g.release_watcher.discover_status(value, &finalized.state, chain_id, finalized.height);
+    }
+
     /// How many blocks behind the network this node last knew itself to be
     /// (0 when caught up — and also when nothing ever told it a height, which
     /// is not the same thing: see `behind_known`).
@@ -1201,6 +1235,8 @@ impl Chain {
         let unchanged_search_head = g.finalized.height == height && g.finalized.digest == exec.digest;
         let search_digest = digest_bytes(&exec.digest);
         let search_at = exec.timestamp / 1000;
+        let chain_id = g.cfg.chain_id;
+        g.release_watcher.rebase(&exec.state, chain_id, height);
         g.executed.clear();
         g.executed.insert(exec.digest, exec.clone());
         g.execution_sizes.clear();
@@ -3198,10 +3234,20 @@ impl Chain {
         let mut search_index = search.lock().expect("search index");
         let search_events = crate::search_events::block_events(&exec.receipts, &exec.state, &search_sources, block.timestamp / 1000);
         let search_delta = search_index.apply_batch(&search_events);
-        let (store, history_v2, compact_swaps, previous_history, relaxed) = {
+        let (store, history_v2, compact_swaps, previous_history, relaxed, mut release_watcher, previous, chain_id) = {
             let g = self.lock();
-            (g.store.clone(), g.cfg.history_v2, g.cfg.node_rewards || g.cfg.history_v2, g.finalized.history.clone(), g.relaxed)
+            (g.store.clone(), g.cfg.history_v2, g.cfg.node_rewards || g.cfg.history_v2,
+                g.finalized.history.clone(), g.relaxed, g.release_watcher.clone(), g.finalized.clone(), g.cfg.chain_id)
         };
+        // The next finalized header certifies its parent's post-state. Event
+        // bytes from this block remain discovery until that anchor exists.
+        if release_watcher.pin.is_some() {
+            if previous.height.checked_add(1) == Some(exec.height) && payload.parent_state_root == previous.state.root() {
+                release_watcher.certify(&previous.state, chain_id, previous.height, block.timestamp);
+            }
+            release_watcher.discover(&exec.receipts, &exec.state, chain_id, exec.height);
+        }
+        let release_cache = release_watcher.cache_if_dirty();
         let mut upgrade_notices = self.lock().upgrade_notices.clone();
         upgrade_notices.retain(|s| s.upgrade.activate_at > exec.height);
         if let Some(s) = &payload.upgrade {
@@ -3218,6 +3264,13 @@ impl Chain {
                 }
             });
         if let Some(store) = store {
+            // Save only bounded raw payloads, never a cached approval. A crash
+            // before the state commit leaves a future candidate that fails
+            // verification on restore; the previous valid payload stays too.
+            if let Some(bytes) = release_cache {
+                store.put_meta(crate::release::CACHE_KEY, &bytes)
+                    .map_err(|e| ChainError::Store(e.to_string()))?;
+            }
             // Disk first: the in-memory head never runs ahead of what survives a crash.
             let mut account_rows = Vec::new();
             let mut account_delegations = {
@@ -3310,6 +3363,7 @@ impl Chain {
         // while its input is being built. Finality must charge and retain it.
         g.executed.insert(exec.digest, exec.clone());
         g.execution_sizes.insert(exec.digest, exec_bytes);
+        g.release_watcher = release_watcher;
         g.upgrade_notices = upgrade_notices;
         for (h, r) in exec.tx_hashes.iter().zip(&exec.receipts) {
             let rb = receipt_bytes(r);

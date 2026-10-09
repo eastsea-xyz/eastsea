@@ -2519,6 +2519,7 @@ fn run_node(a: NodeArgs) {
             }
             Err(e) => panic!("restore state (delete the data dir to resync): {e:?}"),
         };
+        chain.watch_releases(network_file.as_ref());
         install_verifier(&chain, &data, false);
         // The registrar key in the registry decides: the committee can rotate
         // or stop the registrar by a threshold-signed upgrade, and then this
@@ -3235,7 +3236,7 @@ fn run_follow(
         }
         None => Default::default(),
     };
-    let (chain_id, genesis, set, nodes) = match network {
+    let (chain_id, genesis, set, nodes, network_file) = match network {
         Some(path) => {
             let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&path))?;
             let genesis = file.genesis()?;
@@ -3246,7 +3247,8 @@ fn run_follow(
                 .map_err(|e| format!("identity: {e:?}"))?
                 .with_group(genesis.group);
             let nodes = aether_node::roster::Roster::from_file(&file)?.nodes;
-            (file.chain_id, genesis, set, nodes)
+            let network_file = serde_json::to_value(&file).map_err(|e| format!("network.json: {e}"))?;
+            (file.chain_id, genesis, set, nodes, Some(network_file))
         }
         None => {
             let mut genesis = aether_node::roster::Genesis::default();
@@ -3258,6 +3260,7 @@ fn run_follow(
                 genesis,
                 aether_light::ValidatorSet::devnet(validators),
                 (1..=validators).map(aether_net::devnet_node_id).collect(),
+                None,
             )
         }
     };
@@ -3405,6 +3408,7 @@ fn run_follow(
             }
             Err(e) => return Err(restore_error(e)),
         };
+        chain.watch_releases(network_file.as_ref());
         install_verifier(&chain, &data, true);
         let archive = Arc::new(FinalityArchive::new(chain.store()));
         let (gossip, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3455,7 +3459,7 @@ fn run_follow(
             gossip,
             faucet: None,
             registrar: None,
-            network: None,
+            network: network_file,
             upstream: Some(upstream.clone()),
             handoff: None,
             snapshot: Default::default(),

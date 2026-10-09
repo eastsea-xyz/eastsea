@@ -24,15 +24,23 @@
 	<key>SUPublicEDKey</key>
 	<string>owZzXbcYSAs74399TEZ7qMetNlTCsZqgj7rNYO9ny6E=</string>
 	<key>SUEnableAutomaticChecks</key>
-	<true/>
+	<false/>
 	<!-- Update checks need the app version; optional system-profile uploads are disabled. -->
 	<key>SUEnableSystemProfiling</key>
 	<false/>
-	<!-- Hourly checks (Sparkle's minimum); updates install in the background and apply on the next launch. -->
+	<!-- Only legacy 7777/7780 without a release pin enable this interval at runtime. -->
 	<key>SUScheduledCheckInterval</key>
 	<integer>3600</integer>
 	<key>SUAutomaticallyUpdate</key>
 	<true/>
+	<key>SUAllowsAutomaticUpdates</key>
+	<true/>
+	<!-- The verified chain item and archive are served only on loopback. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<!-- eastsea://pay?to=…&amount=… (and the legacy aether:// links): web pages reach the wallet without an extension. -->
 	<key>CFBundleURLTypes</key>
 	<array>

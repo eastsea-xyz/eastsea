@@ -61,6 +61,9 @@ pub struct ChainStatus {
     pub transfer_fee_wei: String,
     /// Scheduled notices reported by the selected node (JSON array).
     pub upgrades_json: String,
+    /// ReleaseLog discovery from the same status read (JSON object or null).
+    /// This is not approval: the wallet verifies the pinned storage proof and builders.
+    pub release_json: String,
     /// Highest chain protocol this wallet build knows how to display and submit to.
     pub supported_protocol: u32,
     /// The node's faucet, when it has one — so the wallet can name test grants
@@ -1212,10 +1215,82 @@ pub fn chain_status() -> R<ChainStatus> {
         mempool: v["mempool"].as_u64().unwrap_or_default(),
         transfer_fee_wei: quote_from_status(&v, None, state_price).fee_wei,
         upgrades_json: scheduled_upgrade_json(&v),
+        release_json: release_announcement_json(&v),
         // Bump with the bundled node/light-client release, not with a remote node's version.
         supported_protocol: 3,
         faucet: v["faucet"].as_str().map(str::to_string),
     })
+}
+
+/// Preserve the exact logged payload strings for the Swift proof gate, with
+/// a small bound on untrusted discovery data before crossing the FFI boundary.
+fn release_announcement_json(status: &Value) -> String {
+    let release = &status["release"];
+    if !release.is_object()
+        || !release["manifest"].as_str().is_some_and(|s| !s.is_empty() && s.len() <= 16_384)
+        || !release["signatures"].as_str().is_some_and(|s| !s.is_empty() && s.len() <= 4_096)
+    {
+        return "null".into();
+    }
+    // Status also exposes artifact/slot metadata for operators. It duplicates
+    // potentially large signed content; the wallet needs only these fields.
+    let mut fields = std::collections::BTreeMap::new();
+    for key in ["index", "chain_id", "log_address", "version", "build", "manifest_hash",
+        "archive_sha256", "signatures_hash", "manifest", "signatures", "approved_at_height",
+        "install_after_height", "restart_slot_height", "approvals", "required_approvals"] {
+        if let Some(value) = release.get(key) { fields.insert(key, value); }
+    }
+    struct BoundedJson(Vec<u8>);
+    impl std::io::Write for BoundedJson {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.0.len().saturating_add(bytes.len()) > 128 * 1_024 {
+                return Err(std::io::Error::other("release discovery is too large"));
+            }
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let mut encoded = BoundedJson(Vec::new());
+    if serde_json::to_writer(&mut encoded, &fields).is_err() { return "null".into(); }
+    String::from_utf8(encoded.0).unwrap_or_else(|_| "null".into())
+}
+
+#[cfg(test)]
+mod chain_release_discovery_tests {
+    use super::*;
+
+    #[test]
+    fn status_passes_release_payload_bytes_without_treating_them_as_approval() {
+        let release = json!({"index": 1, "version": "0.7.4", "build": "17",
+            "manifest": "{ \"version\": \"0.7.4\" }\n", "signatures": "[ ]\n",
+            "approvals": 0});
+        let decoded: Value = serde_json::from_str(&release_announcement_json(&json!({"release": release}))).unwrap();
+        assert_eq!(decoded, release);
+    }
+
+    #[test]
+    fn missing_or_oversized_release_discovery_stays_null() {
+        for status in [json!({}), json!({"release": null}), json!({"release": "approved"}),
+            json!({"release": {"manifest": "m".repeat(16_385), "signatures": "[]"}}),
+            json!({"release": {"manifest": "{}", "signatures": "s".repeat(4_097)}}),
+            json!({"release": {"manifest": "{}", "signatures": "[]", "version": "x".repeat(131_073)}})] {
+            assert_eq!(release_announcement_json(&status), "null");
+        }
+    }
+
+    #[test]
+    fn a_large_valid_manifest_is_forwarded_without_duplicate_operator_metadata() {
+        let manifest = format!("{}{{\"version\":\"0.7.4\"}}", "\n".repeat(16_000));
+        let status = json!({"release": {"manifest": manifest, "signatures": "[]",
+            "artifacts": {"duplicated_urls": "x".repeat(32_768)},
+            "restart_slot": {"operator_only": "x".repeat(32_768)}}});
+        let encoded = release_announcement_json(&status);
+        let payload: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(payload["manifest"], manifest);
+        assert!(payload.get("artifacts").is_none());
+        assert!(encoded.len() < 128 * 1_024);
+    }
 }
 
 #[cfg(test)]

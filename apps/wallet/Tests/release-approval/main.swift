@@ -107,3 +107,40 @@ assert(ReleaseTrust.parse(network(["chain_id": 7_780, "release": "yes"])) == nil
        "a malformed pin never falls back to the legacy path")
 assert(!ReleaseTrust.missingPin.isEmpty)
 print("release trust pin: \(6 + broken.count + 1) cases passed")
+
+// Recovery deliberately leaves model.status absent. Exercise the actual pure
+// shutdown policy without allowing the same exception on a pinned release.
+for chain in [UInt64(7_777), UInt64(7_780)] {
+    let legacy = ReleaseTrust.parse(network(["chain_id": chain]))!
+    assert(legacy.allowsUpdateShutdown(configuredChainId: chain, observedChainId: nil, recovery: true),
+           "legacy recovery may stop safely without starting wallet status polling")
+    assert(!legacy.allowsUpdateShutdown(configuredChainId: chain, observedChainId: nil, recovery: false),
+           "normal startup still requires an observed status")
+    assert(!legacy.allowsUpdateShutdown(configuredChainId: chain + 1, observedChainId: nil, recovery: true),
+           "recovery cannot override a configured network mismatch")
+    assert(!legacy.allowsUpdateShutdown(configuredChainId: chain, observedChainId: chain + 1, recovery: true),
+           "a known wrong status is never treated as missing")
+    assert(legacy.allowsUpdateShutdown(configuredChainId: chain, observedChainId: chain, recovery: false),
+           "matching legacy status keeps the normal install path")
+}
+for chain in [UInt64(7_780), UInt64(9_001)] {
+    let trusted = ReleaseTrust.parse(network(["chain_id": chain, "release": pin()]))!
+    for recovery in [false, true] {
+        assert(!trusted.allowsUpdateShutdown(configuredChainId: chain, observedChainId: nil, recovery: recovery),
+               "a pinned release always requires an observed status, including pinned 7780")
+        assert(!trusted.allowsUpdateShutdown(configuredChainId: chain, observedChainId: chain + 1, recovery: recovery),
+               "pinned releases reject wrong observed status")
+        assert(!trusted.allowsUpdateShutdown(configuredChainId: chain + 1, observedChainId: chain, recovery: recovery),
+               "matching pinned status cannot override a configured mismatch")
+        assert(trusted.allowsUpdateShutdown(configuredChainId: chain, observedChainId: chain, recovery: recovery),
+               "matching pinned status passes this guard while proof/install barriers remain required")
+    }
+}
+let unsupportedLegacy = ReleaseTrust(chainId: 9_001, logAddress: "", codeHash: "", builderKeys: [], legacy: true)
+assert(!unsupportedLegacy.allowsUpdateShutdown(configuredChainId: 9_001, observedChainId: nil, recovery: true),
+       "the legacy marker cannot exempt a different chain")
+let contradictoryLegacy = ReleaseTrust(chainId: 7_780, logAddress: releaseLog, codeHash: codeHash,
+                                       builderKeys: publicKeys, legacy: true)
+assert(!contradictoryLegacy.allowsUpdateShutdown(configuredChainId: 7_780, observedChainId: nil, recovery: true),
+       "a pinned trust value cannot claim the unpinned recovery exception")
+print("release recovery shutdown policy: 28 cases passed")

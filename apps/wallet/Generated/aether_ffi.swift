@@ -762,6 +762,11 @@ public struct ChainStatus: Equatable, Hashable {
      */
     public var upgradesJson: String
     /**
+     * ReleaseLog discovery from the same status read (JSON object or null).
+     * This is not approval: the wallet verifies the pinned storage proof and builders.
+     */
+    public var releaseJson: String
+    /**
      * Highest chain protocol this wallet build knows how to display and submit to.
      */
     public var supportedProtocol: UInt32
@@ -782,6 +787,10 @@ public struct ChainStatus: Equatable, Hashable {
          * Scheduled notices reported by the selected node (JSON array).
          */upgradesJson: String, 
         /**
+         * ReleaseLog discovery from the same status read (JSON object or null).
+         * This is not approval: the wallet verifies the pinned storage proof and builders.
+         */releaseJson: String,
+        /**
          * Highest chain protocol this wallet build knows how to display and submit to.
          */supportedProtocol: UInt32, 
         /**
@@ -794,6 +803,7 @@ public struct ChainStatus: Equatable, Hashable {
         self.mempool = mempool
         self.transferFeeWei = transferFeeWei
         self.upgradesJson = upgradesJson
+        self.releaseJson = releaseJson
         self.supportedProtocol = supportedProtocol
         self.faucet = faucet
     }
@@ -820,6 +830,7 @@ public struct FfiConverterTypeChainStatus: FfiConverterRustBuffer {
                 mempool: FfiConverterUInt64.read(from: &buf), 
                 transferFeeWei: FfiConverterString.read(from: &buf), 
                 upgradesJson: FfiConverterString.read(from: &buf), 
+                releaseJson: FfiConverterString.read(from: &buf),
                 supportedProtocol: FfiConverterUInt32.read(from: &buf), 
                 faucet: FfiConverterOptionString.read(from: &buf)
         )
@@ -832,6 +843,7 @@ public struct FfiConverterTypeChainStatus: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.mempool, into: &buf)
         FfiConverterString.write(value.transferFeeWei, into: &buf)
         FfiConverterString.write(value.upgradesJson, into: &buf)
+        FfiConverterString.write(value.releaseJson, into: &buf)
         FfiConverterUInt32.write(value.supportedProtocol, into: &buf)
         FfiConverterOptionString.write(value.faucet, into: &buf)
     }

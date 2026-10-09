@@ -1,8 +1,19 @@
 // The canary channel switch (docs/design/32-health-signal.md §5.2, W5): only
 // `updateChannel == "canary"` lets Sparkle see canary items. Pure logic:
-//   swiftc -o ./tmp/update-channel apps/wallet/Sources/UpdateChannel.swift apps/wallet/Tests/update-channel/main.swift && ./tmp/update-channel
+//   swiftc -o ./tmp/update-channel apps/wallet/Sources/ReleaseApproval.swift apps/wallet/Sources/UpdateChannel.swift apps/wallet/Tests/update-channel/main.swift && ./tmp/update-channel
 import Foundation
 func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
+
+#if os(macOS)
+check(!UpdateChannel.isNewerBuild("74", than: "74"), "installed announcements preserve post-install health tracking")
+check(!UpdateChannel.isNewerBuild("73", than: "74"), "an older chain announcement cannot restart discovery")
+check(UpdateChannel.isNewerBuild("75", than: "74"), "a newer signed build remains discoverable")
+check(UpdateChannel.isNewerBuild("75", than: nil), "missing bundle metadata still reaches the proof gate")
+let legacy = ReleaseTrust(chainId: 7_780, logAddress: "", codeHash: "", builderKeys: [], legacy: true)
+check(UpdateChannel.pollsForDiscovery(trust: legacy, activeChainId: 7_780), "the bundled legacy chain keeps discovery")
+check(!UpdateChannel.pollsForDiscovery(trust: legacy, activeChainId: 9_001), "switching to a new chain turns discovery polling off")
+check(!UpdateChannel.pollsForDiscovery(trust: legacy, activeChainId: 0), "an unknown active chain cannot enable discovery polling")
+#endif
 
 let suite = "eastsea.test.update-channel.\(ProcessInfo.processInfo.processIdentifier)"
 guard let defaults = UserDefaults(suiteName: suite) else { print("FAIL no defaults suite"); exit(1) }

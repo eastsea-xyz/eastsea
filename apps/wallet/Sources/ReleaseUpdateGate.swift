@@ -2,14 +2,13 @@
 import CryptoKit
 import Foundation
 #if canImport(Sparkle)
+import Network
 import Sparkle
 
-/// Pins are read from the network.json inside the *currently running* signed
-/// app. Replacing that file in a proposed update cannot relax this gate. The
-/// parsing and the no-fallback rule live in `ReleaseTrust.parse` (pure).
+/// Pins come from the currently running signed bundle. A proposed update can
+/// never replace these pins before it passes their approval policy.
 extension ReleaseTrust {
     static let current = load()
-
     static func bundled() -> ReleaseTrust? { current }
 
     private static func load() -> ReleaseTrust? {
@@ -24,16 +23,22 @@ struct PendingRelease {
     let build: String
     let fingerprint: String
     let publishedBlock: UInt64
+    let installAfterHeight: UInt64
     let availableAt: Date?
     let emergency: Bool
 }
+
+struct PreparedChainRelease {
+    let identity: String
+    let item: SUAppcastItem
+    let appcastURL: URL
+}
+
 #endif
 
-/// Sparkle's shouldProceed callback is synchronous. A first check starts a
-/// background preflight and refuses this cycle. Once it succeeds, the app
-/// starts another check; Sparkle then verifies the same EdDSA signature over
-/// the archive it actually downloads. Different bytes cannot reuse that
-/// EdDSA signature, even if the distribution server changes the URL contents.
+/// Chain events choose the release, not a timed appcast check. The status entry
+/// supplies discovery bytes only; the injected production verifier independently
+/// checks the pinned runtime, storage proof and finality certificate through FFI.
 final class ReleaseUpdateGate {
     /// Kept independent of Sparkle so the archive's file reader is tested directly.
     static func archiveSHA256(_ url: URL) throws -> String {
@@ -49,133 +54,373 @@ final class ReleaseUpdateGate {
     }
 
 #if canImport(Sparkle)
+    typealias ProofVerifier = (ChainReleaseAnnouncement, ReleaseTrust, UInt32) throws -> ReleaseProof
+    private struct Prepared {
+        let value: PreparedChainRelease
+        let release: VerifiedChainRelease
+        let artifact: URL
+        let artifactIdentity: ReleaseArtifact.FileIdentity
+        let server: ReleaseFeedServer
+    }
+
     private let lock = NSLock()
-    private var approvedUntil: [String: TimeInterval] = [:]
-    private var checking = Set<String>()
+    private let trust: ReleaseTrust?
+    private let chainId: () -> UInt64
+    private let verify: ProofVerifier
+    private let cacheDirectory: URL
+    private let fetch: ReleaseArtifact.Fetch
+    private var prepared: Prepared?
+    private var requestedIdentity: String?
+    private var preparation: Task<Void, Never>?
+
+    init(trust: ReleaseTrust? = ReleaseTrust.bundled(),
+         chainId: @escaping () -> UInt64 = configuredChainId,
+         verify: @escaping ProofVerifier = ReleaseUpdateGate.verifiedProof,
+         cacheDirectory: URL? = nil,
+         fetch: @escaping ReleaseArtifact.Fetch = ReleaseArtifact.download) {
+        self.trust = trust
+        self.chainId = chainId
+        self.verify = verify
+        self.cacheDirectory = cacheDirectory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.pipln.eastsea/ReleaseArtifacts", isDirectory: true)
+        self.fetch = fetch
+    }
+
+    deinit {
+        preparation?.cancel()
+        prepared?.server.shutdown()
+    }
 
     static func itemKey(_ item: SUAppcastItem, signature: String) -> String {
         "\(item.versionString)|\((item.displayVersionString as String?) ?? "")|\(signature)|\((item.fileURL as URL?)?.absoluteString ?? "")"
     }
 
-    /// The update tracker's identity for an appcast item: the same notion of
-    /// "this exact item" the gate itself uses (read-only; no gate behaviour).
     static func trackerKey(_ item: SUAppcastItem) -> String {
         itemKey(item, signature: sparkleSignature(item) ?? "")
     }
 
-    func mayProceed(_ item: SUAppcastItem) -> Bool {
-        guard let trust = ReleaseTrust.bundled() else { return false }
-        if trust.legacy { return true }
-        guard configuredChainId() == trust.chainId else { return false }
-        guard let signature = Self.sparkleSignature(item) else { return false }
-        lock.lock()
-        defer { lock.unlock() }
-        return (approvedUntil[Self.itemKey(item, signature: signature)] ?? 0) > ProcessInfo.processInfo.systemUptime
+    /// Cheap final barrier after asynchronous shutdown preparation. A newer
+    /// announcement revokes the old item even if its earlier proof was valid.
+    func hasPreparedApproval(for item: SUAppcastItem) -> Bool {
+        guard let trust, chainId() == trust.chainId else { return false }
+        if trust.legacy { return UpdateChannel.pollsForDiscovery(trust: trust) }
+        return lock.withLock { prepared.map { Self.trackerKey(item) == Self.trackerKey($0.value.item) } ?? false }
     }
 
+    func mayProceed(_ item: SUAppcastItem) -> Bool {
+        guard let trust, chainId() == trust.chainId else { return false }
+        if trust.legacy { return UpdateChannel.pollsForDiscovery(trust: trust) }
+        guard let state = lock.withLock({ prepared }),
+              Self.trackerKey(item) == Self.trackerKey(state.value.item) else { return false }
+        return ReleaseArtifact.identity(state.artifact) == state.artifactIdentity && hasPreparedApproval(for: item)
+    }
+
+    /// Compatibility for the existing Sparkle delegate. A remote appcast can
+    /// never create approval on a release-log network. Only prepare can do so.
     func inspect(_ item: SUAppcastItem, validators: UInt32,
                  finished: @escaping (PendingRelease?, String?, Bool) -> Void) {
-        guard let trust = ReleaseTrust.bundled() else {
-            finished(nil, ReleaseTrust.missingPin, false)
-            return
-        }
+        guard let trust else { finished(nil, ReleaseTrust.missingPin, false); return }
         if trust.legacy { return }
-        guard configuredChainId() == trust.chainId else {
-            finished(nil, String(localized: "This update is not approved by the network yet."), false)
+        guard mayProceed(item), let state = lock.withLock({ prepared }) else {
+            finished(nil, ChainReleaseFailure.forgedEntry.sentence, false)
             return
         }
-        guard let signature = Self.sparkleSignature(item) else {
-            finished(nil, String(localized: "This update is not approved by the network yet."), false)
+        finished(Self.pending(state.release.announcement, proof: state.release.proof), nil, true)
+    }
+
+    func prepare(announcement: ChainReleaseAnnouncement, validators: UInt32,
+                 finished: @escaping (PreparedChainRelease?, PendingRelease?, String?) -> Void) {
+        guard let trust else { finished(nil, nil, ReleaseTrust.missingPin); return }
+        guard !trust.legacy, chainId() == trust.chainId, validators > 0,
+              announcement.chainId == trust.chainId,
+              announcement.logAddress.lowercased() == trust.logAddress.lowercased() else {
+            finished(nil, nil, ChainReleaseFailure.forgedEntry.sentence)
             return
         }
-        let key = Self.itemKey(item, signature: signature)
-        lock.lock()
-        let fresh = (approvedUntil[key] ?? 0) <= ProcessInfo.processInfo.systemUptime && checking.insert(key).inserted
-        lock.unlock()
-        guard fresh else { return }
-        Task.detached { [weak self] in
+        let identity = announcement.identity
+        let old = lock.withLock { () -> Prepared? in
+            let old = prepared
+            if requestedIdentity != identity {
+                preparation?.cancel()
+                prepared = nil
+                requestedIdentity = identity
+            }
+            return old?.value.identity != identity ? old : nil
+        }
+        old?.server.shutdown()
+        let task = Task.detached { [weak self] in
+            guard let self else { return }
+            var proof: ReleaseProof?
+            var server: ReleaseFeedServer?
             do {
-                let result = try await Self.preflight(item, signature: signature, trust: trust, validators: validators)
-                self?.lock.withLock {
-                    if result.2 { self?.approvedUntil[key] = ProcessInfo.processInfo.systemUptime + 300 }
-                    self?.checking.remove(key)
+                let freshProof = try self.verify(announcement, trust, validators)
+                proof = freshProof
+                let release = try ChainReleasePolicy.verify(announcement: announcement, trust: trust, proof: freshProof)
+                let artifact = try await ReleaseArtifact.acquire(release, cacheDirectory: self.cacheDirectory, fetch: self.fetch)
+                try Task.checkCancellation()
+                guard let artifactIdentity = ReleaseArtifact.identity(artifact) else { throw ChainReleaseFailure.hashMismatch }
+                let origin = try ReleaseFeedServer(release: release, artifact: artifact)
+                server = origin
+                let feedURL = try await origin.start()
+                guard let artifactURL = origin.artifactURL,
+                      let size = (try artifact.resourceValues(forKeys: [.fileSizeKey])).fileSize,
+                      let item = Self.makeItem(release: release, artifactURL: artifactURL, length: UInt64(size)) else {
+                    throw ChainReleaseFailure.unavailable
                 }
-                DispatchQueue.main.async { finished(result.0, result.1, result.2) }
+                let value = PreparedChainRelease(identity: identity, item: item, appcastURL: feedURL)
+                let accepted = self.lock.withLock { () -> Bool in
+                    guard self.requestedIdentity == identity, !Task.isCancelled,
+                          self.chainId() == trust.chainId else { return false }
+                    self.prepared?.server.shutdown()
+                    self.prepared = Prepared(value: value, release: release, artifact: artifact,
+                        artifactIdentity: artifactIdentity, server: origin)
+                    return true
+                }
+                guard accepted else { throw CancellationError() }
+                DispatchQueue.main.async { finished(value, Self.pending(announcement, proof: freshProof), nil) }
+            } catch is CancellationError {
+                server?.shutdown()
+                DispatchQueue.main.async { finished(nil, nil, nil) }
             } catch {
-                _ = self?.lock.withLock { self?.checking.remove(key) }
-                DispatchQueue.main.async { finished(nil, String(localized: "This update is not approved by the network yet."), false) }
+                server?.shutdown()
+                let failure = Self.failure(error)
+                let pending = failure == .beforeSlot ? proof.map { Self.pending(announcement, proof: $0) } : nil
+                DispatchQueue.main.async { finished(nil, pending, failure.sentence) }
             }
         }
+        lock.withLock { preparation = task }
     }
 
-    private static func preflight(_ item: SUAppcastItem, signature: String,
-                                  trust: ReleaseTrust, validators: UInt32) async throws -> (PendingRelease?, String?, Bool) {
-        guard validators > 0, let url = item.fileURL as URL?,
-              let version = item.displayVersionString as String?, !version.isEmpty else {
-            throw GateError.unavailable
+    /// Run immediately before the existing storage/vote/quiesce/rollback
+    /// shutdown path. A fresh independent certificate must still cover the
+    /// barrier; rehashing the cached bytes prevents a poisoned second download.
+    func validateForInstall(item: SUAppcastItem, validators: UInt32) async -> String? {
+        guard let trust else { return ReleaseTrust.missingPin }
+        guard chainId() == trust.chainId else { return ChainReleaseFailure.forgedEntry.sentence }
+        if trust.legacy { return UpdateChannel.pollsForDiscovery(trust: trust) ? nil : ChainReleaseFailure.forgedEntry.sentence }
+        guard validators > 0, let state = lock.withLock({ prepared }),
+              Self.trackerKey(item) == Self.trackerKey(state.value.item) else {
+            return ChainReleaseFailure.forgedEntry.sentence
         }
-        let stem = "EastSea-\(version)"
-        let base = url.deletingLastPathComponent()
-        func fetch(_ suffix: String) async throws -> Data {
-            let request = URLRequest(url: base.appendingPathComponent(stem + suffix), timeoutInterval: 30)
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200, data.count <= 64_000 else { throw GateError.unavailable }
-            return data
+        let result = await Task.detached { [verify] () -> ChainReleaseFailure? in
+            do {
+                let proof = try verify(state.release.announcement, trust, validators)
+                _ = try ChainReleasePolicy.verify(announcement: state.release.announcement, trust: trust, proof: proof)
+                guard ReleaseArtifact.valid(state.artifact, release: state.release) else { return .hashMismatch }
+                return nil
+            } catch { return Self.failure(error) }
+        }.value
+        guard chainId() == trust.chainId,
+              lock.withLock({ prepared?.value.identity == state.value.identity }) else {
+            return ChainReleaseFailure.forgedEntry.sentence
         }
-        let manifest = try await fetch("-manifest.json")
-        let signatures = try await fetch("-builder-sigs.json")
-        let indexData = try await fetch("-release-index.json")
-        guard let indexObject = try JSONSerialization.jsonObject(with: indexData) as? [String: Any],
-              let index = indexObject["index"] as? UInt64 else { throw GateError.unavailable }
+        return result?.sentence
+    }
+
+    private static func failure(_ error: Error) -> ChainReleaseFailure {
+        if let failure = error as? ChainReleaseFailure { return failure }
+        if let walletError = error as? WalletError, case .Network = walletError { return .unavailable }
+        if error is URLError { return .unavailable }
+        return .forgedEntry
+    }
+
+    private static func verifiedProof(_ announcement: ChainReleaseAnnouncement, _ trust: ReleaseTrust,
+                                      _ validators: UInt32) throws -> ReleaseProof {
         let entry = try verifiedRelease(contract: trust.logAddress, codeHash: trust.codeHash,
-            index: index, validators: validators)
-        let proof = ReleaseProof(manifestSha256: entry.manifestSha256,
-            archiveSha256: entry.archiveSha256, signaturesSha256: entry.signaturesSha256,
-            publishedBlock: entry.publishedBlock, publishedAt: entry.publishedAt,
-            emergency: entry.emergency, stateHeight: entry.stateHeight,
-            certifiedTimestampMs: entry.certifiedTimestampMs)
-        func decide(_ archiveHash: String) -> ReleaseDecision {
-            ReleaseApproval.decide(manifestData: manifest, signaturesData: signatures,
-            archiveSha256: archiveHash, version: version, build: item.versionString,
-            sparkleSignature: signature, chainId: trust.chainId, logAddress: trust.logAddress,
-            pinnedKeys: trust.builderKeys, proof: proof)
-        }
-        let readyAt = entry.publishedAt.addingReportingOverflow(ReleaseApproval.waitSeconds)
-        let pending = PendingRelease(version: version, build: item.versionString,
-            fingerprint: entry.archiveSha256, publishedBlock: entry.publishedBlock,
-            availableAt: entry.emergency || readyAt.overflow ? nil : Date(timeIntervalSince1970: TimeInterval(readyAt.partialValue)),
-            emergency: entry.emergency)
-        switch decide(entry.archiveSha256) {
-        case .pending: return (pending, String(localized: "This update is not approved by the network yet."), false)
-        case .rejected: return (nil, String(localized: "This update is not approved by the network yet."), false)
-        case .ready: break
-        }
-        // The URL is untrusted. Hash the archive before Sparkle's own download;
-        // Sparkle then verifies the same EdDSA signature on the bytes it uses.
-        let request = URLRequest(url: url, timeoutInterval: 120)
-        let (download, response) = try await URLSession.shared.download(for: request)
-        defer { try? FileManager.default.removeItem(at: download) }
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw GateError.unavailable }
-        let archiveHash = try archiveSHA256(download)
-        guard decide(archiveHash) == .ready else { return (nil, String(localized: "This update is not approved by the network yet."), false) }
-        return (pending, nil, true)
+                                        index: announcement.index, validators: validators)
+        return ReleaseProof(manifestSha256: entry.manifestSha256, archiveSha256: entry.archiveSha256,
+            signaturesSha256: entry.signaturesSha256, publishedBlock: entry.publishedBlock,
+            publishedAt: entry.publishedAt, emergency: entry.emergency, stateHeight: entry.stateHeight,
+            certifiedTimestampMs: entry.certifiedTimestampMs, certifiedBlock: entry.certifiedBlock)
     }
 
-    /// Sparkle retains the parsed enclosure attributes in this dictionary.
-    /// Unknown Sparkle formats fail closed on release-log networks.
+    private static func pending(_ announcement: ChainReleaseAnnouncement, proof: ReleaseProof) -> PendingRelease {
+        let until = proof.publishedAt.addingReportingOverflow(ReleaseApproval.waitSeconds)
+        let manifest = try? JSONDecoder().decode(ReleaseManifest.self, from: announcement.manifestData)
+        let height = manifest.flatMap { try? ChainReleasePolicy.installAfterHeight(proof: proof, manifest: $0) }
+        return PendingRelease(version: announcement.version, build: announcement.build,
+            fingerprint: proof.archiveSha256, publishedBlock: proof.publishedBlock,
+            installAfterHeight: height ?? UInt64.max,
+            availableAt: until.overflow ? nil : Date(timeIntervalSince1970: TimeInterval(until.partialValue)),
+            emergency: proof.emergency)
+    }
+
+    private static func makeItem(release: VerifiedChainRelease, artifactURL: URL, length: UInt64) -> SUAppcastItem? {
+        var fields: [String: Any] = ["title": String(localized: "EastSea \(release.manifest.version)"),
+            "enclosure": ["url": artifactURL.absoluteString, "length": String(length),
+                "type": "application/octet-stream", "sparkle:version": release.manifest.build,
+                "sparkle:shortVersionString": release.manifest.version,
+                "sparkle:edSignature": release.manifest.sparkleEdSignature]]
+        if let channel = release.manifest.channel { fields["sparkle:channel"] = channel }
+        return SUAppcastItem(dictionary: fields)
+    }
+
     private static func sparkleSignature(_ item: SUAppcastItem) -> String? {
         func find(_ value: Any, depth: Int) -> String? {
             guard depth < 4, let fields = value as? [AnyHashable: Any] else { return nil }
             if let direct = fields["sparkle:edSignature"] as? String { return direct }
-            for child in fields.values {
-                if let found = find(child, depth: depth + 1) { return found }
-            }
+            for child in fields.values { if let found = find(child, depth: depth + 1) { return found } }
             return nil
         }
         return find(item.propertiesDictionary, depth: 0)
     }
-
-    private enum GateError: Error { case unavailable }
 #endif
 }
+
+#if canImport(Sparkle)
+/// Sparkle's public downloader rejects file URLs. Serve the manifest-derived
+/// feed and the verified cache entry through one random, loopback-only origin.
+/// Requests never become filesystem paths; only two exact routes exist.
+private final class ReleaseFeedServer: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.pipln.eastsea.release-feed")
+    private let listener: NWListener
+    private let release: VerifiedChainRelease
+    private let artifact: URL
+    private let token = UUID().uuidString
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var connections: [UUID: NWConnection] = [:]
+    private var pendingHeaders = Set<UUID>()
+    private var feed = Data()
+    private(set) var artifactURL: URL?
+
+    init(release: VerifiedChainRelease, artifact: URL) throws {
+        self.release = release
+        self.artifact = artifact
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        self.listener = try NWListener(using: parameters)
+    }
+
+    deinit { listener.cancel() }
+
+    func start() async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            listener.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    do {
+                        guard let port = self.listener.port,
+                              let origin = URL(string: "http://127.0.0.1:\(port.rawValue)/\(self.token)/"),
+                              let length = try self.artifact.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
+                            throw ChainReleaseFailure.unavailable
+                        }
+                        let archive = origin.appendingPathComponent(self.release.artifact.sha256.lowercased())
+                            .appendingPathComponent("EastSea.dmg")
+                        self.artifactURL = archive
+                        self.feed = try ChainReleasePolicy.appcastXML(release: self.release, artifactURL: archive, length: UInt64(length))
+                        self.continuation?.resume(returning: origin.appendingPathComponent("appcast.xml"))
+                        self.continuation = nil
+                    } catch {
+                        self.continuation?.resume(throwing: error)
+                        self.continuation = nil
+                        self.listener.cancel()
+                    }
+                case .failed(let error):
+                    self.continuation?.resume(throwing: error)
+                    self.continuation = nil
+                case .cancelled:
+                    self.continuation?.resume(throwing: CancellationError())
+                    self.continuation = nil
+                default: break
+                }
+            }
+            listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
+            listener.start(queue: queue)
+        }
+    }
+
+    func shutdown() {
+        queue.async { [self] in
+            listener.cancel()
+            for connection in connections.values { connection.cancel() }
+            connections.removeAll()
+            pendingHeaders.removeAll()
+        }
+    }
+
+    private func accept(_ connection: NWConnection) {
+        guard connections.count < 8 else { connection.cancel(); return }
+        let id = UUID()
+        connections[id] = connection
+        pendingHeaders.insert(id)
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .failed, .cancelled:
+                self?.connections.removeValue(forKey: id)
+                self?.pendingHeaders.remove(id)
+            default: break
+            }
+        }
+        connection.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 10) { [weak self, weak connection] in
+            guard let self, self.pendingHeaders.contains(id), let connection else { return }
+            connection.cancel()
+        }
+        receiveHeader(connection, id: id, buffer: Data())
+    }
+
+    private func receiveHeader(_ connection: NWConnection, id: UUID, buffer: Data) {
+        guard buffer.count < 8_192 else { connection.cancel(); return }
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 8_192 - buffer.count) { [weak self] data, _, complete, error in
+            guard let self, error == nil, let data, !data.isEmpty else { connection.cancel(); return }
+            var accumulated = buffer
+            accumulated.append(data)
+            guard let delimiter = accumulated.range(of: Data("\r\n\r\n".utf8)) else {
+                if complete { connection.cancel() }
+                else { self.receiveHeader(connection, id: id, buffer: accumulated) }
+                return
+            }
+            self.pendingHeaders.remove(id)
+            guard delimiter.upperBound == accumulated.endIndex,
+                  let header = String(data: accumulated, encoding: .utf8),
+                  let line = header.components(separatedBy: "\r\n").first else { connection.cancel(); return }
+            let request = line.split(separator: " ")
+            guard request.count == 3, request[0] == "GET" || request[0] == "HEAD",
+                  request[2] == "HTTP/1.1" || request[2] == "HTTP/1.0" else { connection.cancel(); return }
+            let path = String(request[1].split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)[0])
+            guard path.hasPrefix("/") else { connection.cancel(); return }
+            let head = request[0] == "HEAD"
+            if path == "/\(self.token)/appcast.xml" {
+                self.send(connection, bytes: self.feed, contentType: "application/xml", head: head)
+            } else if path == self.artifactURL?.path {
+                self.sendArtifact(connection, head: head)
+            } else {
+                self.send(connection, bytes: Data(), contentType: "text/plain", head: true, status: "404 Not Found")
+            }
+        }
+    }
+
+    private func send(_ connection: NWConnection, bytes: Data, contentType: String, head: Bool,
+                      status: String = "200 OK") {
+        var response = Data("HTTP/1.1 \(status)\r\nContent-Type: \(contentType)\r\nContent-Length: \(bytes.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
+        if !head { response.append(bytes) }
+        connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+    }
+
+    private func sendArtifact(_ connection: NWConnection, head: Bool) {
+        guard ReleaseArtifact.valid(artifact, release: release),
+              let length = try? artifact.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              let handle = try? FileHandle(forReadingFrom: artifact) else { connection.cancel(); return }
+        let header = Data("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: \(length)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
+        connection.send(content: header, completion: .contentProcessed { [weak self] error in
+            guard error == nil, !head, let self else { try? handle.close(); connection.cancel(); return }
+            self.sendChunk(connection, handle: handle)
+        })
+    }
+
+    private func sendChunk(_ connection: NWConnection, handle: FileHandle) {
+        guard let part = try? handle.read(upToCount: 256 * 1_024), !part.isEmpty else {
+            try? handle.close()
+            connection.cancel()
+            return
+        }
+        connection.send(content: part, completion: .contentProcessed { [weak self] error in
+            guard error == nil, let self else { try? handle.close(); connection.cancel(); return }
+            self.sendChunk(connection, handle: handle)
+        })
+    }
+}
+#endif
 #endif

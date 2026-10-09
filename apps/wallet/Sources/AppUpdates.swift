@@ -30,7 +30,8 @@ enum CommandLineTools {
                 done.append(dst.path)
             }
         } catch {
-            done.append(String(localized: "Failed: \(error.localizedDescription)"))
+            NSLog("could not install command-line tools: %@", error.localizedDescription)
+            done.append(String(localized: "Could not install the command-line tools."))
         }
         let alert = NSAlert()
         alert.messageText = done.isEmpty ? String(localized: "No command-line tools in this build") : String(localized: "Command-line tools installed")

@@ -65,6 +65,36 @@ const RPC_STREAMS_PER_PEER: usize = 16;
 /// second. A wallet or a catch-up download stays far under it.
 const RPC_BURST: u32 = 64;
 const RPC_RATE_PER_SEC: u32 = 32;
+/// What a peer refused for concurrency is told to wait: one short request's time.
+const BUSY_CONCURRENCY_RETRY: Duration = Duration::from_millis(100);
+
+/// The text every "server busy" answer starts with. Clients of every version
+/// match on it (old followers, wallets): it never changes; the retry hint
+/// rides after it.
+pub const BUSY: &str = "server busy: rpc concurrency or rate limit reached, retry later";
+
+/// The answer to a request over the limits: [`BUSY`], plus how long to wait
+/// (`retry_after_ms`, in the message for clients that only read the text and
+/// in `data` for those that read the object) — the transport's Retry-After.
+fn busy_answer(retry: Duration) -> Value {
+    let ms = retry.as_millis() as u64;
+    serde_json::json!({
+        "jsonrpc": "2.0", "id": null,
+        "error": { "code": -32000, "message": format!("{BUSY}; retry_after_ms={ms}"), "data": { "retry_after_ms": ms } }
+    })
+}
+
+/// The wait a busy answer asks for (`retry_after_ms=` in its text), if any:
+/// older servers send none and the caller backs off on its own.
+pub fn busy_retry_after(message: &str) -> Option<Duration> {
+    if !message.contains(BUSY) {
+        return None;
+    }
+    let (_, rest) = message.split_once("retry_after_ms=")?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse::<u64>().ok().map(Duration::from_millis)
+}
+
 /// Peers remembered for limiting (an entry is a semaphore and a bucket).
 const MAX_RPC_PEERS: usize = 1024;
 /// Reading a request or writing an answer may take at most this long, so a
@@ -429,16 +459,18 @@ impl RpcGate {
         p
     }
 
-    /// Admit one request of `peer`, or `None` when a limit is hit (the global
-    /// or the peer's concurrency, or the peer's rate). Permits are held until
-    /// the returned guard is dropped.
-    fn enter(&self, peer: &PeerLimit) -> Option<RpcGuard> {
-        let global = self.global.clone().try_acquire_owned().ok()?;
-        let inflight = peer.inflight.clone().try_acquire_owned().ok()?;
+    /// Admit one request of `peer`, or `Err(retry_after)` when a limit is hit
+    /// (the global or the peer's concurrency, or the peer's rate): how long
+    /// the peer should wait before its next request has a chance. Permits are
+    /// held until the returned guard is dropped.
+    fn enter(&self, peer: &PeerLimit) -> std::result::Result<RpcGuard, Duration> {
+        let global = self.global.clone().try_acquire_owned().map_err(|_| BUSY_CONCURRENCY_RETRY)?;
+        let inflight = peer.inflight.clone().try_acquire_owned().map_err(|_| BUSY_CONCURRENCY_RETRY)?;
         if !peer.bucket.lock().expect("rpc token bucket").take(Instant::now()) {
-            return None;
+            // One token comes back every 1/per_sec seconds.
+            return Err(Duration::from_millis(1000u64.div_ceil(u64::from(self.per_sec.max(1))).max(1)));
         }
-        Some(RpcGuard { _global: global, _peer: inflight })
+        Ok(RpcGuard { _global: global, _peer: inflight })
     }
 }
 
@@ -479,17 +511,17 @@ impl ProtocolHandler for RpcProtocol {
             tokio::spawn(async move {
                 // Limits first, before reading anything: an over-limit request
                 // costs one small error answer, not a 16 MiB read and a handler.
-                let Some(_guard) = this.gate.enter(&peer) else {
-                    let busy = serde_json::json!({
-                        "jsonrpc": "2.0", "id": null,
-                        "error": { "code": -32000, "message": "server busy: rpc concurrency or rate limit reached, retry later" }
-                    });
-                    if let Some(budget) = &budget {
-                        let _ = public_read::read_request(&mut recv, MAX_MESSAGE, Some(budget)).await;
-                        let _ = recv.stop(iroh::endpoint::VarInt::from_u32(1));
-                        public_read::answer_capped(&mut send, &busy, Some(budget)).await;
-                    } else { answer(&mut send, &busy).await; }
-                    return;
+                let _guard = match this.gate.enter(&peer) {
+                    Ok(guard) => guard,
+                    Err(retry) => {
+                        let busy = busy_answer(retry);
+                        if let Some(budget) = &budget {
+                            let _ = public_read::read_request(&mut recv, MAX_MESSAGE, Some(budget)).await;
+                            let _ = recv.stop(iroh::endpoint::VarInt::from_u32(1));
+                            public_read::answer_capped(&mut send, &busy, Some(budget)).await;
+                        } else { answer(&mut send, &busy).await; }
+                        return;
+                    }
                 };
                 // A peer that stalls mid-request (or never reads its answer)
                 // must not hold its permits forever: the connection's idle
@@ -693,7 +725,22 @@ pub struct RpcClient {
     /// One attempt's and one scan's budget (tests shrink both).
     attempt: Duration,
     scan: Duration,
+    /// Connections by index into `nodes`, for [`RpcClient::call_at`]: a
+    /// follower catching up spreads its requests over every node, each on a
+    /// connection of its own, instead of hammering the current one.
+    pool: std::sync::Mutex<HashMap<usize, Connection>>,
+    /// Nodes whose last connect failed, and when: skipped for
+    /// [`DOWN_FOR`] so a dead node costs one connect timeout, not one per request.
+    down: std::sync::Mutex<HashMap<usize, Instant>>,
+    /// One connect at a time per node for `call_at`: concurrent callers wait
+    /// for it and share its connection (or its failure) instead of each
+    /// dialing the same node.
+    connecting: Vec<tokio::sync::Mutex<()>>,
 }
+
+/// How long a node that failed to connect is skipped by [`RpcClient::call_at`].
+const DOWN_FOR: Duration = Duration::from_secs(120);
+
 
 impl RpcClient {
     pub async fn new(nodes: Vec<EndpointId>) -> Result<Self> {
@@ -704,6 +751,7 @@ impl RpcClient {
     /// follower's public endpoint, so the validators it asks (and announces
     /// its wallet serving to) see its published node id.
     pub fn with_endpoint(endpoint: Endpoint, nodes: Vec<EndpointId>) -> Self {
+        let connecting = nodes.iter().map(|_| tokio::sync::Mutex::new(())).collect();
         RpcClient {
             endpoint,
             nodes: nodes.into_iter().map(EndpointAddr::from).collect(),
@@ -711,11 +759,15 @@ impl RpcClient {
             start: std::sync::atomic::AtomicUsize::new(0),
             attempt: CONNECT_ATTEMPT,
             scan: CONNECT_SCAN,
+            pool: Default::default(),
+            down: Default::default(),
+            connecting,
         }
     }
 
     /// A client on its own endpoint, at explicit addresses (tests, previews).
     pub async fn with_addrs(addrs: Vec<EndpointAddr>) -> Result<Self> {
+        let connecting = addrs.iter().map(|_| tokio::sync::Mutex::new(())).collect();
         Ok(RpcClient {
             endpoint: bind(None, vec![]).await?,
             nodes: addrs,
@@ -723,6 +775,9 @@ impl RpcClient {
             start: std::sync::atomic::AtomicUsize::new(0),
             attempt: CONNECT_ATTEMPT,
             scan: CONNECT_SCAN,
+            pool: Default::default(),
+            down: Default::default(),
+            connecting,
         })
     }
 
@@ -893,6 +948,82 @@ impl RpcClient {
         }
     }
 
+    /// Node `i`'s id, as text (a stable key for what a caller learns about it).
+    pub fn node_key(&self, i: usize) -> Option<String> {
+        self.nodes.get(i).map(|a| a.id.to_string())
+    }
+
+    /// How many nodes this client knows.
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    /// The node the next connection scan starts at (where `call` is talking).
+    pub fn preferred(&self) -> usize {
+        self.start.load(std::sync::atomic::Ordering::Relaxed) % self.nodes.len().max(1)
+    }
+
+    /// Ask node `i` of `nodes`, on a pooled connection of its own (never the
+    /// shared current one, which other reads use). A node that failed to
+    /// connect within the last [`DOWN_FOR`] is refused at once; a transport
+    /// failure drops its pooled connection. Server refusals ("server busy")
+    /// leave the connection in place: the node is fine, only full.
+    pub async fn call_at(&self, i: usize, method: &str, params: Value) -> Result<Value> {
+        let conn = self.pooled_connection(i).await?;
+        match rpc_call(&conn, method, params).await {
+            Ok(v) => Ok(v),
+            Err(RpcError::Server { message, .. }) => Err(anyhow!(message)),
+            Err(RpcError::Transport(e)) => {
+                self.drop_failed_connection(i, &conn);
+                Err(e)
+            }
+        }
+    }
+
+    fn drop_failed_connection(&self, i: usize, failed: &Connection) {
+        let mut pool = self.pool.lock().expect("rpc pool");
+        // Another call may have replaced this connection while the failing
+        // stream was still pending. Its delayed error must not evict that one.
+        if pool.get(&i).is_some_and(|current| current.stable_id() == failed.stable_id()) {
+            pool.remove(&i);
+        }
+    }
+
+    /// Node `i`'s pooled connection, connecting once when there is none:
+    /// concurrent callers wait for that one attempt and share its outcome.
+    async fn pooled_connection(&self, i: usize) -> Result<Connection> {
+        let addr = self.nodes.get(i).ok_or_else(|| anyhow!("no node {i}"))?.clone();
+        let pooled = || self.pool.lock().expect("rpc pool").get(&i).filter(|c| c.close_reason().is_none()).cloned();
+        if let Some(c) = pooled() {
+            return Ok(c);
+        }
+        let _one = self.connecting[i].lock().await;
+        if let Some(c) = pooled() {
+            return Ok(c);
+        }
+        if self.down.lock().expect("rpc down").get(&i).is_some_and(|at| at.elapsed() < DOWN_FOR) {
+            return Err(anyhow!("node {} is unreachable; skipped for now", addr.id.fmt_short()));
+        }
+        match tokio::time::timeout(self.attempt, self.endpoint.connect(addr.clone(), ALPN_RPC)).await {
+            Ok(Ok(c)) => {
+                self.down.lock().expect("rpc down").remove(&i);
+                self.pool.lock().expect("rpc pool").insert(i, c.clone());
+                Ok(c)
+            }
+            other => {
+                self.down.lock().expect("rpc down").insert(i, Instant::now());
+                Err(match other {
+                    Ok(Err(e)) => anyhow!("connect {}: {e}", addr.id.fmt_short()),
+                    _ => anyhow!("connect {}: timed out", addr.id.fmt_short()),
+                })
+            }
+        }
+    }
+
     /// Human-readable description of the current path (for UIs).
     pub async fn describe(&self) -> String {
         let cur = self.current.lock().await;
@@ -923,6 +1054,21 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
 
     #[test]
+    fn a_busy_answer_carries_a_retry_hint_old_text_first() {
+        let a = busy_answer(Duration::from_millis(31));
+        let m = a["error"]["message"].as_str().unwrap();
+        assert!(m.starts_with(BUSY), "old clients match the unchanged text: {m}");
+        assert_eq!(busy_retry_after(m), Some(Duration::from_millis(31)));
+        assert_eq!(busy_retry_after(BUSY), None, "an old server's answer has no hint");
+        assert_eq!(busy_retry_after("retry_after_ms=5"), None, "only a busy answer is read");
+        // The rate limit's hint is one token's time.
+        let gate = RpcGate::new(8, 8, 1, 32);
+        let peer = gate.peer(iroh::SecretKey::from_bytes(&[3; 32]).public());
+        let _held = gate.enter(&peer).ok().expect("the burst admits one");
+        assert_eq!(gate.enter(&peer).err(), Some(Duration::from_millis(32)), "rounded up: 31 ms refills nothing at 32/s");
+    }
+
+    #[test]
     fn a_token_bucket_bursts_then_refills_by_elapsed_time() {
         let t = Instant::now();
         let mut b = TokenBucket::new(2, 500); // 2 at once, then one per 2 ms
@@ -945,10 +1091,10 @@ mod tests {
         let (a, b) = (gate.peer(peer_id(1).public()), gate.peer(peer_id(2).public()));
         let g1 = gate.enter(&a).expect("first of a");
         let g2 = gate.enter(&a).expect("second of a");
-        assert!(gate.enter(&a).is_none(), "a is over its per-peer cap");
-        assert!(gate.enter(&b).is_some(), "another peer still has room");
+        assert!(gate.enter(&a).is_err(), "a is over its per-peer cap");
+        assert!(gate.enter(&b).is_ok(), "another peer still has room");
         drop(g1);
-        assert!(gate.enter(&a).is_some(), "a released permit went back to its semaphore");
+        assert!(gate.enter(&a).is_ok(), "a released permit went back to its semaphore");
         drop(g2);
 
         // The global cap binds across peers, whatever their own budgets.
@@ -956,9 +1102,9 @@ mod tests {
         let (a, b, c) = (gate.peer(peer_id(1).public()), gate.peer(peer_id(2).public()), gate.peer(peer_id(3).public()));
         let g1 = gate.enter(&a).expect("first of a");
         let g2 = gate.enter(&b).expect("first of b");
-        assert!(gate.enter(&c).is_none(), "the global cap is spent");
+        assert!(gate.enter(&c).is_err(), "the global cap is spent");
         drop(g1);
-        assert!(gate.enter(&c).is_some(), "a released permit went back to the pool");
+        assert!(gate.enter(&c).is_ok(), "a released permit went back to the pool");
         drop(g2);
     }
 
@@ -981,20 +1127,20 @@ mod tests {
         let live: Vec<_> = (1..MAX_RPC_PEERS).map(|_| gate.peer(SecretKey::generate().public())).collect();
         let unknown_id = SecretKey::generate().public();
         let refused = gate.peer(unknown_id);
-        assert!(gate.enter(&refused).is_none(), "a full map must not evict a live connection's limiter");
+        assert!(gate.enter(&refused).is_err(), "a full map must not evict a live connection's limiter");
         let reconnected = gate.peer(id);
         assert!(Arc::ptr_eq(&connected, &reconnected), "both connections share one identity's limiter");
-        assert!(gate.enter(&reconnected).is_none(), "reconnect cannot split the concurrency cap");
+        assert!(gate.enter(&reconnected).is_err(), "reconnect cannot split the concurrency cap");
         drop(connected);
         drop(reconnected);
         // ReadProtocol's task retains permits without retaining PeerLimit.
         // Even then the live request must prevent replacement of its entry.
         let refused = gate.peer(unknown_id);
-        assert!(gate.enter(&refused).is_none(), "work outliving a connection still protects its limiter");
+        assert!(gate.enter(&refused).is_err(), "work outliving a connection still protects its limiter");
         let reconnected = gate.peer(id);
-        assert!(gate.enter(&reconnected).is_none());
+        assert!(gate.enter(&reconnected).is_err());
         drop(held);
-        assert!(gate.enter(&reconnected).is_some(), "the original limiter recovers its released permit");
+        assert!(gate.enter(&reconnected).is_ok(), "the original limiter recovers its released permit");
         assert_eq!(gate.peers.lock().unwrap().len(), MAX_RPC_PEERS);
         drop(live);
     }
@@ -1012,10 +1158,10 @@ mod tests {
         let now = Instant::now();
         for peer in gate.peers.lock().unwrap().values() { peer.bucket.lock().unwrap().last = now + Duration::from_secs(3600); }
         let reconnected = gate.peer(ids[0]);
-        assert!(gate.enter(&reconnected).is_none(), "reconnect cannot earn a new request burst");
+        assert!(gate.enter(&reconnected).is_err(), "reconnect cannot earn a new request burst");
         drop(reconnected);
         let new_id = SecretKey::generate().public();
-        assert!(gate.enter(&gate.peer(new_id)).is_none(), "idle but depleted entries remain remembered");
+        assert!(gate.enter(&gate.peer(new_id)).is_err(), "idle but depleted entries remain remembered");
         assert!(gate.peers.lock().unwrap().contains_key(&ids[0]));
         // Exactly one idle entry can now refill fully; only that entry may be
         // evicted for a new identity, without changing any live/depleted entry.
@@ -1024,7 +1170,7 @@ mod tests {
             peers[&ids[0]].bucket.lock().unwrap().last = now - Duration::from_secs(2);
         }
         let admitted = gate.peer(new_id);
-        assert!(gate.enter(&admitted).is_some(), "fully refilled idle entry makes room");
+        assert!(gate.enter(&admitted).is_ok(), "fully refilled idle entry makes room");
         let peers = gate.peers.lock().unwrap();
         assert_eq!(peers.len(), MAX_RPC_PEERS);
         assert!(!peers.contains_key(&ids[0]));
@@ -1239,6 +1385,8 @@ mod tests {
             .as_str()
             .expect("a busy error, not a result");
         assert!(err.contains("server busy"), "{err}");
+        assert_eq!(busy_retry_after(err), Some(BUSY_CONCURRENCY_RETRY), "the busy answer says when to come back: {err}");
+        assert_eq!(busy["error"]["data"]["retry_after_ms"], 100, "also as data");
 
         release.notify_one();
         let held_answer = tokio::time::timeout(Duration::from_secs(10), holding)
@@ -1252,6 +1400,34 @@ mod tests {
             .expect("the limit was released");
         assert_eq!(again["result"], "pong");
         client.close().await;
+        let _ = router.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_delayed_failure_keeps_the_replacement_pooled_connection() {
+        let server = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .alpns(vec![ALPN_RPC.to_vec()]).bind().await.unwrap();
+        let port = server.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
+        let addr = EndpointAddr::from_parts(server.id(), [TransportAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))]);
+        let router = serve(server, |req| async move {
+            serde_json::json!({ "jsonrpc": "2.0", "id": req["id"], "result": "pong" })
+        }, None, None);
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled).bind().await.unwrap();
+        let client = RpcClient::with_endpoint(endpoint.clone(), vec![]);
+        let old = endpoint.connect(addr.clone(), ALPN_RPC).await.unwrap();
+        client.pool.lock().unwrap().insert(0, old.clone());
+        client.drop_failed_connection(0, &old); // First failed call removes A.
+        let replacement = endpoint.connect(addr, ALPN_RPC).await.unwrap();
+        assert_ne!(old.stable_id(), replacement.stable_id());
+        client.pool.lock().unwrap().insert(0, replacement.clone());
+        client.drop_failed_connection(0, &old); // A second A failure arrives late.
+        assert_eq!(client.pool.lock().unwrap()[&0].stable_id(), replacement.stable_id());
+        assert_eq!(rpc_call(&replacement, "ping", serde_json::json!([])).await.unwrap(), "pong");
+        client.drop_failed_connection(0, &replacement);
+        assert!(client.pool.lock().unwrap().is_empty(), "its own failure still removes it");
+        endpoint.close().await;
         let _ = router.shutdown().await;
     }
 

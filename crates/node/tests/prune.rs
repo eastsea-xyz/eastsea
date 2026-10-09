@@ -17,6 +17,7 @@ use aether_node::follow::{FinalityArchive, Upstream};
 use aether_node::prune::{self, Retention};
 use aether_node::rpc::{self, RpcState};
 use aether_node::store::Store;
+use aether_test_support::Port;
 use aether_state::mmr::ERA_LEN;
 use aether_types::{Address, Bytes, FeeVector, GasVector, TxEnvelope, B256, U256};
 use commonware_codec::Encode;
@@ -25,6 +26,9 @@ use commonware_cryptography::{ed25519, Digestible, Signer};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+#[path = "common/rpc.rs"]
+mod test_rpc;
 
 const CHAIN: u64 = 7_792;
 
@@ -291,10 +295,10 @@ fn pruning_keeps_recent_history_and_old_eras_come_back_verified() {
     // 4. The peer (archive) serves era 0; the pruned node fetches it and checks it
     //    against its own finalized history root before keeping it.
     let a = Node::reopen(&dir_a, blocks.clone(), nonce);
-    let port = 21_000 + (std::process::id() % 20_000) as u16;
+    let port = Port::reserve().expect("reserve archive RPC port");
     let url = format!("http://127.0.0.1:{port}");
     let st_a = rpc_state(a.chain.clone(), None);
-    rt.spawn(rpc::serve(std::net::SocketAddr::from(([127, 0, 0, 1], port)), st_a));
+    rt.spawn(test_rpc::serve(port, st_a));
     std::thread::sleep(std::time::Duration::from_millis(300));
     let up = || Upstream::Http(vec![url.clone()]);
     let path = rt.block_on(era_net::fetch_into(&b.chain, &up(), 0)).unwrap();

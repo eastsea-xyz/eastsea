@@ -215,7 +215,7 @@ impl ProtocolHandler for ReadProtocol {
             };
             let guard = self.gate.enter(&peer);
             let this = self.clone();
-            if guard.is_none() {
+            if guard.is_err() {
                 // Drain bounded accepted input under the same byte cap, without
                 // parsing or executing it. Serial refusals avoid spawned floods.
                 let _ = read_request(&mut recv, MAX_READ_REQUEST, Some(&this.read.budget)).await;

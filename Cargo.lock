@@ -74,6 +74,7 @@ dependencies = [
 name = "aether-core"
 version = "0.1.0"
 dependencies = [
+ "aether-test-support",
  "parking_lot",
  "rand 0.8.8",
  "rayon",
@@ -130,6 +131,7 @@ dependencies = [
  "aether-light",
  "aether-net",
  "aether-state",
+ "aether-test-support",
  "aether-types",
  "alloy-primitives",
  "anyhow",
@@ -213,6 +215,7 @@ dependencies = [
  "aether-proving",
  "aether-rewards",
  "aether-state",
+ "aether-test-support",
  "aether-types",
  "alloy-primitives",
  "axum",
@@ -290,6 +293,10 @@ dependencies = [
  "sha2 0.10.9",
  "ubt",
 ]
+
+[[package]]
+name = "aether-test-support"
+version = "0.2.0"
 
 [[package]]
 name = "aether-types"

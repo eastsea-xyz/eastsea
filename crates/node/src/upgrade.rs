@@ -119,12 +119,14 @@ pub struct PartialUpgrade {
 }
 
 pub fn sign_partial(upgrade: &Upgrade, share: &Share) -> PartialUpgrade {
+    crate::key_binding::check_process();
     let p = ops::threshold::sign_message::<MinSig>(share, NAMESPACE, &message(upgrade));
     PartialUpgrade { upgrade: upgrade.clone(), partial: hex::encode(p.encode()), emergency_approval: None }
 }
 
 pub fn sign_emergency_partial(upgrade: &Upgrade, share: &Share, key: &ed25519::PrivateKey) -> PartialUpgrade {
     let mut partial = sign_partial(upgrade, share);
+    crate::key_binding::check_process();
     let signature = key.sign(EMERGENCY_NAMESPACE, &message(upgrade));
     partial.emergency_approval = Some((hex::encode(key.public_key().encode()), hex::encode(signature.encode())));
     partial

@@ -401,6 +401,7 @@ impl Agreement {
     }
 
     fn sign_vote(&mut self, phase: Phase, digest: [u8; 32]) -> Option<SignedVote> {
+        crate::key_binding::check_process();
         let slot = (self.view, phase.tag());
         if !self.own_votes.insert(slot) {
             return None;
@@ -488,6 +489,7 @@ impl Agreement {
     }
 
     fn sign_new_view(&mut self) -> NewView {
+        crate::key_binding::check_process();
         let best = self.best.clone();
         let hash = Self::new_view_hash(&best);
         let message = self.envelope(3, self.view, &hash, &[]);
@@ -632,6 +634,7 @@ impl Agreement {
                     if let Some(digest) = digest.filter(|d| self.available.contains(d)) {
                         let hash = Self::proposal_hash(&statuses);
                         let message = self.envelope(4, self.view, &digest, &hash);
+                        crate::key_binding::check_process();
                         let proposal = Proposal {
                             view: self.view,
                             digest,

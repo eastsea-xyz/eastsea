@@ -36,12 +36,26 @@ while true; do
       "/Users/$user/"*) ;;
       *) continue ;;
     esac
+    data=$(/usr/libexec/PlistBuddy -c 'Print :data' "$marker" 2>/dev/null) || continue
+    case "$data" in /*) ;; *) continue ;; esac
+    if [ -e "$data/key-binding-refused" ] || [ -L "$data/key-binding-refused" ]; then
+      echo "key binding refused (persisted); automatic restart disabled; owner recovery is required" >&2
+      exit 0
+    fi
     wrapper="$bundle/Contents/Resources/eastsea-node-wrapper.sh"
     [ -x "$wrapper" ] || continue
     /usr/bin/sudo -u "$user" /bin/bash "$wrapper" "$marker" &
     child=$!
     wait "$child"
+    status=$?
     child=0
+    if [ "$status" -eq 15 ]; then
+      # The app's marker stays present on a binding refusal. Do not let it
+      # replay the rejected keys. A successful exit also stops launchd's
+      # KeepAlive/SuccessfulExit=false outer loop until owner recovery.
+      echo "key binding refused (exit 15); automatic restart disabled; owner recovery is required" >&2
+      exit 0
+    fi
     # The wrapper's node ended (crash, the app stopping it, the marker going
     # away mid-run): look again after the throttle pause. If the marker is
     # gone the loop below just waits, as quiet as before the opt-in.

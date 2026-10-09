@@ -16,18 +16,97 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 /// (0o600 for secrets). The parent directory is synced too, so the rename
 /// itself survives a power cut.
 pub fn replace(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
-    write(path, bytes, mode, false)
+    write(path, bytes, mode, false).map_err(|e| e.to_string())
 }
 
 /// Create a secret once, atomically, without ever replacing an existing key.
-/// A hard link publishes the synced temporary inode only if `path` is absent.
+/// The synced temporary inode is published only if `path` is absent.
 pub fn create(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
+    create_once(path, bytes, mode).map_err(|e| e.to_string())
+}
+
+#[derive(Debug)]
+pub enum CreateError {
+    AlreadyExists,
+    Storage(String),
+}
+
+impl std::fmt::Display for CreateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyExists => f.write_str("file already exists"),
+            Self::Storage(e) => f.write_str(e),
+        }
+    }
+}
+
+impl From<String> for CreateError {
+    fn from(e: String) -> Self { Self::Storage(e) }
+}
+
+/// Only an actual publication race is `AlreadyExists`. In particular, an
+/// error after publication must never be mistaken for another creator winning.
+pub fn create_once(path: &Path, bytes: &[u8], mode: u32) -> Result<(), CreateError> {
     write(path, bytes, mode, true)
 }
 
-fn write(path: &Path, bytes: &[u8], mode: u32, exclusive: bool) -> Result<(), String> {
+pub fn sync_parent(path: &Path) -> Result<(), String> {
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    #[cfg(test)]
+    if FAIL_SYNC.with(|p| p.borrow().as_deref() == Some(dir)) {
+        return Err(format!("{}: injected directory fsync failure", dir.display()));
+    }
+    let d = std::fs::File::open(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    d.sync_all().map_err(|e| format!("{}: {e}", dir.display()))
+}
+
+/// Persist every newly created ancestor as well as the files inside it. An
+/// fsynced staging file is insufficient if its new data directory can vanish.
+pub(crate) fn create_dir_all_durable(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // An earlier failed sync can leave visible directories too; existence
+    // alone must not bypass durability on the retry. Sync up to the root.
+    let absolute = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
+    let mut next = absolute.as_path();
+    while let Some(parent) = next.parent() { sync_parent(next)?; next = parent; }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! { static FAIL_SYNC: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) }; }
+
+#[cfg(test)]
+pub(crate) fn fail_sync_for_test(dir: Option<&Path>) {
+    FAIL_SYNC.with(|p| *p.borrow_mut() = dir.map(Path::to_path_buf));
+}
+
+#[cfg(target_os = "macos")]
+fn publish_once(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+    unsafe extern "C" {
+        fn renameatx_np(from_fd: libc::c_int, from: *const libc::c_char,
+            to_fd: libc::c_int, to: *const libc::c_char, flags: libc::c_uint) -> libc::c_int;
+    }
+    let from = std::ffi::CString::new(tmp.as_os_str().as_bytes())?;
+    let to = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    // macOS 14+ is our deployment floor. RENAME_EXCL is an atomic,
+    // no-overwrite rename, so concurrent creators cannot replace a winner.
+    if unsafe { renameatx_np(libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_EXCL) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn publish_once(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::hard_link(tmp, path)?;
+    std::fs::remove_file(tmp)
+}
+
+fn write(path: &Path, bytes: &[u8], mode: u32, exclusive: bool) -> Result<(), CreateError> {
+    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    create_dir_all_durable(dir)?;
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     let tmp = dir.join(format!(".{name}.new-{}-{}-{}", std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
@@ -38,29 +117,37 @@ fn write(path: &Path, bytes: &[u8], mode: u32, exclusive: bool) -> Result<(), St
             .create_new(true)
             .mode(mode)
             .open(&tmp)?;
+        #[cfg(all(feature = "test-seam", debug_assertions))]
+        if path.file_name().is_some_and(|name| name == crate::roster::CREATION_FILE)
+            && std::env::var("AETHER_TEST_KEY_CREATION_CRASH").ok().as_deref() == Some("partial-stage") {
+            f.write_all(&bytes[..bytes.len() / 2])?;
+            f.sync_all()?;
+            std::process::exit(86);
+        }
         f.write_all(bytes)?;
         f.sync_all()?;
         Ok(())
     })();
     if let Err(e) = prepared {
         let _ = std::fs::remove_file(&tmp);
-        return Err(format!("{}: {e}", tmp.display()));
+        return Err(CreateError::Storage(format!("{}: {e}", tmp.display())));
     }
     let published = if exclusive {
-        std::fs::hard_link(&tmp, path)
+        publish_once(&tmp, path)
     } else {
         std::fs::rename(&tmp, path)
     };
     if let Err(e) = published {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!("{}: {e}", path.display()));
+        if let Err(cleanup) = std::fs::remove_file(&tmp) {
+            return Err(CreateError::Storage(format!("{}: {e}; temporary-file cleanup failed: {cleanup}", path.display())));
+        }
+        return Err(if exclusive && e.kind() == std::io::ErrorKind::AlreadyExists {
+            CreateError::AlreadyExists
+        } else {
+            CreateError::Storage(format!("{}: {e}", path.display()))
+        });
     }
-    let d = std::fs::File::open(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    d.sync_all().map_err(|e| format!("{}: {e}", dir.display()))?;
-    if exclusive {
-        std::fs::remove_file(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
-        d.sync_all().map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
+    sync_parent(path)?;
     Ok(())
 }
 
@@ -73,6 +160,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn a_new_data_directory_requires_its_parent_to_be_synced() {
+        let root = tmp("new-directory-sync");
+        let path = root.join("new-data").join("validator.key");
+        fail_sync_for_test(Some(&root));
+        let result = create(&path, b"secret", 0o600);
+        fail_sync_for_test(None);
+        assert!(result.is_err(), "a new data directory must not mask its parent fsync failure");
+        assert!(!path.exists(), "no identity may be published before its directory is durable");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

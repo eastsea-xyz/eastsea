@@ -286,6 +286,10 @@ impl Snapshot {
     /// summaries, receipts, era files — stay: they are certified history of
     /// this same chain.
     pub fn install_over(&self, store: &Store, state: &WorldState, old: impl IntoIterator<Item = ([u8; 32], [u8; 32])>) -> Result<(), String> {
+        self.install_over_with_meta(store, state, old, None)
+    }
+
+    pub(crate) fn install_over_with_meta(&self, store: &Store, state: &WorldState, old: impl IntoIterator<Item = ([u8; 32], [u8; 32])>, metadata: Option<(&str, &[u8])>) -> Result<(), String> {
         if store.head().map_err(|e| e.to_string())?.is_none() {
             return Err("no chain to jump over".into());
         }
@@ -304,8 +308,7 @@ impl Snapshot {
         let summary = self.minimal_summary();
         let digest: [u8; 32] = hex::decode(&self.summary.hash).ok().and_then(|b| b.try_into().ok()).ok_or("snapshot block hash")?;
         let diff = Journal { writes, codes: self.codes.clone() };
-        store
-            .commit(Commit {
+        let commit = Commit {
                 height: self.summary.height,
                 digest,
                 root: state.root(),
@@ -319,8 +322,11 @@ impl Snapshot {
                 upgrade_notices: &self.upgrade_notices,
                 statement: &self.statement,
                 staged: None,
-            })
-            .map_err(|e| e.to_string())
+            };
+        match metadata {
+            Some((key, value)) => store.commit_with_meta(commit, key, value),
+            None => store.commit(commit),
+        }.map_err(|e| e.to_string())
     }
 }
 

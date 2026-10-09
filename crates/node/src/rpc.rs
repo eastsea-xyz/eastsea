@@ -23,7 +23,7 @@ pub enum Finality {
     Archive(std::sync::Arc<crate::follow::FinalityArchive>),
 }
 
-pub type Marshal = commonware_consensus::marshal::core::Mailbox<aether_light::Scheme, commonware_consensus::marshal::standard::Standard<crate::block::Block>>;
+pub type Marshal = commonware_consensus::marshal::core::Mailbox<crate::key_binding::signing::Scheme, commonware_consensus::marshal::standard::Standard<crate::block::Block>>;
 
 #[derive(Clone)]
 pub struct RpcState {
@@ -169,11 +169,37 @@ struct SnapshotCacheInner {
     building: AtomicBool,
     last_attempt: Mutex<Option<Instant>>,
     manifest: Mutex<Option<(std::sync::Weak<Vec<u8>>, String)>>,
+    /// The snapshot a rebuild replaced, and when: its chunks stay served for
+    /// [`SNAPSHOT_GRACE`], so a follower mid-download finishes the snapshot it
+    /// started instead of failing on "moved on" (2026-10-07).
+    previous: Mutex<Option<(CachedSnapshot, Instant)>>,
 }
+
+/// How long a replaced snapshot's chunks stay downloadable.
+pub const SNAPSHOT_GRACE: Duration = Duration::from_secs(10 * 60);
 
 impl SnapshotCache {
     pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Option<CachedSnapshot>>> {
         self.0.bytes.lock()
+    }
+
+    /// The bytes of the snapshot at `height` while it is served: the current
+    /// one, or the one it replaced within [`SNAPSHOT_GRACE`] (an expired one
+    /// is dropped here). `Err` names the current height, as before.
+    fn at(&self, height: u64) -> Result<Arc<Vec<u8>>, (i64, String)> {
+        let current = self.lock().expect("snapshot cache").clone();
+        let (h, bytes) = current.ok_or((-32000, "snapshot not available; request aether_snapshot first".to_string()))?;
+        if h == height {
+            return Ok(bytes);
+        }
+        let mut previous = self.0.previous.lock().expect("previous snapshot");
+        if previous.as_ref().is_some_and(|(_, at)| at.elapsed() >= SNAPSHOT_GRACE) {
+            *previous = None;
+        }
+        match previous.as_ref() {
+            Some(((ph, bytes), _)) if *ph == height => Ok(bytes.clone()),
+            _ => Err((-32000, format!("snapshot moved on to height {h}"))),
+        }
     }
 
     fn manifest(&self, bytes: &Arc<Vec<u8>>) -> String {
@@ -232,7 +258,8 @@ fn cached_snapshot(st: &RpcState) -> Result<CachedSnapshot, (i64, String)> {
     }
     let built = (s.summary.height, Arc::new(bytes));
     *st.snapshot.0.manifest.lock().expect("snapshot manifest") = Some((Arc::downgrade(&built.1), blake3_hex(&built.1)));
-    *st.snapshot.lock().expect("snapshot cache") = Some(built.clone());
+    let replaced = st.snapshot.lock().expect("snapshot cache").replace(built.clone());
+    *st.snapshot.0.previous.lock().expect("previous snapshot") = replaced.map(|old| (old, Instant::now()));
     Ok(built)
 }
 
@@ -519,6 +546,7 @@ async fn single(st: &RpcState, req: Value) -> Value {
     }
     let result = match &*method {
         "aether_getFinalized" => finalized(st, &params).await,
+        "aether_getFinalizedRange" => finalized_range(st, &params).await,
         "eth_call" => eth_call(st, &params, if st.public_read_only { PUBLIC_CALL_GAS } else { PRIVATE_CALL_GAS }).await,
         "aether_getReceiptProof" => receipt_proof(st, &params).await,
         "aether_historyProof" => history_proof(st, &params).await,
@@ -606,6 +634,49 @@ async fn receipt_proof(st: &RpcState, p: &Value) -> RpcResult {
 
 /// Codec bytes of finalized block `h` and its finalization certificate.
 /// Light clients verify both themselves; nothing here needs to be trusted.
+/// Blocks one `aether_getFinalizedRange` answer may hold.
+pub const FINALIZED_RANGE_MAX: u64 = 32;
+/// Its answer stops growing past this many bytes of hex (one block always fits).
+const FINALIZED_RANGE_BYTES: usize = 4 << 20;
+/// Range answers built at once by this node, across every peer: one range
+/// costs a peer one token at the transport but up to 32 block reads here, so
+/// the work it can ask for at once is bounded — the rest hear "server busy"
+/// with a retry hint, as at the transport.
+const FINALIZED_RANGE_CONCURRENT: usize = 8;
+static FINALIZED_RANGES: AtomicUsize = AtomicUsize::new(0);
+
+/// `[from, count]`: `aether_getFinalized` for `from..from+count` (at most
+/// [`FINALIZED_RANGE_MAX`]) in one answer — a follower catching up asks one
+/// request per span instead of one per block. The list stops at the first
+/// height this node has no certified block for, or at the byte budget; an
+/// error on the first height is the answer (a pruned one sends the follower
+/// to the era file), one later just ends the list.
+async fn finalized_range(st: &RpcState, p: &Value) -> RpcResult {
+    let from: u64 = param(p, 0)?;
+    let count: u64 = param::<u64>(p, 1)?.clamp(1, FINALIZED_RANGE_MAX);
+    let Some(_slot) = BudgetSlot::acquire(&FINALIZED_RANGES, FINALIZED_RANGE_CONCURRENT) else {
+        return Err((-32000, format!("{}; retry_after_ms=100", aether_net::BUSY)));
+    };
+    let mut out = Vec::new();
+    let mut bytes = 0usize;
+    for h in from..from.saturating_add(count) {
+        let v = match finalized(st, &json!([h])).await {
+            Ok(v) => v,
+            Err(e) if out.is_empty() => return Err(e),
+            Err(_) => break,
+        };
+        if v.is_null() {
+            break;
+        }
+        bytes += v["block"].as_str().map_or(0, str::len) + v["finalization"].as_str().map_or(0, str::len);
+        out.push(v);
+        if bytes >= FINALIZED_RANGE_BYTES {
+            break;
+        }
+    }
+    Ok(Value::Array(out))
+}
+
 async fn finalized(st: &RpcState, p: &Value) -> RpcResult {
     use commonware_codec::Encode;
     use commonware_consensus::types::Height;
@@ -913,6 +984,11 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 // caught up, or when nothing told it a height), and whether it
                 // is still catching up.
                 "catching_up": behind > 0,
+                // The gap a snapshot jump skipped, while its certified blocks
+                // are backfilled newest first (null: none running). The app
+                // shows "이전 내역을 불러오는 중" while it is set; balances and
+                // beacons are current regardless.
+                "backfill": crate::backfill::status(),
                 "behind": behind,
                 // Stage-wise progress (red team #2): a frozen height with a
                 // rising `activity` is a node busy on a snapshot, a store
@@ -1004,11 +1080,9 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
             let height: u64 = param(p, 0)?;
             let index: usize = param(p, 1)?;
             // Chunk requests never initiate a rebuild. An old manifest stays
-            // downloadable while the next manifest is being prepared.
-            let (h, bytes) = st.snapshot.lock().expect("snapshot cache").clone().ok_or((-32000, "snapshot not available; request aether_snapshot first".to_string()))?;
-            if h != height {
-                return Err((-32000, format!("snapshot moved on to height {h}")));
-            }
+            // downloadable while the next manifest is being prepared, and for
+            // SNAPSHOT_GRACE after it replaced it.
+            let bytes = st.snapshot.at(height)?;
             let start = index.saturating_mul(SNAPSHOT_CHUNK).min(bytes.len());
             let end = (start + SNAPSHOT_CHUNK).min(bytes.len());
             Ok(json!({ "data": hex::encode(&bytes[start..end]) }))
@@ -1050,10 +1124,27 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         "aether_candidates" => {
             let g = chain.lock();
             let state = &g.finalized.state;
-            let epoch = g.finalized.height / aether_execution::registry::epoch_blocks(state);
+            let params = aether_execution::registry::params(state);
+            let epoch = g.finalized.height / params.epoch_blocks;
+            let next_draw_epoch = epoch.saturating_sub(epoch % params.draw_epochs)
+                .saturating_add(params.draw_epochs);
+            let open_seats = crate::rotation::open_seats_at(&g, next_draw_epoch.saturating_mul(params.epoch_blocks));
+            // Measure from finalized blocks only, excluding genesis (its zero
+            // timestamp is not a wall-clock sample). Short devnet epochs and
+            // real-world block-time drift must not be labelled one hour each.
+            let sample_start = g.finalized.height.saturating_sub(params.epoch_blocks);
+            let hours_per_epoch = g.blocks.range(sample_start..g.finalized.height)
+                .find(|(_, b)| b.height > 0 && b.timestamp_ms > 0 && b.timestamp_ms < g.finalized.timestamp)
+                .map(|(height, b)| {
+                    (g.finalized.timestamp - b.timestamp_ms) as f64 * params.epoch_blocks as f64
+                        / (g.finalized.height - height) as f64 / 3_600_000.0
+                });
             let list: Vec<Value> = aether_execution::registry::candidates(state)
                 .into_iter()
                 .map(|c| {
+                    let verdict = crate::rotation::eligibility_verdict(
+                        state, &c, next_draw_epoch, params.min_streak, epoch, hours_per_epoch,
+                    );
                     json!({
                         "index": c.index,
                         "operator": c.operator,
@@ -1063,10 +1154,15 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                         "registered_epoch": c.registered_epoch,
                         "last_epoch": c.last_epoch,
                         "streak": c.streak,
+                        "missed": c.missed,
+                        "eligible_next_draw": verdict.eligible_next_draw,
+                        "why_not": verdict.why_not,
+                        "hours_to_eligible": verdict.hours_to_eligible,
                     })
                 })
                 .collect();
-            Ok(json!({ "epoch": epoch, "candidates": list, "max_per_epoch": aether_execution::registry::max_per_epoch(state) }))
+            Ok(json!({ "epoch": epoch, "next_draw_epoch": next_draw_epoch, "open_seats": open_seats,
+                "candidates": list, "max_per_epoch": aether_execution::registry::max_per_epoch(state) }))
         }
         "aether_faucet" => {
             let to: Address = param(p, 0)?;
@@ -1692,6 +1788,81 @@ mod release_tests {
         assert!(release_entries(&state, address, 2, 1, 200)["entries"].as_array().unwrap().is_empty());
     }
 
+    fn bare_state(archive: Arc<crate::follow::FinalityArchive>) -> RpcState {
+        let (chain, _) = Chain::new(crate::chain::ChainConfig {
+            chain_id: 7781,
+            limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
+            alloc: vec![], fees: false, registrar: None, epoch_blocks: 0,
+            min_streak: None, draw_epochs: None, history_v2: false, protocol: 1,
+            node_rewards: false, committee: vec![], reserve: None, group: 0,
+            max_committee: crate::rotation::GROW_UNTIL,
+        });
+        RpcState {
+            chain,
+            finality: Finality::Archive(archive),
+            gossip: mpsc::unbounded_channel().0,
+            faucet: None,
+            registrar: None,
+            network: None,
+            upstream: None,
+            handoff: None,
+            snapshot: Default::default(),
+            prover: None,
+            shards: None,
+            public_read_only: false,
+        }
+    }
+
+    /// 2026-10-07: a follower's download failed whenever the validator's
+    /// snapshot was rebuilt under it. The replaced snapshot's chunks stay
+    /// served for the grace window; after it, the old answer stands.
+    #[test]
+    fn a_replaced_snapshot_stays_downloadable_for_the_grace_window() {
+        let st = bare_state(Default::default());
+        let (old, new) = (Arc::new(vec![1u8; 10]), Arc::new(vec![2u8; 10]));
+        *st.snapshot.lock().unwrap() = Some((10, new.clone()));
+        *st.snapshot.0.previous.lock().unwrap() = Some(((5, old.clone()), Instant::now()));
+        assert!(Arc::ptr_eq(&st.snapshot.at(10).unwrap(), &new), "the current one");
+        assert!(Arc::ptr_eq(&st.snapshot.at(5).unwrap(), &old), "the replaced one, inside the grace window");
+        assert_eq!(st.snapshot.at(7).unwrap_err().1, "snapshot moved on to height 10", "any other height: as before");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let chunk = rt.block_on(handle_value(&st, json!({ "id": 1, "method": "aether_snapshotChunk", "params": [5, 0] })));
+        assert_eq!(chunk["result"]["data"], hex::encode([1u8; 10]), "{chunk}");
+        let expired = Instant::now().checked_sub(SNAPSHOT_GRACE + Duration::from_secs(1)).unwrap();
+        *st.snapshot.0.previous.lock().unwrap() = Some(((5, old), expired));
+        assert_eq!(st.snapshot.at(5).unwrap_err().1, "snapshot moved on to height 10", "the grace window is over");
+        assert!(st.snapshot.0.previous.lock().unwrap().is_none(), "and the bytes are let go");
+    }
+
+    /// One request per span of blocks for a follower catching up: the list
+    /// stops at the first missing height, is capped, and its building is
+    /// bounded across peers (busy with a retry hint past the bound).
+    #[test]
+    fn a_finalized_range_answers_a_span_in_one_request() {
+        let archive = Arc::new(crate::follow::FinalityArchive::default());
+        for h in 1..=40u64 {
+            if h != 6 {
+                archive.insert(h, json!({ "height": h, "block": "00", "finalization": "00", "links": [] }));
+            }
+        }
+        let st = bare_state(archive);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let ask = |from: u64, count: u64| rt.block_on(handle_value(&st, json!({ "id": 1, "method": "aether_getFinalizedRange", "params": [from, count] })));
+        let heights = |v: &Value| v["result"].as_array().unwrap().iter().map(|b| b["height"].as_u64().unwrap()).collect::<Vec<_>>();
+        assert_eq!(heights(&ask(1, 10)), vec![1, 2, 3, 4, 5], "stops at the first height it has none for");
+        assert_eq!(heights(&ask(7, 1_000)).len() as u64, FINALIZED_RANGE_MAX, "capped");
+        assert!(heights(&ask(41, 5)).is_empty(), "nothing yet past the tip");
+        let taken: Vec<_> = (0..FINALIZED_RANGE_CONCURRENT).map(|_| BudgetSlot::acquire(&FINALIZED_RANGES, FINALIZED_RANGE_CONCURRENT).unwrap()).collect();
+        let busy = ask(1, 5);
+        let m = busy["error"]["message"].as_str().unwrap();
+        assert!(m.starts_with(aether_net::BUSY) && aether_net::busy_retry_after(m).is_some(), "{m}");
+        drop(taken);
+        assert_eq!(heights(&ask(1, 2)), vec![1, 2], "free again");
+        let public = RpcState { public_read_only: true, ..st.clone() };
+        let refused = rt.block_on(handle_value(&public, json!({ "id": 1, "method": "aether_getFinalizedRange", "params": [1, 2] })));
+        assert_eq!(refused["error"]["code"], -32601, "not a public gateway read: {refused}");
+    }
+
     #[test]
     fn snapshot_rebuild_is_single_flight_and_rate_limited() {
         // This test must not depend on the machine it runs on: a busy Mac sits
@@ -1749,6 +1920,22 @@ mod release_tests {
 #[cfg(test)]
 mod public_read_tests {
     use super::*;
+    use aether_test_support::Port;
+
+    async fn serve_test(port: Port, state: RpcState) {
+        let addr = port.addr();
+        let _port = port;
+        let first = serve(addr, state.clone()).await;
+        let result = match first {
+            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+                eprintln!("TEST RPC BIND RETRY: {addr}: {err}; retrying startup once");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                serve(addr, state).await
+            }
+            result => result,
+        };
+        result.expect("test RPC server failed");
+    }
 
     fn public_state() -> RpcState {
         let mut st = bare_state();
@@ -2038,11 +2225,13 @@ mod public_read_tests {
     fn public_reads_never_fetch_history_from_upstream() {
         let _history = claim_history_budget();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let upstream = Port::reserve().expect("reserve unreachable upstream RPC port");
+        let upstream_url = format!("http://{}", upstream.addr());
         let mut st = public_state();
         // A pruned height whose era this node does not hold, and an upstream
-        // that cannot answer (port 9 discards): if the fetch ran at all, the
+        // that cannot answer: if the fetch ran at all, the
         // call would fail with the upstream error instead of "pruned".
-        st.upstream = Some(Arc::new(crate::follow::Upstream::Http(vec!["http://127.0.0.1:9".into()])));
+        st.upstream = Some(Arc::new(crate::follow::Upstream::Http(vec![upstream_url.clone()])));
         st.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
         let answer = rt.block_on(call(&st, "aether_getBlock", json!([100])));
         // The code is the claim: -32001 is old_block's local refusal ("no
@@ -2052,7 +2241,7 @@ mod public_read_tests {
         // Privately the same ask still self-heals (the fetch runs; a dead
         // upstream surfaces its own error, never a fake "pruned" answer).
         let mut private = bare_state();
-        private.upstream = Some(Arc::new(crate::follow::Upstream::Http(vec!["http://127.0.0.1:9".into()])));
+        private.upstream = Some(Arc::new(crate::follow::Upstream::Http(vec![upstream_url])));
         private.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
         let answer = rt.block_on(call(&private, "aether_getBlock", json!([100])));
         assert_eq!(answer["error"]["code"], -32000, "privately the fetch runs and its failure is the upstream's, not a pruned refusal: {answer}");
@@ -2208,7 +2397,8 @@ mod public_read_tests {
             assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{addr}: {err}");
         }
         // Loopback is exactly what the flag serves.
-        let loopback = rt.spawn(serve("127.0.0.1:0".parse().unwrap(), st));
+        let port = Port::reserve().expect("reserve public loopback RPC port");
+        let loopback = rt.spawn(serve_test(port, st));
         rt.block_on(async { tokio::time::sleep(Duration::from_millis(50)).await });
         assert!(!loopback.is_finished(), "loopback bind must be allowed");
         loopback.abort();
@@ -2221,13 +2411,9 @@ mod public_read_tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let st = public_state();
-        let addr = {
-            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let a = probe.local_addr().unwrap();
-            drop(probe);
-            a
-        };
-        rt.spawn(serve(addr, st));
+        let port = Port::reserve().expect("reserve public body-limit RPC port");
+        let addr = port.addr();
+        rt.spawn(serve_test(port, st));
         rt.block_on(async {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let sock = tokio::net::TcpStream::connect(addr).await.expect("gateway is listening");
@@ -2298,15 +2484,11 @@ mod public_read_tests {
                 shards: None, public_read_only: public,
             }
         };
-        let free = || {
-            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let a = probe.local_addr().unwrap();
-            drop(probe);
-            a
-        };
-        let (pub_addr, priv_addr) = (free(), free());
-        rt.spawn(serve(pub_addr, state(true)));
-        rt.spawn(serve(priv_addr, state(false)));
+        let pub_port = Port::reserve().expect("reserve public era RPC port");
+        let priv_port = Port::reserve().expect("reserve private era RPC port");
+        let (pub_addr, priv_addr) = (pub_port.addr(), priv_port.addr());
+        rt.spawn(serve_test(pub_port, state(true)));
+        rt.spawn(serve_test(priv_port, state(false)));
         let ask = |addr: std::net::SocketAddr| async move {
             let mut sock = tokio::net::TcpStream::connect(addr).await.expect("listener is up");
             sock.write_all(b"GET /era/era-00000003.aera HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await.unwrap();

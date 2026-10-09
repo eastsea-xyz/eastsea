@@ -1,0 +1,7 @@
+[package]
+name = "aether-test-support"
+description = "Process-wide TCP port reservations and observable test-node startup"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false

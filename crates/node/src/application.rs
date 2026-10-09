@@ -3,7 +3,7 @@
 
 use crate::block::{Block, Context};
 use crate::chain::{build_payload, Chain, Executed, Extras};
-use aether_light::Scheme;
+use crate::key_binding::signing::Scheme;
 use commonware_actor::Feedback;
 use commonware_consensus::{
     marshal::{ancestry::Ancestry, Update},

@@ -3,38 +3,42 @@ The sendable version below is followed by alternatives, not one long email.
 
 Subject: Can the Mac on your desk help keep a public network alive?
 
-Fifty transactions took 47.2 seconds to prove on an M1 Max.
-The network doesn't wait for the proof. Is that a trade you would accept? [1]
+A 2026-09-27 warm Metal sample of fifty payments took 47.2 seconds to prove
+on an M1 Max. Finality precedes execution proofs. Is that a trade you'd accept? [1]
 
 I started EastSea to test a question: can ordinary Macs run and prove a
-public network with no owner? Picture the Mac on your desk checking the
-network itself. The difficult part is whether enough Macs can keep it
-available, admit newcomers, and prove the work. [2]
+public network with no owner? Voting admission is gated, and founder reserves
+can hold a bootstrap quorum. Followers and wallets trust committee certification
+of block proofs; they do not independently verify them. [2]
 
-The paper lays out what we've tried: committee finality, Metal-enabled
-Jolt/Akita proofs, certified snapshots, and prunable history. It separates
-testnet evidence from planned rules. Proofs can lag or be absent. Admission
-and software updates still have operating keys. This is early, unproven,
-and not independently audited. Please don't join expecting money. [2]
+The paper separates testnet evidence from proposals: Simplex/BLS finality,
+Jolt/Akita proofs, certified snapshots and pruning. Today's network is testnet.
+Proofs can lag or be absent;
+software releases retain operating authorities. Early, unproven, without an
+independent audit. Please don't join expecting money. [2]
 
-Our regional-link simulation, with 20 Mbps upload and roughly 50 KB payloads,
-recorded 16-seat p99 finality of 0.699002 seconds. Physical-Mac results remain
-to be measured. [2]
+A 2026-10-09 regional simulation recorded conditional empirical p99 finality
+of 0.699002 seconds across 236 completed proposals at 16 seats, 20 Mbps
+shared upload and roughly 50 KB payloads. Conditions below; home-Mac results
+remain unestablished. [3]
 
-Run a node and tell us what breaks. Challenge the consensus and proving
-assumptions, review the code and paper, or send measurements from your Mac.
+Challenge the assumptions, review code/paper, or send measurements from your Mac.
 
-Join the experiment:
+Try a disposable local devnet (resets the directory; no public voting seat):
+Participation uses your hardware and electricity at your cost.
 Repo: https://github.com/eastsea-xyz/eastsea
 Paper [2]: docs/whitepaper/eastsea.md in the repo.
-Run locally (disposable directory):
+Use the repo's build prerequisites; run from its root:
 export AETHER_DEVNET_DIR="$(git rev-parse --show-toplevel)/tmp/eastsea-demo"
 scripts/demo.sh
 scripts/devnet.sh stop
 Results: https://github.com/eastsea-xyz/eastsea/issues
 
-[1] apps/prover/README.md: 2026-09-27, Metal, warm serve, 50-transaction
-sample, machine load average 25–75. This is not arbitrary-workload timing.
+[1] apps/prover/README.md: 2026-09-27, Metal, warm serve, fifty P-256 payments,
+load average 25–75. Not arbitrary-contract timing or a current-release rate.
+[3] 2026-10-09, 9e033c8, docs/research/committee-scale-2026-10-09.md:
+two seeds, 120 virtual seconds, three-second warm-up, no faults/followers;
+physical transport, disk persistence and proving excluded.
 
 END SENDABLE DRAFT
 
@@ -42,21 +46,21 @@ Five alternative subject lines
 
 1. Can the Mac on your desk help keep a public network alive?
 2. A Mac proved fifty transactions. What does that actually establish?
-3. Sixteen seats met our simulation deadline. Thirty-two did not.
+3. Sixteen seats met the observed deadlines in one bounded simulation.
 4. Can a public network have no owner—and still admit your Mac?
 5. What breaks when ordinary Macs run the network?
 
 Three alternative opening hooks
 
-A. Fifty transactions took 47.2 seconds to prove on an M1 Max.
-   The network doesn't wait for the proof. Is that a trade you would accept?
+A. A 2026-09-27 warm Metal sample of fifty payments took 47.2 seconds to prove
+   on an M1 Max. Finality precedes execution proofs. Is that a trade you'd accept?
    Source: [1]; finality/proving separation: paper Section 4.
 
-B. In our 20 Mbps, roughly 50 KB regional-link simulation, 16 seats met
-   every observed one-second deadline. At 32 seats, 96 of 238 missed it.
+B. In the 2026-10-09 regional-link simulation at 20 Mbps and roughly 50 KB,
+   16 seats met all 236 eligible one-second deadlines. At 32, 96 of 238 missed.
    What happens on the Mac and home connection you actually use?
-   Source: 9e033c8, docs/research/committee-scale-2026-10-09.md;
-   two seeds, 120 virtual seconds, three-second warm-up, no faults/followers.
+   Source: [3]; two seeds, 120 virtual seconds, three-second warm-up;
+   physical transport, disk persistence and proving excluded, no faults/followers.
 
 C. Your Mac could check a balance without taking a server's word for it.
    But who does it still trust—and can you help us test that boundary?

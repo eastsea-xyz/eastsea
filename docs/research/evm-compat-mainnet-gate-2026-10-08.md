@@ -48,9 +48,13 @@ even when its calls revert. No wallet UI or automatic migration is added here.
 
 ## Explicit genesis changes (B3)
 
-`predeploys::all()` now includes Permit2. The existing
-`ChainConfig::genesis_state` loop writes its exact runtime to the canonical
-address; `mainnet::check` requires all three canonical code hashes.
+The host node's `predeploys::all()` catalogue includes Permit2. Genesis retains
+the released CREATE2/Multicall3 allocation, and adds Permit2 only when the frozen
+genesis protocol is at least 4, with node rewards and history v2 enabled.
+`mainnet::check` requires all three canonical code hashes for the current
+new-network checklist. Protocol-3 cold participants retain their original
+state root; running a newer implementation or activating protocol 4 later does
+not retroactively install Permit2 or rewrite genesis.
 
 | Contract | Genesis address | Runtime bytes | keccak256(runtime) |
 |---|---|---:|---|
@@ -65,11 +69,13 @@ is retained. Permit2 includes the exact mainnet immutables, including the
 chain-1 domain cache. Its original runtime recomputes the domain for the
 EastSea chain id. The three contracts start with empty storage.
 
-The deployment condition remains **`node_rewards && history_v2`**. Mainnet
+The Permit2 deployment condition is **`node_rewards && history_v2 && cfg.protocol >= 4`**.
+The base two-contract catalogue keeps its original rewards/history condition. Mainnet
 and fresh devnet/testnet genesis files use this same path, documented in
-[mainnet-launch.md](../ops/mainnet-launch.md). This changes the state root
-of a new mainnet genesis; regenerate and review any earlier ceremony/genesis
-record before launch. Existing 7780 gets none of these contracts: there is
+[mainnet-launch.md](../ops/mainnet-launch.md). Prospective protocol-4 networks
+generate their ceremony records from that explicit new genesis. Existing
+protocol-3 network files and records retain their original root, including
+after a later protocol-4 activation. Existing 7780 gets none of these contracts: there is
 no scheduled standard-predeploy system write in this release. Its shipped
 network file, original genesis/account code and upgrade rules are unchanged.
 

@@ -80,6 +80,7 @@ fn rel23_legacy_cache_budget_preserves_archived_queries_and_proofs() {
     let (_, sharing, _) = aether_light::devnet_threshold(4);
     chain.lock().identity = Some(*sharing.public());
     chain.finalize(&genesis).unwrap();
+    let mut executions = vec![genesis.digest()];
     let mut previous = genesis;
     let mut parent = chain.lock().finalized.clone();
     let signer = P256Signer::from_seed(&dev_seed(1)).unwrap();
@@ -126,6 +127,7 @@ fn rel23_legacy_cache_budget_preserves_archived_queries_and_proofs() {
         if h == 1 {
             first = Some(block.clone());
         }
+        executions.push(block.digest());
         previous = block;
         parent = exec;
     }
@@ -143,16 +145,27 @@ fn rel23_legacy_cache_budget_preserves_archived_queries_and_proofs() {
         "fixture must exceed the cache budget"
     );
     chain.trim_history_caches_with(budget);
+    // This deliberately tiny budget is below the mandatory head-and-parent
+    // working state. Every optional execution and archival cache row must go;
+    // realistic total-allocation budgets are covered by the H04 rescue tests.
     assert!(
-        chain.caches_bytes() <= budget,
-        "REL-23 legacy caches remain {} bytes with a {budget}-byte budget",
-        chain.caches_bytes()
+        chain.history_rows_bytes() <= budget - budget / 4,
+        "optional history rows fit with 25% headroom"
     );
-    assert!(
-        chain.lock().cache_below > 1,
-        "old finalized rows must leave memory"
-    );
-    assert!(!chain.lock().receipts.contains_key(&hash));
+    {
+        let guard = chain.lock();
+        assert_eq!(guard.cache_below, 40, "only the head summary stays cached");
+        assert_eq!(guard.blocks.len(), 1);
+        assert!(guard.blocks.contains_key(&40));
+        assert!(guard.receipts.is_empty(), "archived receipts leave memory");
+    }
+    for (height, digest) in executions.iter().enumerate() {
+        assert_eq!(
+            chain.get(digest).is_some(),
+            height >= 39,
+            "only the finalized head and its parent retain execution state: height {height}"
+        );
+    }
     assert_eq!(
         chain.lock().pruned_below,
         0,
@@ -350,7 +363,20 @@ fn rel23_offline_compaction_reports_allocations_and_preserves_finalized_rows() {
         after < file_before.len(),
         "compaction must reclaim fixture free pages: {report}"
     );
-    assert_eq!(after, std::fs::metadata(&path).unwrap().len());
+    let file_after = std::fs::metadata(&path).unwrap();
+    assert_eq!(after, file_after.len());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            report["after"]["filesystem_allocated_bytes"],
+            json!(file_after.blocks() * 512)
+        );
+    }
+    assert_eq!(
+        report["after"]["reclaimable_estimate_bytes"].as_u64().unwrap(),
+        file_after.len().saturating_sub(report["after"]["allocated_bytes"].as_u64().unwrap())
+    );
     let reopened = Store::open(&path).unwrap();
     let checkpoint = reopened.load().unwrap().unwrap();
     assert_eq!(reopened.head().unwrap(), head);

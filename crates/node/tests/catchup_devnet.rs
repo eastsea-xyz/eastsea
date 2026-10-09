@@ -19,6 +19,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const BLOCKS: u64 = 2_000;
+// Durable loopback consensus measured about 0.8 s/block on this Mac. Fixture
+// construction is separate from the follower's measured head/backfill bounds.
+const PREPARATION_BOUND: Duration = Duration::from_secs(1_800);
 // The lead lane calibrates this bound from an actual run on the test Mac.
 const HEAD_BOUND: Duration = Duration::from_secs(60);
 const BACKFILL_BOUND: Duration = Duration::from_secs(180);
@@ -493,9 +496,9 @@ fn a_fresh_follower_jumps_to_head_and_resumes_backfill_after_sigkill() {
     let built = Instant::now();
     net.wait_status(0, 2, Duration::from_secs(120));
     net.transfer("777");
-    net.wait_status(0, BLOCKS / 2, Duration::from_secs(300));
+    net.wait_status(0, BLOCKS / 2, PREPARATION_BOUND);
     net.transfer("222"); // Sampled history includes real state-root changes.
-    net.wait_status(0, BLOCKS, Duration::from_secs(600));
+    net.wait_status(0, BLOCKS, PREPARATION_BOUND);
     let snapshot = net
         .http
         .call(&net.url(0), "aether_snapshot", json!([]))

@@ -1845,7 +1845,50 @@ mod tests {
         assert_eq!(ReleasePin::from_config(prefixed.to_string().as_bytes()).unwrap(), pin, "a 0x prefix is normalized away");
     }
 
-    /// Every standard contract is canonical on a new genesis, and absent on
+    #[test]
+    fn protocol_three_cold_genesis_keeps_the_released_predeploy_catalogue() {
+        use crate::predeploys::{CREATE2_DEPLOYER, CREATE2_DEPLOYER_CODE_HASH, MULTICALL3, MULTICALL3_CODE_HASH, PERMIT2};
+        use commonware_cryptography::Digestible as _;
+        let mut cfg = mainnet();
+        cfg.protocol = 3;
+        let (cold, genesis) = Chain::new(cfg);
+        let historical = cold.lock().finalized.clone();
+        assert_eq!(historical.state.code_hash(&CREATE2_DEPLOYER), CREATE2_DEPLOYER_CODE_HASH);
+        assert_eq!(historical.state.code_hash(&MULTICALL3), MULTICALL3_CODE_HASH);
+        assert!(historical.state.code(&PERMIT2).is_empty());
+        assert!(aether_execution::predeploys::installed(|a| historical.state.code(a)));
+        // The new implementation can run protocol 4, but a cold participant
+        // must still use the original protocol-3 genesis facts and root.
+        assert!(cold.lock().protocol >= 4);
+        assert_eq!(cold.cfg().protocol, 3);
+        let (rejoined, reconstructed) = Chain::new(cold.cfg());
+        assert_eq!(reconstructed.digest(), genesis.digest());
+        assert_eq!(rejoined.lock().finalized.state.root(), historical.state.root());
+        let mut fresh = cold.cfg();
+        fresh.protocol = 4;
+        let (new_network, new_genesis) = Chain::new(fresh);
+        assert_ne!(new_network.lock().finalized.state.root(), historical.state.root());
+        assert_ne!(new_genesis.digest(), genesis.digest());
+    }
+
+    #[test]
+    fn protocol_four_genesis_adds_only_the_pinned_permit2_runtime() {
+        use crate::predeploys::{self, PERMIT2, PERMIT2_CODE_HASH};
+        let mut cfg = mainnet();
+        cfg.protocol = 4;
+        let state = cfg.genesis_state();
+        assert!(aether_execution::predeploys::installed(|a| state.code(a)));
+        assert_eq!(state.code(&PERMIT2), predeploys::permit2_code());
+        assert_eq!(state.code_hash(&PERMIT2), PERMIT2_CODE_HASH);
+        assert!(predeploys::installed(|a| state.code(a)));
+        for (rewards, history) in [(false, true), (true, false), (false, false)] {
+            cfg.node_rewards = rewards;
+            cfg.history_v2 = history;
+            assert!(cfg.genesis_state().code(&PERMIT2).is_empty(), "both existing genesis gates remain required");
+        }
+    }
+
+    /// Every standard contract is canonical on a new protocol-4+ genesis, and absent on
     /// the shipped 7780 genesis without node rewards and history v2.
     #[test]
     fn standard_predeploys_are_on_a_new_genesis_only() {

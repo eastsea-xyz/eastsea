@@ -128,6 +128,16 @@ fn current_reserve_overlap_is_rejected(node_only: bool) {
     std::fs::write(&network, &network_bytes).unwrap();
     let key_bytes = std::fs::read(data.join(KEY_FILE)).unwrap();
     let public_bytes = std::fs::read(data.join(PUBLIC_FILE)).unwrap();
+    let binding_bytes = std::fs::read(data.join(aether_node::key_binding::BINDING_FILE)).unwrap();
+    let mut expected_entries: Vec<_> = std::fs::read_dir(&data)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    // CLI startup owns the directory before checking ceremony inputs.
+    if !expected_entries.iter().any(|entry| entry == "run.lock") {
+        expected_entries.push("run.lock".into());
+    }
+    expected_entries.sort();
 
     let (status, log) = dkg_once(&network, &data, &root.0.join("dkg.log"));
     let status = status.expect("overlap rejects before a runtime or ceremony starts");
@@ -137,7 +147,8 @@ fn current_reserve_overlap_is_rejected(node_only: bool) {
     } else {
         "validator 4: its key is also a reserve key"
     };
-    assert_eq!(log.trim(), format!("error: {expected}"));
+    let refusal = log.trim().strip_prefix("Mac key binding confirmed\n").unwrap_or(log.trim());
+    assert_eq!(refusal, format!("error: {expected}"));
     let mut entries: Vec<_> = std::fs::read_dir(&data)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -145,11 +156,12 @@ fn current_reserve_overlap_is_rejected(node_only: bool) {
     entries.sort();
     assert_eq!(
         entries,
-        vec![KEY_FILE.to_string(), PUBLIC_FILE.to_string()],
+        expected_entries,
         "rejection creates no threshold share, runtime, journal, or network output"
     );
     assert_eq!(std::fs::read(data.join(KEY_FILE)).unwrap(), key_bytes);
     assert_eq!(std::fs::read(data.join(PUBLIC_FILE)).unwrap(), public_bytes);
+    assert_eq!(std::fs::read(data.join(aether_node::key_binding::BINDING_FILE)).unwrap(), binding_bytes);
     assert_eq!(std::fs::read(network).unwrap(), network_bytes);
 }
 

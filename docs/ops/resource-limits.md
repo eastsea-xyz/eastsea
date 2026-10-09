@@ -39,16 +39,18 @@
 
 ## 노드 자기 캐시 예산 (`--max-memory`)
 
-히스토리가 쌓이며 함께 자라는 **메모리 내** 캐시만 이 예산 안에 든다. 기본값은 RAM의 1/8을 1 GB ~ 4 GB로 자른 값이다. 예전 기본값(RAM의 25%, 최소 2 GB)은 64 GB 맥에서 노드 하나에 16 GB였다. 소비자 맥에는 사용자의 다른 앱이 함께 돌고, 지갑의 팔로워와 검증자 여럿처럼 노드 몇 개가 한 맥에서 돌기도 한다. 노드마다 이 예산을 통째로 잡으므로 상한을 4 GB로 둔다. 예산을 넘으면 era 파일이 있는 봉인된 era만 내보내므로, 예산이 작아도 데이터는 잃지 않고 오래된 높이를 파일에서 읽을 뿐이다. 더 크게 쓰려면 `--max-memory`로 지정한다.
+히스토리가 쌓이며 함께 자라는 **메모리 내** 요약·영수증, 전체 실행 상태, 압축 증명 입력의 추정 할당량이 이 예산 안에 든다. 기본값은 RAM의 1/8을 1 GB ~ 4 GB로 자른 값이다. 예전 기본값(RAM의 25%, 최소 2 GB)은 64 GB 맥에서 노드 하나에 16 GB였다. 소비자 맥에는 사용자의 다른 앱이 함께 돌고, 지갑의 팔로워와 검증자 여럿처럼 노드 몇 개가 한 맥에서 돌기도 한다. 노드마다 이 예산을 통째로 잡으므로 상한을 4 GB로 둔다. 디코딩·증명 구성의 작업 공간으로 25%를 남기고, 먼저 선택적인 실행 상태와 증명 입력을 내보낸다. 최종 헤드와 바로 앞 부모의 실행 상태는 반드시 유지하므로, 이 둘보다 작은 예산은 맞출 수 없다. 더 크게 쓰려면 `--max-memory`로 지정한다.
 
 이 예산은 체크포인트 스냅샷 게이트의 상한이기도 하다(사용 가능 메모리의 1/4과 이 값 중 작은 쪽). 1 GB 예산이면 팔로워는 전송 크기 128 MB(디코딩 증폭 8배)까지의 스냅샷을 받는다.
 
 
-- 블록 요약 `blocks`(BTreeMap<높이, BlockSummary>) — 예산이 빠듯하면 가장 오래된 **봉인된 era**부터 내보낸다. era 파일이 디스크에 있을 때만 내보내고, 열려 있는 era는 절대 두지 않는다.
-- 영수증 `receipts`(해시 → (높이, Receipt)) — 같은 era 단위로 함께 간다.
-- 나머지(`executed` 최근 실행, `recent` 32개, 멤풀 64 MB, era 캐시 1개)는 이미 상한이 있어 그대로다.
+- 실행 상태 `executed` — 전체 상태의 추정 할당량을 포함하며, 최종 헤드와 부모를 제외한 오래된 상태부터 내보낸다.
+- 증명 입력 `recent`·`proving_inputs` — 증명 기능을 켠 노드만 설정된 윈도 안에서 압축 입력을 유지한다. 이것도 예산에 포함되며, 입력 때문에 추가 전체 상태를 붙잡지 않는다.
+- 블록 요약 `blocks`(BTreeMap<높이, BlockSummary>) — history v2는 디스크에 파일이 있는 가장 오래된 **봉인된 era**부터 내보낸다. 열려 있거나 아직 파일이 없는 era는 유지한다. 레거시 네트워크는 redb가 있는 경우 오래된 요약을 내보내며, 모니터가 없어도 요약·영수증에는 별도 64 MiB 상한이 있다. 최종 헤드 요약은 유지한다.
+- 영수증 `receipts`(해시 → (높이, Receipt)) — history v2는 같은 era 단위로 함께 내보낸다. 레거시 네트워크의 영수증은 redb에 남는다.
+- 멤풀 64 MB와 era 캐시 1개는 별도 상한을 유지한다.
 
-내보낸 높이도 서비스는 계속된다: `aether_getBlock`·`history_proof`는 era 파일에서 읽는다(`pruned_below`와 `cache_below` 중 큰 값 아래는 전부 파일로). **era 파일이 없는 네트워크(7780 규칙)는 아무것도 내보내지 않는다** — 파일이 없으면 그 높이를 받아줄 곳이 없다.
+내보낸 높이도 서비스는 계속된다: history v2의 `aether_getBlock`·`history_proof`는 봉인된 era 파일을 사용하고, era 파일이 없는 레거시 네트워크(7780 규칙)는 redb의 보관 행을 읽는다. 읽기 때문에 히스토리 캐시를 다시 채우지는 않는다. **redb와 era 파일이 모두 없는 메모리 전용 체인은 히스토리 요약·영수증을 내보내지 않는다** — 그 높이를 받아줄 보관소가 없기 때문이다.
 
 노드는 10분마다 자기 풋프린트를 로그에 남긴다(`this node's memory (physical footprint, every 10 min)`).
 
@@ -72,6 +74,6 @@ curl -s localhost:18545 -X POST -H 'content-type: application/json' \
 
 - `cargo test -p aether-node --lib -- resources:: prover::` — 크기/스왑 파싱, 플래그 해석, 디스크 히스테리시스, 5분 재개, critical 구분, 페이지 폴백, 기계 읽기; 백오프 사다리; 가짜 사이드카(핸드셰이크를 말하고 awk로 256 MB를 잡는 셸 스크립트)를 상한 넘게 키워 와치독이 죽이고 백오프하는 것.
 - `cargo test -p aether-node --bin aether resource_` — `node`·`follow`·`run`의 플래그 파싱과 `run`의 자식 전달.
-- `cargo test -p aether-node --test resources` — 캐시 예산으로 era 단위 퇴거, 퇴거된 블록·증명이 era 파일로 그대로 서비스되는 것, era 없는 네트워크는 퇴거하지 않는 것.
+- `cargo test -p aether-node --test resources` — 전체 할당량 예산으로 봉인된 era 단위 퇴거, 퇴거된 블록·증명이 era 파일로 그대로 서비스되는 것, 보관소 없는 메모리 전용 체인은 히스토리 행을 퇴거하지 않는 것. `storage_reclamation`은 레거시 캐시 퇴거 후 redb 조회·증명·재시작과 오프라인 압축의 최종 파일 측정을 확인한다.
 - `cargo build -p aether-node`는 `AETHER_PROVER_PROGRAM=$(scripts/prover-program.sh)`와 함께. 앱은 `xcodegen generate` 뒤 `xcodebuild`(AetherWallet / AetherWalletIOS 스킴).
 - `swiftc -o /tmp/resources-check apps/wallet/Sources/ProverFlags.swift apps/wallet/Tests/resources/main.swift && /tmp/resources-check` — 지갑이 만드는 플래그 목록.

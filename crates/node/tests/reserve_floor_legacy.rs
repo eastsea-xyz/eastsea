@@ -13,7 +13,7 @@ use commonware_cryptography::Digestible;
 
 const NETWORK: &[u8] = include_bytes!("fixtures/legacy-7780-network.json");
 // Pin the reported hash while running against the pre-change implementation.
-const EXPECTED_TRANSCRIPT: &str = "BASELINE_PENDING";
+const EXPECTED_TRANSCRIPT: &str = "ba2adc97c77ab73f2865bf23bd8f3eb706a8225184f9eb6522a07abc43ba2ce7";
 
 fn config(file: &NetworkFile) -> ChainConfig {
     // Mirror main.rs::chain_config with dev_alloc=false; do not substitute a

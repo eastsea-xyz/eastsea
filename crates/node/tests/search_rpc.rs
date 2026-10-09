@@ -211,7 +211,9 @@ fn finalized_metadata_is_retained_without_inventing_call_activity() {
     let rows = index.search("reader", 50, 100);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].name, "reader");
-    assert_eq!(rows[0].url, search_events::app_url(B256::repeat_byte(4)));
+    let app_id = search_events::app_id(Address::repeat_byte(2), "reader");
+    assert_eq!(rows[0].url, search_events::app_url(app_id));
+    assert_eq!(index.record(&format!("app:{source:#x}:{app_id:#x}")).unwrap().content_hash, Some(B256::repeat_byte(4)));
     assert!(rows[0].verified, "published content-addressed integrity is retained");
     assert!(!rows[0].usage_complete);
     assert_eq!(rows[0].usage_7d, 0);

@@ -858,39 +858,19 @@ fn four_validators_own_node_wallet_push_replays_and_reports_gap() {
         assert!(current < height, "must not skip the finalized transfer height");
     }
 
-    // Legacy devnet release notices already carry the committee threshold
-    // signature. Announce one far beyond this test's lifetime, so no protocol
-    // transition or update installer is triggered by the fixture.
-    let (_, sharing, shares) = aether_light::devnet_threshold(4);
-    let upgrade = aether_node::upgrade::Upgrade {
-        chain_id, protocol: 2, activate_at: net.height(0) + aether_node::upgrade::MAINNET_NOTICE_BLOCKS + 10_000, emergency: false,
-        releases: vec![aether_node::upgrade::Release {
-            platform: "macos-arm64-dmg".to_string(), version: "0.0.0-rpc-push-fixture".to_string(),
-            blake3: "ab".repeat(32), url: "https://example.invalid/rpc-push-fixture.dmg".to_string(),
-        }],
-        notes: "isolated wallet push integration fixture".to_string(), registrar: None,
-    };
-    let partials = shares.iter().take(3).map(|(_, share)| aether_node::upgrade::sign_partial(&upgrade, share)).collect::<Vec<_>>();
-    let signed = aether_node::upgrade::combine(&sharing, &partials).unwrap();
-    let signed_bytes = serde_json::to_vec(&signed).unwrap();
-    for node in 0..4 {
-        let dir = net.data(node).join("upgrades");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("rpc-push-fixture.json"), &signed_bytes).unwrap();
-    }
+    // Dealer-key devnets have no pinned committee identity for upgrades.
+    // The real-DKG fixture below covers finalized release notices; this
+    // stream still checks that unchanged heads do not dirty wallet reads.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let notification = socket.notification(&subscription, deadline.saturating_duration_since(Instant::now())).expect("finalized release notice is pushed");
+        let notification = socket.notification(&subscription, deadline.saturating_duration_since(Instant::now())).expect("unchanged own-node wallet watermark");
         let current = notification["params"]["result"]["height"].as_u64().unwrap();
-        assert!(current == last || current == last + 1, "release notice stream has complete finalized head watermarks");
+        assert!(current == last || current == last + 1, "unchanged wallet stream has complete finalized head watermarks");
+        assert!(has_wallet_topic(&notification, "head"));
+        last = current;
         if current > height {
             assert!(!has_wallet_topic(&notification, "balance"), "unchanged balances must not trigger repeated wallet refreshes");
             assert!(!has_wallet_topic(&notification, "tx_status"), "unchanged watched receipts must not trigger repeated wallet refreshes");
-        }
-        last = current;
-        if has_wallet_topic(&notification, "release") {
-            let status = net.rpc(0, "aether_status", json!([])).unwrap();
-            assert!(status["upcoming_upgrades"].as_array().unwrap().iter().any(|notice| notice == &json!(signed)), "release hint comes from a finalized committee-signed notice: {status}");
             break;
         }
     }
@@ -1156,7 +1136,9 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     //    protocol stop before it activates instead of forking.
     let target = net.height(0) + 40;
     let next = aether_node::upgrade::PROTOCOL + 1;
-    let upgrade = json!({ "chain_id": written["chain_id"], "protocol": next, "activate_at": target, "releases": [], "notes": "test" });
+    let upgrade = json!({ "chain_id": written["chain_id"], "protocol": next, "activate_at": target,
+        "releases": [{ "platform": "macos-arm64-dmg", "version": "0.0.0-rpc-push-fixture",
+            "blake3": "ab".repeat(32), "url": "https://example.invalid/rpc-push-fixture.dmg" }], "notes": "test" });
     let up_path = dir.join("upgrade.json");
     std::fs::write(&up_path, upgrade.to_string()).unwrap();
     let net_file = data(0).join("network.json");
@@ -1176,8 +1158,18 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     let signed_path = dir.join("signed.json");
     std::fs::write(&signed_path, &signed).unwrap();
     assert!(net.cli(&["upgrade-verify", "--network", net_file.to_str().unwrap(), signed_path.to_str().unwrap()]).contains("signed by the committee"));
+    // Consume the subscription's initial release hint before announcing a
+    // real DKG-signed release; only a later finalized notice can satisfy it.
+    let mut socket = RpcSocket::connect(&net, 0);
+    let subscription = socket.subscribe("aether_subscribe", json!(["wallet", {"address":bob, "transactions":[]}]));
+    let initial = socket.notification(&subscription, Duration::from_secs(5)).expect("DKG wallet initial snapshot");
+    assert!(has_wallet_topic(&initial, "head"));
+    assert!(has_wallet_topic(&initial, "release"));
+    let initial_height = initial["params"]["result"]["height"].as_u64().unwrap();
+    let mut last_wallet_height = initial_height;
     // A forged copy (protocol changed) is ignored; the signed one stops the nodes.
-    let mut forged: Value = serde_json::from_str(&signed).unwrap();
+    let signed_notice: Value = serde_json::from_str(&signed).unwrap();
+    let mut forged = signed_notice.clone();
     forged["upgrade"]["protocol"] = json!(1);
     forged["upgrade"]["activate_at"] = json!(1);
     for i in 0..n {
@@ -1186,6 +1178,25 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
         std::fs::write(d.join("forged.json"), forged.to_string()).unwrap();
         std::fs::write(d.join("v2.json"), &signed).unwrap();
     }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let notification = socket.notification(&subscription, deadline.saturating_duration_since(Instant::now()))
+            .expect("finalized release notice is pushed");
+        assert_eq!(notification["params"]["result"]["kind"], "wallet");
+        let current = notification["params"]["result"]["height"].as_u64().unwrap();
+        assert!(current == last_wallet_height || current == last_wallet_height + 1,
+            "release notice stream has complete finalized head watermarks");
+        assert!(has_wallet_topic(&notification, "head"));
+        last_wallet_height = current;
+        if has_wallet_topic(&notification, "release") {
+            assert!(current > initial_height && current < target, "release is finalized before activation");
+            let status = net.rpc(0, "aether_status", json!([])).unwrap();
+            assert!(status["upcoming_upgrades"].as_array().unwrap().iter().any(|notice| notice == &signed_notice),
+                "release hint comes from a finalized committee-signed notice: {status}");
+            break;
+        }
+    }
+    socket.close();
     let end = Instant::now() + Duration::from_secs(120);
     while Instant::now() < end && (0..n).any(|i| net.alive(i)) {
         std::thread::sleep(Duration::from_millis(250));
@@ -1642,7 +1653,7 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     assert_eq!(c["candidates"][0]["operator"].as_str().unwrap().to_lowercase(), dev_address(4).to_lowercase());
     let current_epoch = c["epoch"].as_u64().unwrap();
     assert_eq!(c["next_draw_epoch"], (current_epoch / 24 + 1) * 24, "{c}");
-    assert_eq!(c["open_seats"], 1, "a four-validator draw has one seat: {c}");
+    assert_eq!(c["open_seats"], 0, "a dealer devnet has no authoritative DKG draw roster: {c}");
     let candidate = &c["candidates"][0];
     assert!(candidate["missed"].is_u64(), "missed epochs must be visible: {c}");
     assert_eq!(candidate["eligible_next_draw"], false, "this Mac is still warming up: {c}");
@@ -1678,7 +1689,7 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     let data = net.dir.join("candidate-replay");
     let log_path = net.dir.join("candidate-replay.log");
     let args = vec![
-        "follow".into(), "--from-rpc".into(), net.url(0),
+        "follow".into(), "--from-rpc".into(), format!("{},{}", net.url(0), net.url(1)),
         "--data".into(), data.to_str().unwrap().into(),
         "--rpc-port".into(), port.port().to_string(), epoch[0].clone(), epoch[1].clone(),
     ];
@@ -2260,14 +2271,67 @@ fn regenerate_light_fixture() {
 #[test]
 fn a_late_mac_starts_from_a_certified_snapshot() {
     let _serial = serial();
-    let mut net = Net::start(4);
+    let mut net = Net::start_with("late-snapshot", vec![vec![]; 4]);
     for i in 0..4 {
         net.wait_height(i, 3, 60);
     }
     let bob = "0x00000000000000000000000000000000000c0c00";
     let out = net.cli(&["send", "--rpc", &net.url(0), "--from-dev", "2", "--to", bob, "--value", "321", "--wait"]);
     assert!(out.contains("success=true"), "{out}");
-    let joined_at = net.height(0);
+    let paid_at = net.height(0);
+
+    // Prepare both serving sources while quorum can still certify each
+    // snapshot's successor. Guarded startup needs two agreeing certificates.
+    let snapshots = [1, 2].map(|source| {
+        net.wait_height(source, paid_at, 60);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut last = Value::Null;
+        loop {
+            if let Some(manifest) = net.rpc(source, "aether_snapshot", json!([])) {
+                last = manifest;
+                if let Some(height) = last["height"].as_u64().filter(|h| *h >= paid_at) {
+                    break height;
+                }
+            }
+            assert!(Instant::now() < deadline, "source {source} did not prepare a current snapshot: {last}{}", net.log_tail(source));
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    let successor = snapshots.iter().copied().max().unwrap() + 2;
+    for source in [1, 2] {
+        net.wait_height(source, successor, 60);
+        let proof = net.rpc(source, "aether_getFinalized", json!([snapshots[source - 1] + 1])).expect("snapshot successor certificate");
+        assert!(proof["block"].is_string() && proof["finalization"].is_string(), "source {source} has no certified snapshot successor: {proof}{}", net.log_tail(source));
+    }
+    // Two stopped validators remove quorum; the serving validators remain
+    // live. Net owns and kills every child, including stopped ones on failure.
+    let paused = [0, 3];
+    for i in paused {
+        let child = net.procs[i].as_ref().expect("owned validator");
+        assert!(child.try_wait().unwrap().is_none(), "validator {i} already exited");
+        assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGSTOP) }, 0, "pause owned validator {i}");
+    }
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut stable: Option<(u64, Value, Instant)> = None;
+    let joined_at = loop {
+        let a = net.rpc(1, "aether_status", json!([])).expect("first snapshot source");
+        let b = net.rpc(2, "aether_status", json!([])).expect("second snapshot source");
+        let height = a["height"].as_u64().unwrap();
+        if b["height"].as_u64() == Some(height) && a["hash"] == b["hash"] {
+            if let Some((previous, hash, since)) = &stable {
+                if *previous == height && hash == &a["hash"] && since.elapsed() >= Duration::from_secs(1) {
+                    break height;
+                }
+            }
+            if stable.as_ref().is_none_or(|(previous, hash, _)| *previous != height || hash != &a["hash"]) {
+                stable = Some((height, a["hash"].clone(), Instant::now()));
+            }
+        } else {
+            stable = None;
+        }
+        assert!(Instant::now() < deadline, "snapshot sources did not settle on one certified head: {a}, {b}{}{}", net.log_tail(1), net.log_tail(2));
+        std::thread::sleep(Duration::from_millis(100));
+    };
 
     let port = Port::reserve().expect("reserve test port");
     let data = net.dir.join("late");
@@ -2287,10 +2351,17 @@ fn a_late_mac_starts_from_a_certified_snapshot() {
     net.rpc.push(port);
     net.logs.push(net.dir.join("late.log"));
     let f = net.rpc.len() - 1;
+    net.wait_height(f, joined_at, 60);
+    assert!(net.rpc(f, "aether_getBlock", json!([1])).is_none_or(|b| b.is_null()), "the late Mac replayed history during checkpoint startup{}", net.log_tail(f));
+    for i in paused {
+        let child = net.procs[i].as_ref().expect("owned validator");
+        assert!(child.try_wait().unwrap().is_none(), "validator {i} exited while paused");
+        assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGCONT) }, 0, "resume owned validator {i}");
+    }
     net.wait_height(f, joined_at + 5, 60);
     assert_agree(&net, &[0, f], joined_at + 5);
     // It did not replay: early blocks are not on this Mac.
-    assert!(net.rpc(f, "aether_getBlock", json!([1])).is_none_or(|b| b.is_null()), "the late Mac replayed history");
+    assert!(net.rpc(f, "aether_getBlock", json!([1])).is_none_or(|b| b.is_null()), "the late Mac replayed history{}", net.log_tail(f));
     let bal = net.cli(&["balance", bob, "--rpc", &net.url(f)]);
     assert!(bal.contains("balance   321 wei") && bal.contains("verified  ✓"), "{bal}");
 }

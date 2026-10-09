@@ -3159,7 +3159,7 @@ fn db_maintenance(path: &std::path::Path, compact: bool) -> Result<(), String> {
     let head = checkpoint(&store).map_err(|e| e.to_string())?;
     let before = store.stats().map_err(|e| e.to_string())?;
     let compacted = compact && store.compact().map_err(|e| e.to_string())?;
-    let after = if compact {
+    let mut after = if compact {
         let after = store.stats().map_err(|e| e.to_string())?;
         let after_head = checkpoint(&store).map_err(|e| e.to_string())?;
         let rows = |stats: &aether_node::store::StoreStats| stats.tables.iter()
@@ -3169,6 +3169,19 @@ fn db_maintenance(path: &std::path::Path, compact: bool) -> Result<(), String> {
         }
         Some(after)
     } else { None };
+    // Page and table counters describe the checked database generation. Redb
+    // writes allocator state on close, so measure the final file afterward.
+    drop(store);
+    if let Some(after) = &mut after {
+        let file = std::fs::metadata(path).map_err(|e| e.to_string())?;
+        after.file_bytes = file.len();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            after.filesystem_allocated_bytes = Some(file.blocks().saturating_mul(512));
+        }
+        after.reclaimable_estimate_bytes = file.len().saturating_sub(after.allocated_bytes);
+    }
     println!("{}", serde_json::to_string_pretty(&json!({"before":before, "after":after, "compacted":compacted})).map_err(|e| e.to_string())?);
     Ok(())
 }

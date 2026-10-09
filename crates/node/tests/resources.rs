@@ -109,8 +109,8 @@ fn tmp(name: &str) -> PathBuf {
 
 /// Over the `--max-memory` budget, the oldest sealed era's summaries and
 /// receipts leave memory — while its era file keeps serving the blocks, and
-/// history proofs over the evicted era still verify. Without era files
-/// (non-v2 networks) nothing is ever dropped.
+/// history proofs over the evicted era still verify. A memory-only chain
+/// keeps its history rows because no durable archive backs eviction.
 #[test]
 fn the_history_caches_trim_to_their_budget_and_old_blocks_still_serve() {
     let dir = tmp("caches");
@@ -147,9 +147,13 @@ fn the_history_caches_trim_to_their_budget_and_old_blocks_still_serve() {
     n.chain.trim_history_caches_with(u64::MAX);
     assert_eq!(n.chain.lock().cache_below, 0, "nothing to drop");
 
-    // One byte under: the oldest era goes, the newest stays, and what left is
-    // under the budget.
-    n.chain.trim_history_caches_with(all - 1);
+    // The row-only total cannot fit with 25% headroom, even after optional
+    // execution states leave. One sealed era makes room for the mandatory
+    // head and parent while the newer sealed era and open era stay cached.
+    let budget = n.chain.history_rows_bytes();
+    assert!(all > budget, "full execution states are charged too");
+    let ceiling = budget - budget / 4;
+    n.chain.trim_history_caches_with(budget);
     {
         let g = n.chain.lock();
         assert_eq!(g.cache_below, ERA_LEN, "era 0's cache copy went");
@@ -158,7 +162,7 @@ fn the_history_caches_trim_to_their_budget_and_old_blocks_still_serve() {
         assert!(!g.receipts.contains_key(&receipt_at_100), "era 0's receipts went");
         assert!(g.blocks.contains_key(&(2 * ERA_LEN + 5)), "the open era stays");
     }
-    assert!(n.chain.caches_bytes() <= all - 1);
+    assert!(n.chain.caches_bytes() <= ceiling, "total retention fits with 25% headroom");
 
     // What left memory still serves: the block from its era file...
     let old = n.chain.old_block(1).expect("era 0's file serves its blocks");
@@ -181,14 +185,14 @@ fn the_history_caches_trim_to_their_budget_and_old_blocks_still_serve() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A network without era files (7780 rules) never evicts: nothing would back
-/// the dropped heights.
+/// A memory-only chain never evicts history rows: neither redb nor an era
+/// file could serve the dropped heights.
 #[test]
-fn a_chain_without_era_files_never_trims_its_caches() {
-    let dir = tmp("no-v2");
+fn a_memory_only_chain_never_evicts_history_rows() {
     let mut cfg = config();
     cfg.history_v2 = false;
-    let (chain, genesis) = Chain::open(cfg, Store::open(&dir.join("state.redb")).unwrap()).unwrap();
+    let (chain, genesis) = Chain::new(cfg);
+    assert!(chain.store().is_none(), "the fixture has no durable archive");
     let (_, sharing, _) = aether_light::devnet_threshold(4);
     chain.lock().identity = Some(*sharing.public());
     chain.finalize(&genesis).unwrap();
@@ -197,9 +201,16 @@ fn a_chain_without_era_files_never_trims_its_caches() {
     while n.parent.height < 30 {
         n.step(vec![]);
     }
+    let rows = n.chain.history_rows_bytes();
+    let before_proof = n.chain.history_proof(1, 30).unwrap();
     n.chain.trim_history_caches_with(0);
-    let g = n.chain.lock();
-    assert_eq!(g.cache_below, 0, "no era files, no eviction");
-    assert!(g.blocks.contains_key(&1));
-    let _ = std::fs::remove_dir_all(&dir);
+    {
+        let g = n.chain.lock();
+        assert_eq!(g.cache_below, 0, "no durable archive, no history eviction");
+        assert_eq!(g.blocks.len(), 31, "every finalized summary remains");
+        assert!(g.blocks.contains_key(&1));
+    }
+    assert_eq!(n.chain.history_rows_bytes(), rows);
+    assert_eq!(n.chain.history_proof(1, 30).unwrap(), before_proof);
+    assert_eq!(n.chain.block_summary(1).unwrap().unwrap().hash, format!("{}", n.blocks[1].digest()));
 }

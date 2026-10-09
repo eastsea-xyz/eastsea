@@ -110,7 +110,7 @@ aether network \
 
 ### 표준 계약 제네시스 할당 (B3)
 
-`ChainConfig::genesis_state`는 **`node_rewards && history_v2` 둘 다 켜진 새 제네시스**에 아래 런타임을 빈 storage로 설치한다. `aether mainnet-rules`의 `standard predeploys` 항목은 세 주소의 코드 해시가 모두 일치해야 통과한다. Multicall3와 Permit2 바이트는 toolbox의 2026-10-06 Ethereum mainnet `eth_getCode` 캐시와 일치하며, CREATE2 배포기는 기존 mainnet 핀을 유지한다.
+`ChainConfig::genesis_state`는 **`node_rewards && history_v2` 둘 다 켜진 제네시스**의 기존 CREATE2·Multicall3 할당을 유지한다. **Permit2만 고정된 제네시스 `protocol >= 4`인 새 망에 추가**한다. 실행 중인 바이너리의 지원 버전이나 기존 망의 나중 활성화 버전을 사용하지 않는다. 따라서 protocol 3 망에 새로 참여하는 빈 노드도 기존 제네시스 root를 재현하며, 이미 열린 저장소나 protocol 4 업그레이드로 Permit2를 소급 설치하지 않는다. `aether mainnet-rules`의 현재 `standard predeploys` 항목은 세 주소의 코드 해시가 모두 일치해야 통과한다. Multicall3와 Permit2 바이트는 toolbox의 2026-10-06 Ethereum mainnet `eth_getCode` 캐시와 일치하며, CREATE2 배포기는 기존 mainnet 핀을 유지한다.
 
 | 계약 | 정본 주소 | keccak256(runtime) |
 |---|---|---|
@@ -120,7 +120,7 @@ aether network \
 
 Permit2는 mainnet immutable 값까지 포함한 **9,152바이트를 그대로** 사용한다. 캐시된 EIP-712 chain id는 1이고 계약 주소는 위 정본 주소지만, 다른 chain id에서는 원본 코드가 domain separator를 다시 계산한다. Permit2 allowance와 nonce storage는 빈 상태로 시작한다.
 
-개발망·새 테스트망도 같은 제네시스 경로를 쓴다: 공개 개발 등록기를 쓰는 격리된 망은 `aether network --chain-id <새 아이디> --protocol 3 --history 2 --node-rewards --dev-registrar --release release.json <개발 검증자들의 validator.pub.json> > genesis.json`으로 조립한다. 실제 테스트망은 `--dev-registrar` 대신 자기 등록기의 `--registrar`를 쓴다. **기존 7780에는 세 계약을 설치하지 않는다.** 이 릴리스에는 표준 계약을 쓰는 예약 system write가 없으며, 7780의 network.json·제네시스·업그레이드 규칙을 바꾸지 않는다.
+개발망·새 테스트망도 같은 제네시스 경로를 쓴다: Permit2를 포함하는 새 격리 망은 `aether network --chain-id <새 아이디> --protocol 4 --history 2 --node-rewards --dev-registrar --release release.json <개발 검증자들의 validator.pub.json> > genesis.json`으로 조립한다. 실제 테스트망은 `--dev-registrar` 대신 자기 등록기의 `--registrar`를 쓴다. 기존 protocol 3 설정은 수정하지 않는다. **기존 7780에는 세 계약을 설치하지 않는다.** 이 릴리스에는 표준 계약을 쓰는 예약 system write가 없으며, 7780의 network.json·제네시스·업그레이드 규칙을 바꾸지 않는다.
 
 EIP-4337 EntryPoint는 이번 할당에서 제외한다. EastSea 계정은 아직 `validateUserOp`를 구현하지 않았고 bundler RPC·paymaster 흐름을 제공하지 않으며, 지원할 EntryPoint 버전과 그 정본 코드 해시도 선택·고정하지 않았다. ERC-1271·NFT 수신·Permit2에는 EntryPoint가 필요 없다. 이후 추가하려면 버전과 해시를 고정하고 bundler→계정→EntryPoint의 UserOperation 실행을 검증하는 별도 게이트를 둔다.
 

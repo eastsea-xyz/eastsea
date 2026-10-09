@@ -454,9 +454,9 @@ fn reserve_protocol_three_history(credit: bool) -> ReserveForkHistory {
         h.running = roster;
         assert_eq!(rewards::committee(&h.net.parent.state), h.running);
         assert_eq!(rewards::seated(&h.net.parent.state).0, 1);
-        // Register at the next epoch's first block, so its profile has no
-        // partly served hour that would trigger the legacy survival rule.
-        h.run_to(2 * E - 1);
+        // The registration epoch is excluded from stability. Register just
+        // before the boundary so full epochs 2, 3 and 4 qualify it at epoch 5.
+        h.run_to(2 * E - 2);
         let reg = h.net.register(3);
         h.net.step(vec![reg], None, vec![]);
         h.record();

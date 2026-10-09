@@ -189,12 +189,17 @@ impl ChainConfig {
             // both before the ceremony record freezes its bytes.
             s.set_code(aether_execution::release_log::ADDRESS, aether_execution::release_log::code())
                 .expect("release log predeploy");
-            // Standard Ethereum predeploys (clone catalog §0 B3): the CREATE2
-            // deployer, Multicall3 and Permit2 at their Ethereum addresses with
-            // their exact mainnet runtime code, so deterministic deployments,
-            // multicall tooling and Permit2 signatures work unchanged.
-            for (address, code, _) in crate::predeploys::all() {
+            // Keep the released genesis catalogue for protocols 1..=3 so a
+            // cold participant derives the existing network's original root.
+            for (address, code, _) in aether_execution::predeploys::all() {
                 s.set_code(address, code).expect("standard predeploy");
+            }
+            // Permit2 belongs only to a protocol-4-or-later genesis. This is
+            // the frozen genesis protocol, never the running implementation
+            // or a later committee-signed activation on an existing chain.
+            if self.protocol >= 4 {
+                s.set_code(crate::predeploys::PERMIT2, crate::predeploys::permit2_code())
+                    .expect("Permit2 genesis predeploy");
             }
         }
         if let Some(key) = self.registrar {
@@ -2401,6 +2406,12 @@ impl Chain {
     /// Estimated history bytes, including full states and compact proving inputs.
     pub fn caches_bytes(&self) -> u64 {
         retained_bytes(&self.lock())
+    }
+
+    /// Estimated bytes of cached summaries and receipts only. Full execution
+    /// states and compact proving inputs are included by `caches_bytes`.
+    pub fn history_rows_bytes(&self) -> u64 {
+        self.lock().caches_bytes
     }
 
     /// The trim with an explicit budget (tests).

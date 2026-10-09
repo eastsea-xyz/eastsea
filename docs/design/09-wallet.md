@@ -114,6 +114,14 @@ Aether.app (SwiftUI)
 - **토큰 수신 훅**: `onERC721Received`·`onERC1155Received`·`onERC1155BatchReceived`가 각자 셀렉터를 돌려준다 — 위임 계정도 `safeTransferFrom`·`_safeMint`·ERC-1155 전송을 받는다(위임 뒤엔 코드가 있어 훅이 없으면 거부됐다). 받기는 지출이 아니므로 상태 변경·권한 없음. ERC-165 `supportsInterface`: `0x01ffc9a7`(165), `0x1626ba7e`(1271), `0x150b7a02`(721 수신), `0x4e2312e0`(1155 수신).
 - 검증: Foundry `EastSeaAccount1271.t.sol`(실제 P256VERIFY, 원래 키·소유자 키 유효, 다른 해시·잘린 서명·high-s·다른 계정·다른 체인·세션·가디언·구형 셀렉터), 툴박스 `AccountReceiver.t.sol`(OZ ERC721/1155 safe 전송, 고정된 v2 바이트 그대로), Rust 실행기 `contracts_onchain::account`(7702 위임 P-256 계정이 NFT를 `safeTransferFrom`으로 받고, OZ `SignatureChecker.isValidSignatureNow`가 그 계정 키의 1271 서명만 받는다 — 주소 파생을 `address_of`와 대조).
 
+#### 표준 permit 호환과 재위임 규약 (2026-10-08)
+
+고정된 v2 런타임(`0xdeaca4e6cc9787c233aeec5034a8884cf5ced4c6899299b3e76027a03f85288a`)이 이미 B1·B2를 처리한다. 이 호환 작업은 v2 주소·코드·storage layout을 바꾸지 않는다. `EastSeaAccountCompat.t.sol`과 실행기 `evm_compat`는 이 바이트에 실제 `0xef0100 || 0x…7702` 위임을 붙여 P-256 서명, safe mint/transfer, Permit2의 `permitTransferFrom`을 검사한다. Permit2는 제네시스의 정본 주소에 있고, 소유자는 먼저 토큰의 `approve(Permit2, amount)`를 자기 계정 트랜잭션으로 해야 한다. 서명은 Permit2의 체인·spender·nonce·deadline을 담은 해시를 위의 계정 `signatureMessage`로 감싸서 만든다. 세션 키·가디언은 이 소유자 서명을 대신하지 않는다.
+
+[ERC-2612](https://eips.ethereum.org/EIPS/eip-2612)의 원래 `permit(owner, spender, value, deadline, v, r, s)`는 secp256k1 서명 규약이다. ERC-1271 fallback을 제공하는 호출자와 [Permit2 SignatureTransfer](https://developers.uniswap.org/docs/protocols/permit2/concepts/signature-transfer)는 P-256 계정 서명을 검증할 수 있지만, `ecrecover`만 호출하는 기존 토큰은 그대로 이 서명을 받을 수 없다. 해당 토큰은 일반 `approve` 또는 Permit2 경로를 쓴다. 테스트의 `bytes` permit overload는 fallback 호출자용 fixture이며 토큰을 수정하거나 원래 ERC-2612 규약을 바꾸는 제네시스 계약이 아니다.
+
+이 작업에 새 계정 구현은 필요 없다. 향후 v3로 옮기는 지갑 릴리스는 설계 36의 CREATE2 배포 규약을 따른다: 새 구현 주소와 런타임 해시를 고정하고, 체인에서 코드를 읽어 해시를 확인한 뒤, **소유자가 서명한** `EvmCall { to: account, delegate: Some(v3_address), input: encode_execute(calls), ... }`로 재위임한다. 호출 목록은 비우거나 사용자가 승인한 다음 작업을 담는다. 재위임이 최종화되고 계정 코드가 `0xef0100 || v3_address`인지 확인한 뒤에만 지갑의 대상 버전을 갱신한다. 포함된 트랜잭션은 내부 호출이 revert해도 위임 자체가 남을 수 있으므로 성공 receipt만으로 판단하지 않고, 실패·미포함·재시도 때마다 최종화된 코드와 트랜잭션 nonce를 다시 조회한다. 주소·토큰 보유·ERC-7201 상태·소유자·가디언·세션 설정과 그 서명 nonce는 그대로이며, 트랜잭션 nonce는 실행과 위임 인증으로 2 증가하고 네이티브 잔액에서 수수료가 빠진다. 노드 인덱서의 계정 대상 목록과 FFI의 네트워크별 `ACCOUNT_TARGET`도 같은 릴리스에서 갱신한다. UI는 후속 작업이다. 7780의 기존 구현과 위임은 이 릴리스가 바꾸지 않는다.
+
 ## Mac 앱 동작 — 구현됨 (2026-09-27)
 
 - 첫 실행 때 버튼 없이 Secure Enclave 키를 만들고 바로 대시보드를 연다.

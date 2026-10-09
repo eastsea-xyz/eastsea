@@ -89,9 +89,10 @@ pub fn check_with(cfg: &ChainConfig, rehearsal: bool) -> Vec<Rule> {
             "standard predeploys",
             aether_execution::predeploys::installed(|a| state.code(a)),
             format!(
-                "the CREATE2 deployer ({:#x}) and Multicall3 ({:#x}) hold their exact Ethereum mainnet runtime code",
+                "the CREATE2 deployer ({:#x}), Multicall3 ({:#x}) and Permit2 ({:#x}) hold their exact Ethereum mainnet runtime code",
                 aether_execution::predeploys::CREATE2_DEPLOYER,
-                aether_execution::predeploys::MULTICALL3
+                aether_execution::predeploys::MULTICALL3,
+                aether_execution::predeploys::PERMIT2
             ),
         ),
         rule(
@@ -1844,12 +1845,11 @@ mod tests {
         assert_eq!(ReleasePin::from_config(prefixed.to_string().as_bytes()).unwrap(), pin, "a 0x prefix is normalized away");
     }
 
-    /// The 7780 file ships unchanged: byte-identical to the pinned digest, no
-    /// release pin when parsed or re-serialized, and its genesis holds no
-    /// ReleaseLog — the app keeps the legacy Sparkle path there.
+    /// Every standard contract is canonical on a new genesis, and absent on
+    /// the shipped 7780 genesis without node rewards and history v2.
     #[test]
     fn standard_predeploys_are_on_a_new_genesis_only() {
-        use aether_execution::predeploys::{self, CREATE2_DEPLOYER, CREATE2_DEPLOYER_CODE_HASH, MULTICALL3, MULTICALL3_CODE_HASH};
+        use aether_execution::predeploys::{self, CREATE2_DEPLOYER, CREATE2_DEPLOYER_CODE_HASH, MULTICALL3, MULTICALL3_CODE_HASH, PERMIT2, PERMIT2_CODE_HASH};
         let state = mainnet().genesis_state();
         assert_eq!(
             format!("{:#x}", state.code_hash(&CREATE2_DEPLOYER)),
@@ -1859,9 +1859,15 @@ mod tests {
             format!("{:#x}", state.code_hash(&MULTICALL3)),
             "0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891"
         );
+        assert_eq!(
+            format!("{:#x}", state.code_hash(&PERMIT2)),
+            "0xc67d1657868aa5146eaf24fb879fb1fdec3d2d493b3683a61c9c2f4fb2851131"
+        );
         assert_eq!(state.code_hash(&CREATE2_DEPLOYER), CREATE2_DEPLOYER_CODE_HASH);
         assert_eq!(state.code_hash(&MULTICALL3), MULTICALL3_CODE_HASH);
-        // The shipped 7780 file builds a genesis without either.
+        assert_eq!(state.code_hash(&PERMIT2), PERMIT2_CODE_HASH);
+        assert!(predeploys::installed(|a| state.code(a)));
+        // The shipped 7780 file builds a genesis without any of the three.
         let file: crate::roster::NetworkFile =
             serde_json::from_slice(include_bytes!("../../../apps/wallet/Resources/network.json")).unwrap();
         let genesis = file.genesis().unwrap();
@@ -1871,6 +1877,7 @@ mod tests {
         let state = legacy.genesis_state();
         assert!(state.code(&CREATE2_DEPLOYER).is_empty());
         assert!(state.code(&MULTICALL3).is_empty());
+        assert!(state.code(&PERMIT2).is_empty());
         assert!(!predeploys::installed(|a| state.code(a)));
     }
 

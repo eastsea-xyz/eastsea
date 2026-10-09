@@ -190,9 +190,9 @@ impl ChainConfig {
             s.set_code(aether_execution::release_log::ADDRESS, aether_execution::release_log::code())
                 .expect("release log predeploy");
             // Standard Ethereum predeploys (clone catalog §0 B3): the CREATE2
-            // deployer and Multicall3 at their Ethereum addresses with their
-            // exact mainnet runtime code, so deterministic deployments and
-            // multicall tooling work unchanged.
+            // deployer, Multicall3 and Permit2 at their Ethereum addresses with
+            // their exact mainnet runtime code, so deterministic deployments,
+            // multicall tooling and Permit2 signatures work unchanged.
             for (address, code, _) in aether_execution::predeploys::all() {
                 s.set_code(address, code).expect("standard predeploy");
             }

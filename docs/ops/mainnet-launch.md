@@ -92,7 +92,7 @@ aether network \
 | protocol from genesis | 높이 1의 프로토콜이 이 바이너리의 최신(지금 3)이다 |
 | proof market | 첫 블록부터 statement 기록·증명 지급이 살아 있다 (프로토콜 2) |
 | registry v3 | 등록기 컨트랙트가 v3 코드로 시작한다 |
-| standard predeploys | CREATE2 배포기(`0x4e59…956C`)와 Multicall3(`0xcA11…CA11`)가 이더리움 메인넷과 바이트 단위로 같은 런타임 코드로 있다 (코드 해시 고정, 7780에는 없음) |
+| standard predeploys | CREATE2 배포기(`0x4e59…956C`), Multicall3(`0xcA11…CA11`), Permit2(`0x0000…8BA3`)가 이더리움 메인넷과 바이트 단위로 같은 런타임 코드로 있다 (코드 해시 고정, 7780에는 없음) |
 | registration cap | 에포크당 신규 등록 상한(16)이 온체인에 있다 |
 | 16-seat growth | 검증자 증가 추첨이 16석까지 자란다 (프로토콜 3) |
 | node rewards | 노드 보상이 첫 블록부터 분배된다 |
@@ -107,6 +107,22 @@ aether network \
 | no premine, no faucet | 제네시스 잔액이 전부 0이다 |
 | zero-tip acceptance | 첫 블록 실행·증명 base fee가 0이어서 잔액 0 계정의 단순 송금은 팁 0으로 거래한다 |
 | release pin | network.json `release`가 이 제네시스의 ReleaseLog(`0x…7705`)와 그 상태가 가진 런타임 코드 해시, 서로 다른 곡선 위 P-256 빌더 키 3개, 2/3·긴급 3/3을 고정한다 (없거나 해시가 다르면 FAIL — 앱이 업데이트를 하나도 받을 수 없다) |
+
+### 표준 계약 제네시스 할당 (B3)
+
+`ChainConfig::genesis_state`는 **`node_rewards && history_v2` 둘 다 켜진 새 제네시스**에 아래 런타임을 빈 storage로 설치한다. `aether mainnet-rules`의 `standard predeploys` 항목은 세 주소의 코드 해시가 모두 일치해야 통과한다. Multicall3와 Permit2 바이트는 toolbox의 2026-10-06 Ethereum mainnet `eth_getCode` 캐시와 일치하며, CREATE2 배포기는 기존 mainnet 핀을 유지한다.
+
+| 계약 | 정본 주소 | keccak256(runtime) |
+|---|---|---|
+| Arachnid CREATE2 deployer | `0x4e59b44847b379578588920cA78FbF26c0B4956C` | `0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989` |
+| Multicall3 | `0xcA11bde05977b3631167028862bE2a173976CA11` | `0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891` |
+| Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` | `0xc67d1657868aa5146eaf24fb879fb1fdec3d2d493b3683a61c9c2f4fb2851131` |
+
+Permit2는 mainnet immutable 값까지 포함한 **9,152바이트를 그대로** 사용한다. 캐시된 EIP-712 chain id는 1이고 계약 주소는 위 정본 주소지만, 다른 chain id에서는 원본 코드가 domain separator를 다시 계산한다. Permit2 allowance와 nonce storage는 빈 상태로 시작한다.
+
+개발망·새 테스트망도 같은 제네시스 경로를 쓴다: 공개 개발 등록기를 쓰는 격리된 망은 `aether network --chain-id <새 아이디> --protocol 3 --history 2 --node-rewards --dev-registrar --release release.json <개발 검증자들의 validator.pub.json> > genesis.json`으로 조립한다. 실제 테스트망은 `--dev-registrar` 대신 자기 등록기의 `--registrar`를 쓴다. **기존 7780에는 세 계약을 설치하지 않는다.** 이 릴리스에는 표준 계약을 쓰는 예약 system write가 없으며, 7780의 network.json·제네시스·업그레이드 규칙을 바꾸지 않는다.
+
+EIP-4337 EntryPoint는 이번 할당에서 제외한다. EastSea 계정은 아직 `validateUserOp`를 구현하지 않았고 bundler RPC·paymaster 흐름을 제공하지 않으며, 지원할 EntryPoint 버전과 그 정본 코드 해시도 선택·고정하지 않았다. ERC-1271·NFT 수신·Permit2에는 EntryPoint가 필요 없다. 이후 추가하려면 버전과 해시를 고정하고 bundler→계정→EntryPoint의 UserOperation 실행을 검증하는 별도 게이트를 둔다.
 
 최종 파일 게이트(감사 5 A5-4; DKG 뒤 network.json의 4개 규칙 — pre-DKG 파일은 "아직 게이트 대상 아님"으로 통과):
 

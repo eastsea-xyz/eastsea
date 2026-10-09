@@ -1,0 +1,15 @@
+{
+  "renderer": "Chromium / Playwright, canonical accountIconSVG",
+  "chromium": "155.0.8059.39",
+  "scale": 1,
+  "vectorCount": 16,
+  "sizes": [
+    16,
+    32,
+    64
+  ],
+  "themes": [
+    "light",
+    "dark"
+  ]
+}

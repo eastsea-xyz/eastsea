@@ -1,0 +1,8 @@
+{
+  "score": 96,
+  "verdict": "pass",
+  "category_match": true,
+  "differences": [],
+  "suggestions": [],
+  "reasoning": "Real extension/explorer DOM and CSS preserve every full identity address and the correct adjacent icon in eight light/dark mobile/desktop captures. No horizontal overflow, browser errors or signing calls occurred."
+}

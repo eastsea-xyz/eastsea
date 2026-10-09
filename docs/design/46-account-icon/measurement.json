@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "sampleCount": 100000,
+  "totalUnorderedPairs": 4999950000,
+  "measurementStream": "SHA-256(UTF8(\"eastsea-account-icon-measure-v1\") || UInt32BE(i))[0..20], i=0..99999",
+  "metricDefinitions": {
+    "tuple": "palette, 14-bit layout, glyph style, raw quarter-turn (can overcount distinct images)",
+    "coarse": "palette, actually rotated 4x4 occupied mask, glyph style, visible glyph orientation",
+    "paletteAndMask": "palette and actually rotated mask; discard glyph style/orientation",
+    "grayscaleMask": "actually rotated mask only; discard hue, glyph style and orientation"
+  },
+  "metrics": {
+    "tuple": {
+      "distinctSignatures": 97638,
+      "matchingPairs": 2398,
+      "fraction": 4.796047960479604e-7,
+      "oneIn": 2085050.0417014179
+    },
+    "coarse": {
+      "distinctSignatures": 97052,
+      "matchingPairs": 3019,
+      "fraction": 6.038060380603806e-7,
+      "oneIn": 1656160.980457105
+    },
+    "paletteAndMask": {
+      "distinctSignatures": 87084,
+      "matchingPairs": 14335,
+      "fraction": 0.0000028670286702867027,
+      "oneIn": 348793.1635856296
+    },
+    "grayscaleMask": {
+      "distinctSignatures": 41214,
+      "matchingPairs": 114412,
+      "fraction": 0.000022882628826288263,
+      "oneIn": 43701.27259378387
+    }
+  },
+  "targetFraction": 0.0001,
+  "passes": true,
+  "palettes": [
+    {
+      "fill": "#4e8dad",
+      "ink": "#101820",
+      "light": 3.359418538447056,
+      "dark": 4.888888010813549,
+      "inkContrast": 4.888888010813549
+    },
+    {
+      "fill": "#368f8b",
+      "ink": "#101820",
+      "light": 3.5309158094278055,
+      "dark": 4.651433764596078,
+      "inkContrast": 4.651433764596078
+    },
+    {
+      "fill": "#73864a",
+      "ink": "#101820",
+      "light": 3.679736025395935,
+      "dark": 4.463315004817881,
+      "inkContrast": 4.463315004817881
+    },
+    {
+      "fill": "#a77a45",
+      "ink": "#101820",
+      "light": 3.4962068429359334,
+      "dark": 4.697611369619858,
+      "inkContrast": 4.697611369619858
+    },
+    {
+      "fill": "#b36c5c",
+      "ink": "#101820",
+      "light": 3.694960311697737,
+      "dark": 4.444924878874348,
+      "inkContrast": 4.444924878874348
+    },
+    {
+      "fill": "#96749e",
+      "ink": "#101820",
+      "light": 3.6443920360934468,
+      "dark": 4.506601060824363,
+      "inkContrast": 4.506601060824363
+    },
+    {
+      "fill": "#758694",
+      "ink": "#101820",
+      "light": 3.4454588216000097,
+      "dark": 4.766802294357898,
+      "inkContrast": 4.766802294357898
+    },
+    {
+      "fill": "#958130",
+      "ink": "#101820",
+      "light": 3.5295962237232317,
+      "dark": 4.653172763935515,
+      "inkContrast": 4.653172763935515
+    }
+  ],
+  "backgrounds": {
+    "light": "#f7f5f0",
+    "dark": "#101820"
+  },
+  "allContrastPairsPass": true,
+  "caveat": "Exact coarse-feature equality is not a measured human/perceptual confusion rate. Rasterization can introduce further aliases.",
+  "environment": {
+    "host": "Jayui-MacBookPro-2.local",
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v26.3.0"
+  },
+  "elapsedSeconds": 0.34284420899999996
+}

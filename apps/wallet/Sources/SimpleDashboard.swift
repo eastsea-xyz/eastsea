@@ -352,6 +352,7 @@ struct HomePage: View {
             accountButton.frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
                 HStack(alignment: .center, spacing: DesignTokens.Space.s3) {
+                    AccountIcon(address: model.address, size: narrow ? 32 : 64)
                     balanceText.frame(maxWidth: .infinity, alignment: .leading)
                     EastSeaDawnMark().frame(width: narrow ? 56 : 72, height: narrow ? 56 : 72)
                 }
@@ -1646,6 +1647,9 @@ struct SendSheet: View {
                 Spacer()
                 EastSeaDawnMark().frame(width: 32, height: 32)
             }
+            Grid(alignment: .leading, horizontalSpacing: DesignTokens.Space.s4, verticalSpacing: DesignTokens.Space.s3) {
+                accountRow("Account", model.address)
+            }
             if let r = model.paymentRequest {
                 Label(r.memo.map { String(localized: "A page asked for this payment: \($0)") } ?? String(localized: "A page asked for this payment. Check the address and amount."), systemImage: "link")
                     .font(.aeBody).foregroundStyle(Color.warn)
@@ -1655,9 +1659,11 @@ struct SendSheet: View {
             if let r = model.paymentRequest {
                 // A requested payment is shown as asked and cannot be edited here.
                 VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
-                    Text("To").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
-                    Text(r.to).font(.aeBody.monospaced()).textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Grid(alignment: .leading, horizontalSpacing: DesignTokens.Space.s4, verticalSpacing: DesignTokens.Space.s3) {
+                        ForEach(Array(recipients.enumerated()), id: \.offset) { _, address in
+                            accountRow("To", address)
+                        }
+                    }
                     Text("Amount").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color).padding(.top, 6)
                     Text("\(r.amount) \(Brand.networkCoinTicker)").font(.aeTitle.monospacedDigit())
                 }
@@ -1678,6 +1684,11 @@ struct SendSheet: View {
                     }
                     TextField(token == nil ? String(localized: "0x… (several: separate with commas)") : "0x…", text: $model.sendTo)
                         .textFieldStyle(EastSeaTextFieldStyle()).font(.aeBody.monospaced())
+                    Grid(alignment: .leading, horizontalSpacing: DesignTokens.Space.s4, verticalSpacing: DesignTokens.Space.s3) {
+                        ForEach(Array(recipients.enumerated()), id: \.offset) { _, address in
+                            accountRow("To", address)
+                        }
+                    }
                 }
                 VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
                     Text(token == nil ? String(localized: "Amount (each)") : String(localized: "Amount")).font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
@@ -1948,7 +1959,8 @@ struct SendSheet: View {
                 row("You will send", String(localized: "\(SendIntent.grouped(frozen.baseUnits)) units"), mono: true)
                 row("Shown as", "\(TokenAmount.exact(frozen.baseUnits, decimals: frozen.token.decimals)) \(symbol)")
                 row("Decimals", frozen.token.trusted ? String(localized: "\(frozen.token.decimals) (from the wallet's list)") : String(localized: "\(frozen.token.decimals) (the token's own claim)"))
-                row("To", frozen.recipient, mono: true)
+                accountRow("Account", model.address)
+                accountRow("To", frozen.recipient)
                 row("Token", TokenLabel.row(TokenInfo(address: frozen.token.address, symbol: now.symbol ?? "?",
                                                       name: now.name ?? "", decimals: frozen.token.decimals, origin: nil)), mono: true)
             }
@@ -2017,6 +2029,19 @@ struct SendSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
         }.font(.aeBody)
     }
+
+    private func accountRow(_ label: LocalizedStringKey, _ address: String) -> some View {
+        GridRow(alignment: .top) {
+            Text(label).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                .gridColumnAlignment(.leading)
+            HStack(alignment: .top, spacing: DesignTokens.Space.s2) {
+                AccountIcon(address: address, size: 32)
+                Text(verbatim: address).font(.aeBody.monospaced()).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }.font(.aeBody)
+    }
 }
 
 /// A page asks to sign a contract call: what it does, where to, how much; Touch ID to approve.
@@ -2038,7 +2063,9 @@ struct CallSheet: View {
                     .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
                 Grid(alignment: .leading, horizontalSpacing: DesignTokens.Space.s4, verticalSpacing: DesignTokens.Space.s3) {
                     row("Action", r.method)
-                    if !r.to.isEmpty { row("Contract", r.to, mono: true) }
+                    accountRow("Account", model.address)
+                    if !r.to.isEmpty { accountRow("Contract", r.to) }
+                    if let address = tokenDestination(r.data) { accountRow("To", address) }
                     row("Sends", "\(r.value) \(Brand.networkCoinTicker)")
                     if let m = r.memo { row("Note", m) }
                 }
@@ -2080,6 +2107,41 @@ struct CallSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
         }.font(.aeBody)
     }
+
+    private func accountRow(_ label: LocalizedStringKey, _ address: String) -> some View {
+        GridRow(alignment: .top) {
+            Text(label).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                .gridColumnAlignment(.leading)
+            HStack(alignment: .top, spacing: DesignTokens.Space.s2) {
+                AccountIcon(address: address, size: 32)
+                Text(verbatim: address).font(.aeBody.monospaced()).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }.font(.aeBody)
+    }
+
+    /// Show the actual ABI address argument for familiar ERC-20 calls, never
+    /// a dApp's memo or claimed name. This only adds review text; signing is
+    /// still driven by the original request's destination and calldata.
+    private func tokenDestination(_ data: String) -> String? {
+        let hex = Array(data.utf8)
+        guard hex.count >= 10, hex[0] == 48, hex[1] == 120 || hex[1] == 88,
+              hex.dropFirst(2).allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else { return nil }
+        let selector = String(decoding: hex[2..<10], as: UTF8.self).lowercased()
+        let word: Int
+        let count: Int
+        switch selector {
+        case "a9059cbb", "095ea7b3": word = 0; count = 138
+        case "23b872dd": word = 1; count = 202
+        default: return nil
+        }
+        guard hex.count == count else { return nil }
+        let start = 10 + word * 64
+        guard hex[start..<(start + 24)].allSatisfy({ $0 == 48 }) else { return nil }
+        let address = "0x" + String(decoding: hex[(start + 24)..<(start + 64)], as: UTF8.self)
+        return AccountIconSpec.of(address: address) == nil ? nil : address
+    }
 }
 
 /// A page asks for this wallet's address.
@@ -2093,6 +2155,11 @@ struct ConnectSheet: View {
                 Text("Connect").font(.aeTitle)
                 Spacer()
                 EastSeaDawnMark().frame(width: 32, height: 32)
+            }
+            HStack(alignment: .top, spacing: DesignTokens.Space.s2) {
+                AccountIcon(address: model.address, size: 32)
+                Text(verbatim: model.address).font(.aeBody.monospaced()).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text(model.connectRequest.map { String(localized: "\($0.origin) wants to see your address \(Short.address(model.address)). It cannot move funds: every payment or call still asks you here.") }
                  ?? String(localized: "A page wants to see your address \(Short.address(model.address)). It cannot move funds: every payment or call still asks you here."))

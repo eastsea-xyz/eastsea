@@ -20,7 +20,7 @@ class El {
   replaceChildren(...cs) { this.children = [...cs.flat()]; return this; }
 }
 globalThis.Node = El;
-globalThis.document = { createElement: (t) => new El(t) };
+globalThis.document = { createElement: (t) => new El(t), createElementNS: (_namespace, t) => new El(t) };
 
 /** Every string a tree renders, in order — what a page "says". */
 function text(el) {

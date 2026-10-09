@@ -1,0 +1,69 @@
+{
+  "backend": "Offline mocked RPC and chrome.runtime; no wallet app, live node or signing calls",
+  "checks": [
+    {
+      "surface": "extension-home",
+      "theme": "light",
+      "viewportWidth": 360,
+      "documentWidth": 360,
+      "icons": 1,
+      "pageErrors": []
+    },
+    {
+      "surface": "extension-approval",
+      "theme": "light",
+      "viewportWidth": 360,
+      "documentWidth": 360,
+      "icons": 3,
+      "pageErrors": []
+    },
+    {
+      "surface": "explorer-mobile",
+      "theme": "light",
+      "viewportWidth": 360,
+      "documentWidth": 360,
+      "icons": 1,
+      "pageErrors": []
+    },
+    {
+      "surface": "explorer-desktop",
+      "theme": "light",
+      "viewportWidth": 1200,
+      "documentWidth": 1200,
+      "icons": 1,
+      "pageErrors": []
+    },
+    {
+      "surface": "extension-home",
+      "theme": "dark",
+      "viewportWidth": 360,
+      "documentWidth": 360,
+      "icons": 1,
+      "pageErrors": []
+    },
+    {
+      "surface": "extension-approval",
+      "theme": "dark",
+      "viewportWidth": 360,
+      "documentWidth": 360,
+      "icons": 3,
+      "pageErrors": []
+    },
+    {
+      "surface": "explorer-mobile",
+      "theme": "dark",
+      "viewportWidth": 360,
+      "documentWidth": 360,
+      "icons": 1,
+      "pageErrors": []
+    },
+    {
+      "surface": "explorer-desktop",
+      "theme": "dark",
+      "viewportWidth": 1200,
+      "documentWidth": 1200,
+      "icons": 1,
+      "pageErrors": []
+    }
+  ]
+}

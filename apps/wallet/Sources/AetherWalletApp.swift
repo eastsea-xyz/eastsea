@@ -135,7 +135,12 @@ struct AetherWalletApp: App {
                     if !recovery.isSafeMode { earnings.attach(node, operatorAddress: { model.payoutAddress }) }
                 }
         } label: {
-            Image(systemName: node.prover?.proving != nil ? "cube.transparent.fill" : "cube.transparent")
+            HStack(spacing: 4) {
+                if let icon = AccountIcon(address: model.address, size: 16).menuBarImage() {
+                    Image(nsImage: icon).renderingMode(.original).accessibilityHidden(true)
+                }
+                Image(systemName: node.prover?.proving != nil ? "cube.transparent.fill" : "cube.transparent")
+            }
         }
         .menuBarExtraStyle(.window)
         #endif

@@ -10,6 +10,7 @@ A Manifest V3 extension for Chromium browsers (Chrome, Edge, Brave, Arc). It wor
 - **Network paused:** the popup header shows it when the chain has made no new block for 60 s (the app's rule); a new block clears it.
 - **First run:** a one-time notice with the app's terms risk points (experimental, as-is, key loss, testnet tokens have no value), kept per `TERMS_VERSION`.
 - **Nodes:** nodes added in Settings are tried first, followed by the EastSea app's node on this computer (`127.0.0.1:18545`). There is no built-in remote browser seed yet.
+- **Account icons:** the same local, address-derived Archipelago v1 icon as the wallet and explorer, beside the full account address. Icons help recognition; compare the full address at approvals. No key, metadata, network request or randomness enters their derivation. The frozen specification is in `docs/design/46-account-icon.md`; `node scripts/sync-account-icons.mjs --check` checks the static mirrors.
 
 ## Build and load
 

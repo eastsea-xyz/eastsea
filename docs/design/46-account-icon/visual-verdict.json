@@ -1,0 +1,11 @@
+{
+  "score": 98,
+  "verdict": "pass",
+  "category_match": true,
+  "differences": [
+    "SwiftUI and Chrome use slightly different edge antialiasing on tiny curves and triangles; flat colors, occupancy, silhouettes and clockwise rotations match.",
+    "The menu-bar NSImage bridge adds at most one channel value of rasterization rounding compared with the direct Canvas."
+  ],
+  "suggestions": [],
+  "reasoning": "All sixteen frozen vectors match the canonical SVG geometry at 16, 32 and 64 pixels in both appearances. The verified menu-bar Image bridge preserves the same drawing and its 16-point logical size."
+}

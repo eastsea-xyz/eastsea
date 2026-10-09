@@ -9,7 +9,7 @@ struct AccountSwitcherButton: View {
     var body: some View {
         Button { open.toggle() } label: {
             HStack(spacing: DesignTokens.Space.s2) {
-                AccountDot(account: store.activeAccount, size: compact ? 14 : 20)
+                AccountIcon(address: store.activeAccount?.address, size: compact ? 16 : 20)
                 VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                     Text(verbatim: store.activeAccount?.name ?? String(localized: "Accounts"))
                         .font(.aeFootnote.weight(.semibold)).lineLimit(1)
@@ -90,7 +90,7 @@ struct AccountSwitcherPanel: View {
                 perform { try store.select(account.id); dismiss() }
             } label: {
                 HStack(spacing: DesignTokens.Space.s3) {
-                    AccountDot(account: account, size: 28)
+                    AccountIcon(address: account.address, size: 28)
                     VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                         Text(verbatim: account.name).font(.aeBody.weight(.medium)).lineLimit(1)
                         Text(verbatim: Short.address(account.address)).font(.aeCaption.monospaced())
@@ -240,19 +240,4 @@ struct RetireAccountView: View {
         }
         return failure.localizedDescription
     }
-}
-
-private struct AccountDot: View {
-    let account: WalletAccount?
-    let size: CGFloat
-    private var color: Color {
-        switch account?.color {
-        case "blue": DesignTokens.Palette.accent.color
-        case "green": DesignTokens.Palette.success.color
-        case "orange": DesignTokens.Palette.warn.color
-        case "pink": DesignTokens.Palette.dawn.color
-        default: .aether
-        }
-    }
-    var body: some View { Circle().fill(color).frame(width: size, height: size).accessibilityHidden(true) }
 }

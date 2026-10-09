@@ -14,6 +14,7 @@ struct ReceiveAddressView: View {
                     .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
+                AccountIcon(address: address, size: compact ? 32 : 64)
                 EastSeaReceiveCode(address: address, accessibilityText: String(localized: "Receive address QR code"))
                     .frame(width: compact ? 192 : 200, height: compact ? 192 : 200)
                     .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))

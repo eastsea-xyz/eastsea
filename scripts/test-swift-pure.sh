@@ -69,6 +69,7 @@ run() {
 }
 
 run multi-account AccountStore.swift
+run account-icon AccountIconSpec.swift
 run account-selection AccountStore.swift AccountDataStore.swift AccountControls.swift
 run account-isolation AccountStore.swift AccountDataStore.swift AccountControls.swift
 run account-retire-guard AccountStore.swift AccountDataStore.swift AccountControls.swift

@@ -1,0 +1,213 @@
+{
+  "domain": "eastsea-account-icon-v1",
+  "version": 1,
+  "palettes": [
+    "#4e8dad",
+    "#368f8b",
+    "#73864a",
+    "#a77a45",
+    "#b36c5c",
+    "#96749e",
+    "#758694",
+    "#958130"
+  ],
+  "ink": "#101820",
+  "backgrounds": {
+    "light": "#f7f5f0",
+    "dark": "#101820"
+  },
+  "vectors": [
+    {
+      "address": "0x0000000000000000000000000000000000000000",
+      "features": {
+        "version": 1,
+        "palette": 7,
+        "layout": 6481,
+        "shape": 0,
+        "rotation": 2
+      },
+      "seedSha256": "c799517018298c682f861b996d02231821dcad990842feef66302efdfe8fa8b2",
+      "svg64Sha256": "4db767077ac07739ce180680a366b738e734489fa1b4cf7ed1c332ecbdbcd3fb"
+    },
+    {
+      "address": "0xffffffffffffffffffffffffffffffffffffffff",
+      "features": {
+        "version": 1,
+        "palette": 5,
+        "layout": 3096,
+        "shape": 0,
+        "rotation": 1
+      },
+      "seedSha256": "25cc18e98575467d3525433eecfe56822ee4d70a4701a2be72716ace795a2c0f",
+      "svg64Sha256": "93c22a2742a1301dbb5256c918104853ea44fbd3e889854f3a688bf3a4c4c234"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000001",
+      "features": {
+        "version": 1,
+        "palette": 0,
+        "layout": 12226,
+        "shape": 0,
+        "rotation": 3
+      },
+      "seedSha256": "e02fc226a3efcc0a1ddca41af75f4afa86e6354e734d382c628ef06de2e51aae",
+      "svg64Sha256": "a438d351bb74bb5288daa7881c07b60e442ce992143323a9980c1923a2d7d62c"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000002",
+      "features": {
+        "version": 1,
+        "palette": 6,
+        "layout": 1545,
+        "shape": 0,
+        "rotation": 0
+      },
+      "seedSha256": "8606094f7c04b5daa9ae9b20f83ab9ce0b860a061f3b61043446975ffc29fc55",
+      "svg64Sha256": "679dc7742be8c079dbbf1e746734a10a74d2bf1f2c54547b7126e864cf489775"
+    },
+    {
+      "address": "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "features": {
+        "version": 1,
+        "palette": 3,
+        "layout": 9484,
+        "shape": 1,
+        "rotation": 3
+      },
+      "seedSha256": "6b650c451e548ab35d5414b4f3803129fe2a11fe8fe925ec2db8252a7d191d67",
+      "svg64Sha256": "f7da678b06fb47e1221c9ce663ffacf4589e8a0f575cb25ba53894852514cc8a"
+    },
+    {
+      "address": "0x52908400098527886e0f7030069857d2e4169ee7",
+      "features": {
+        "version": 1,
+        "palette": 0,
+        "layout": 14072,
+        "shape": 3,
+        "rotation": 1
+      },
+      "seedSha256": "b836f8cea759923a1efc56e692c25fa41e4a9787e7726d39cd274c6e282f516f",
+      "svg64Sha256": "e06984cd2d1dab2268624ddd7c45c3d750981ee10019268de872a62b05574c0f"
+    },
+    {
+      "address": "0x00000000000000000000000000000000000000c1",
+      "features": {
+        "version": 1,
+        "palette": 0,
+        "layout": 9025,
+        "shape": 0,
+        "rotation": 0
+      },
+      "seedSha256": "00e34131106ab2efde73e2b95b217772b2e0916cca83a8a893f4a06a2e9e0602",
+      "svg64Sha256": "3abd1892f803a48f253f74787da553820e843f38e5413677030761f10390ade8"
+    },
+    {
+      "address": "0x1234567890abcdef1234567890abcdef12345678",
+      "features": {
+        "version": 1,
+        "palette": 1,
+        "layout": 1473,
+        "shape": 3,
+        "rotation": 3
+      },
+      "seedSha256": "7945c195cd3ae5eace88e3db6b4efd2b219851b4b5d5a4e00e7b15dfe47f9944",
+      "svg64Sha256": "d0c18373a7cd4b3e056c3b9213f7348ada7e746ad6a23c319b13c9c01ac29b3d"
+    },
+    {
+      "address": "0x1234567890abcdef0000000000abcdef12345678",
+      "features": {
+        "version": 1,
+        "palette": 2,
+        "layout": 10922,
+        "shape": 3,
+        "rotation": 1
+      },
+      "seedSha256": "3aaaaa9458588289b22fd6c14cf315b7855298086146b7435d58250d5ceb7cf7",
+      "svg64Sha256": "6436ade62dba6f71bfe62e6f7af1ba0eeb24405c29e749280a2217209596f96d"
+    },
+    {
+      "address": "0xa2521982a17474cb2f8741c85de653b5282d72b0",
+      "features": {
+        "version": 1,
+        "palette": 1,
+        "layout": 7256,
+        "shape": 1,
+        "rotation": 3
+      },
+      "seedSha256": "e95c5877e53443899f95ce654fcfe98997cfc27efadf72e5cb6e2e7137822477",
+      "svg64Sha256": "69f51da788a2465a360efbd2c11d438e15c61371055c4431d4277afa968bd9cb"
+    },
+    {
+      "address": "0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416",
+      "features": {
+        "version": 1,
+        "palette": 1,
+        "layout": 13258,
+        "shape": 2,
+        "rotation": 0
+      },
+      "seedSha256": "11b3ca9978dd024e47e072b6ca47863af2dad0956f49a724aec0e1c7747b55da",
+      "svg64Sha256": "032126596d49cfb64922f3ccb53d07901bd36b9301528fbffae3796e01d668cb"
+    },
+    {
+      "address": "0x961f8add5ae93ff0700be8abd5f9f8ec69ba4347",
+      "features": {
+        "version": 1,
+        "palette": 7,
+        "layout": 14725,
+        "shape": 2,
+        "rotation": 1
+      },
+      "seedSha256": "37f9854781f8ef30c95974d63f57812be64920055145d6b3bc0eb66b35e2b0e8",
+      "svg64Sha256": "08608bac48fb619e601fad8c6c01b3a5d9926b26d0030f08a72fadb24ae33885"
+    },
+    {
+      "address": "0xc91367bac92c6de822de8afd0f34ff19fd8f7670",
+      "features": {
+        "version": 1,
+        "palette": 3,
+        "layout": 6700,
+        "shape": 0,
+        "rotation": 0
+      },
+      "seedSha256": "031a2c7657748999cbcfb9973325db6f605f098cf7d20c7f40915310cb044e5d",
+      "svg64Sha256": "9841176d191e181e57acbcf8c0a71d1289f484661bbb92c7ea5a7ef88bd83d1c"
+    },
+    {
+      "address": "0x00000000000000000000000000000000000000ff",
+      "features": {
+        "version": 1,
+        "palette": 6,
+        "layout": 7093,
+        "shape": 0,
+        "rotation": 1
+      },
+      "seedSha256": "a69bb568030ae60cf2f9945a7cab16075a67f4ea9675519eb58b1c3adb4e5aec",
+      "svg64Sha256": "7af107b047fb0bfd4335ac0c8192df63e8bb8ee2c368055580c333b12d3e3c26"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000100",
+      "features": {
+        "version": 1,
+        "palette": 4,
+        "layout": 3593,
+        "shape": 1,
+        "rotation": 3
+      },
+      "seedSha256": "6cce095faf2f60753c2ebdef0e1a03e2ce4dcb4f1926edad9fad1b4ccf73dd6c",
+      "svg64Sha256": "a91f594378f4df1faa170f3a7e5fa3b4a4d25df8ec6c27eb929fc0fca9cb18db"
+    },
+    {
+      "address": "0x000000000000000000000000000000000000ffff",
+      "features": {
+        "version": 1,
+        "palette": 0,
+        "layout": 12595,
+        "shape": 2,
+        "rotation": 2
+      },
+      "seedSha256": "5071338c3d025bd3ae9bfa8466aceab9d99d2db5749c675dd2e30858ff4e2126",
+      "svg64Sha256": "9530a37f28adf2af6fccda3a6d65e2f58d77d1f19f35897839ff3f99dca6729e"
+    }
+  ]
+}

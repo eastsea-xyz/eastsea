@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "sample_interval_seconds": 0.5,
+  "samples": 10,
+  "min_free_ram_bytes": 10710188032,
+  "min_free_disk_bytes": 93729185792,
+  "peak_owned_rss_bytes": 112459776,
+  "nice_min": 15,
+  "nice_max": 15,
+  "cleanup_complete": true,
+  "limits": {
+    "min_free_ram_bytes": 4294967296,
+    "min_free_disk_bytes": 32212254720,
+    "max_owned_rss_bytes": 12884901888,
+    "nice": 15
+  },
+  "exit_code": 0,
+  "wall_seconds": 4.874975958,
+  "ownedStagingRemoved": true,
+  "ownedStagingPath": "~/eastsea-lab/account-icon/tmp/round3-measure-20e669a"
+}

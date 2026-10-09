@@ -1,0 +1,14 @@
+{
+  "score": 92,
+  "verdict": "pass",
+  "category_match": true,
+  "differences": [
+    "The reported orange icon has one satellite above-right and one reef below-left; the paired-eye arrangement is gone.",
+    "Account icons and full addresses remain readable in the integration branch's current branded Home, approval and explorer surfaces.",
+    "At360px the inherited explorer header can place the Live network label under Settings."
+  ],
+  "suggestions": [
+    "Keep icon geometry as reviewed; the integration lead can address the separate mobile header overlap."
+  ],
+  "reasoning": "The Islands composition passes independent review and all eight current offline surface checks. Rebase preserves integration styling and preview behavior; the existing header issue is recorded separately."
+}

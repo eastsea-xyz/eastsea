@@ -9,6 +9,7 @@ import { coinTicker, displayTokenName, formatAeth, formatInt, formatRate, format
 import { TRANSFER_TOPIC, decodeApproval, decodeTransfer, revertReason, wordAddress } from './abi.js';
 import { looksLikeOfficial, officialTokens, originBadge, tokenInfo, tokenOrigin, totalSupply } from './erc20.js';
 import { NOT_COMMITTED } from './verify.js';
+import { createAccountIcon } from './accountIcon.js';
 import { PRESENCE_REGIONS, PRESENCE_ROLES, readPresence } from './presence.js';
 import { readVerdict } from './peers.js';
 
@@ -35,7 +36,7 @@ export function txLink(hash) {
 }
 
 export function addrLink(address) {
-  return h('a', { class: 'mono', href: `#/account/${address.toLowerCase()}`, title: address }, shortHex(address, 6, 4));
+  return h('a', { class: 'mono account-identity', href: `#/account/${address.toLowerCase()}`, title: address }, createAccountIcon(address, 16), h('span', {}, shortHex(address, 6, 4)));
 }
 
 /** "SYMBOL · 0x8a9B…F41c" — a symbol is never shown without its address
@@ -428,7 +429,7 @@ export async function accountView(ctx, address) {
 
   const els = h('div', { class: 'stack' },
     h('h1', { class: 'page-title' }, account.code_size > 0 ? 'Contract' : 'Account'),
-    withCopy(a),
+    h('div', { class: 'account-heading' }, createAccountIcon(a, 64), withCopy(a)),
     account.code_size > 0 ? pill(`code · ${formatInt(account.code_size)} bytes`, 'plain') : null,
     token ? h('p', { class: 'small' }, h('a', { href: `#/token/${a}` }, `ERC-20 token ${token.symbol} · view the token page →`)) : null,
     h('section', { class: 'account-balance es-plate', 'aria-label': 'Balance' },

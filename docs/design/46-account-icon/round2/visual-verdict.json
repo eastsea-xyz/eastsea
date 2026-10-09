@@ -1,0 +1,15 @@
+{
+  "score": 92,
+  "verdict": "pass",
+  "category_match": true,
+  "differences": [
+    "The preserved To / From pair now uses sea blue with sand and dawn orange with navy, plus quarter-turned hook outlines. Both still belong to the same silhouette class.",
+    "Large-size neighboring islands are irregular, substantial forms rather than small dots; the 16 px form omits them entirely.",
+    "Some coastline classes remain visually related, including cove/crescent and inlet/hook/arch. Indexed classes alone do not establish human recognition."
+  ],
+  "suggestions": [
+    "Report the stricter merged-class glance proxy alongside the requested exact-class measurement.",
+    "Use the directions sheet for founder review; the static alternatives have not been measured or implemented."
+  ],
+  "reasoning": "The review artifacts match EastSea's parchment/night-sea visual system and expose the actual native-size identities and unchanged product surfaces without clipping. The problem pair is markedly clearer; this artifact QA verdict does not represent founder approval or a human recognition study."
+}

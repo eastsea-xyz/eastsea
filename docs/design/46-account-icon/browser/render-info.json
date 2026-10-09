@@ -1,0 +1,19 @@
+{
+  "renderer": "Chromium / Playwright, canonical accountIconSVG",
+  "chromium": "155.0.8059.39",
+  "accountIconVersion": 3,
+  "canonicalSourceSha256": "5cc8f53b5d3ff26971d561b1c21e456b12134ebc749bafb3c0d11ddb2df7cb91",
+  "sharedVectorsSha256": "210015ba73eadad228e8977f1d7c1abd07a4efe6872cf0e60e7fa581079443ce",
+  "scale": 1,
+  "vectorCount": 16,
+  "snapshotCount": 96,
+  "sizes": [
+    16,
+    32,
+    64
+  ],
+  "themes": [
+    "light",
+    "dark"
+  ]
+}

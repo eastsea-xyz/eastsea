@@ -85,6 +85,11 @@ button:disabled { opacity: .5; cursor: default; }
 .row { display: flex; align-items: center; min-width: 0; gap: var(--space-2); }
 .row > * { min-width: 0; }
 .row.tight { gap: var(--space-2); }
+.account-icon { display: block; flex: none; }
+.account-identity { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; }
+.account-heading { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+.account-heading > .row { flex-wrap: wrap; min-width: 0; }
+.account-heading .mono { min-width: 0; overflow-wrap: anywhere; }
 .row.spread { justify-content: space-between; }
 .wrap { flex-wrap: wrap; }
 .grow { flex: 1; }

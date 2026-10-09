@@ -27,6 +27,16 @@ site/
 
 ## 재생성
 
+`account-icon.js`는 지갑 확장·탐색기와 같은 Islands v3 계정 아이콘 모듈이다.
+`deriveAccountIcon(address, version = 2)`은 20바이트 주소에서 로컬로 특징을 만들고,
+`accountIconSVG(spec, size = 64)`는 고정 SVG를 반환한다. DOM에 붙일 때는
+`createAccountIcon(address, size = 32)`를 써서 SVG DOM API로 만들고, 옆에 주소를 표시한다.
+잘못된 주소는 중립 자리표시자로 표시하며, 아이콘은 주소 인증 수단이 아니다.
+규격과 고정 벡터는 `docs/design/46-account-icon.md`에 있다.
+원본 `apps/extension/src/lib/accountIcon.js`를 수정한 뒤
+`node scripts/sync-account-icons.mjs`로 복사하고 `--check`로 바이트 일치를 확인한다.
+네트워크·키·저장소·실행 중 난수 없이 `eastsea-page:`에서도 동기적으로 동작한다.
+
 ```bash
 python3 scripts/gen-design-tokens.py            # 토큰·공통 컴포넌트 → 모든 플랫폼 (--check: 읽기 전용 최신 여부 확인)
 python3 design/scripts/subset-ko-font.py <Hahmlet[wght].ttf>   # 제목 문구를 바꿨으면 반드시

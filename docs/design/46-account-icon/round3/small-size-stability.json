@@ -1,0 +1,461 @@
+{
+  "baseline": "20e669a",
+  "version": 3,
+  "checkedImages": 64,
+  "pixelIdenticalCount": 49,
+  "pngIdenticalCount": 49,
+  "passes": true,
+  "images": [
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-00-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-01-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.00390625
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-02-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0029296875
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-03-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0029296875
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-04-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0048828125
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-05-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.00390625
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-06-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.001953125
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-07-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0048828125
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-08-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0068359375
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-09-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0078125
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-10-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.005859375
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-11-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0029296875
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-12-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.00390625
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-13-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0029296875
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-14-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0078125
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-15-16.png",
+      "pixelIdentical": false,
+      "pngIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0087890625
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-00-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-01-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-02-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-03-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-04-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-05-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-06-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-07-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-08-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-09-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-10-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-11-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-12-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-13-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-14-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-15-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-00-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-01-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-02-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-03-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-04-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-05-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-06-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-07-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-08-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-09-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-10-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-11-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-12-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-13-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-14-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/light/vector-15-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-00-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-01-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-02-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-03-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-04-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-05-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-06-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-07-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-08-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-09-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-10-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-11-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-12-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-13-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-14-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/dark/vector-15-16.png",
+      "pixelIdentical": true,
+      "pngIdentical": true,
+      "maximumChannelDifference": 0,
+      "meanAbsoluteChannelDifference": 0.0
+    }
+  ],
+  "maximumChannelDifference": 1,
+  "thresholdMaximumChannelDifference": 1,
+  "explanation": "Main paths, palettes, seed domain and below-32 geometry are unchanged. Native light raster quantization can vary by one channel level; browser and native dark PNGs are exact."
+}

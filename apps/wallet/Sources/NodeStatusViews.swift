@@ -19,7 +19,8 @@ struct NodeStopRow: View {
             Text(c.paragraph)
                 .font(compact ? .aeCaption : .aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 .fixedSize(horizontal: false, vertical: true)
-            if let action = c.action, let label = c.actionLabel {
+            if let action = c.action, let label = c.actionLabel,
+               action != .copyDiagnostics || reason.showsDiagnostics(currentReason: node.stopReason, nodeEnabled: node.enabled) {
                 Button(label) { node.perform(action) }
                     .controlSize(compact ? .small : .regular)
                     .buttonStyle(EastSeaQuietButtonStyle())
@@ -76,9 +77,17 @@ struct BlockDataSection: View {
             Text(placeLine).font(.aeFootnote.monospaced()).foregroundStyle(DesignTokens.Palette.text.color)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            if let p = node.storageMovePercent {
-                ProgressView(value: Double(p), total: 100) {
-                    Text(String(localized: "Copying and checking · \(p)%")).font(.aeFootnote)
+            if node.storageMovePreparing || node.storageMoveSync != nil {
+                let progress = node.storageMoveSync ?? BlockDataMove.Progress()
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
+                    if progress.target > 0 {
+                        ProgressView(value: Double(progress.height), total: Double(progress.target))
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(NodeStopReason.startingStorage(height: progress.height, target: progress.target).copy().title)
+                        .font(.aeFootnote.monospacedDigit())
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .tint(DesignTokens.Palette.accent.color)
             } else {
@@ -98,7 +107,7 @@ struct BlockDataSection: View {
                 }
             }
             SettingsLearnMore {
-                Text(String(localized: "Only the block data moves; the keys and the node's identity stay on this Mac. APFS or Mac OS Extended disks only."))
+                Text(String(localized: "Block data starts fresh at the selected location; your keys and node identity stay on this Mac. APFS or Mac OS Extended disks only."))
             }
             Divider().overlay(DesignTokens.Palette.line.color)
             SettingsControlRow(LocalizedStringKey("Keep full history (archive)")) {
@@ -108,6 +117,7 @@ struct BlockDataSection: View {
                     Text(String(localized: "Keep full history (archive)")).font(.aeBody)
                 }
                 .toggleStyle(.switch)
+                .disabled(node.storageMovePreparing || node.storageMoveSync != nil)
             }
             Text("Re-check every block and keep the full history.")
                 .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
@@ -135,7 +145,7 @@ struct BlockDataSection: View {
     @ViewBuilder private var locationActions: some View {
         Button(String(localized: "Choose Location…")) { node.chooseBlockDataLocation() }
         if !node.chainDataPath.isEmpty {
-            Button(String(localized: "Move Back to Default")) { node.moveBlockData(to: nil) }
+            Button(String(localized: "Move Back to Default")) { node.confirmBlockDataMove(to: nil) }
         }
     }
 }

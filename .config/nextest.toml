@@ -1,0 +1,14 @@
+[profile.default]
+test-threads = 4
+# Terminate hung tests after ten minutes, warn every minute.
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[test-groups]
+node-integration = { max-threads = 1 }
+
+[[profile.default.overrides]]
+# Process-per-test execution cannot share the node tests' in-process locks.
+filter = 'package(=aether-node) & kind(test)'
+test-group = 'node-integration'
+# Devnets include lengthy catchup and recovery scenarios.
+slow-timeout = { period = "60s", terminate-after = 30 }

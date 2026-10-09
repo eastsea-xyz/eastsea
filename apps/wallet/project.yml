@@ -47,10 +47,10 @@ targets:
         # gate rejects missing translations and keys.
         SWIFT_EMIT_LOC_STRINGS: YES
         LOCALIZATION_PREFERS_STRING_CATALOGS: YES
-        MARKETING_VERSION: 0.7.3
+        MARKETING_VERSION: 0.7.3.2
         # Build numbers never repeat across the product line: Aether 0.6.6 shipped
         # build 11 and the Aether 0.6.7 bridge (apps/bridge) ships build 12.
-        CURRENT_PROJECT_VERSION: 16
+        CURRENT_PROJECT_VERSION: 18
         # Sparkle keys (feed URL, EdDSA public key) merged into the generated Info.plist.
         INFOPLIST_FILE: Info-mac.plist
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance

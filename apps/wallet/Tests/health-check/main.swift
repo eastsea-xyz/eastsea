@@ -408,4 +408,99 @@ quiet.proverLag = 200
 ev = run(&recovered, quiet, from: 6, to: 700)
 check(raises(ev, .proverStalled) == 1, "…but the stall counts again from the proof that landed")
 
+// MARK: diagnostics only while the displayed incident still holds
+
+// The banner intentionally waits for 20 quiet seconds. Neither a secondary
+// copy button nor an old primary copy action may linger through that wait.
+var diagnosticIncident = HealthCheck()
+check(diagnosticIncident.alert() == nil, "idle: no main-UI diagnostics")
+_ = diagnosticIncident.observe(crashed, at: at(0))
+check(diagnosticIncident.alert()?.diagnosticsVisible == true
+      && diagnosticIncident.alert()?.action == .copyDiagnostics
+      && diagnosticIncident.alert()?.showsSeparateDiagnostics == false,
+      "unresolved crash: one primary diagnostics action")
+check(diagnosticIncident.observe(O(), at: at(1)).isEmpty, "first healthy observation starts the quiet period")
+check(diagnosticIncident.alert() != nil && diagnosticIncident.alert()?.diagnosticsVisible == false
+      && diagnosticIncident.alert()?.action == nil && diagnosticIncident.alert()?.showsSeparateDiagnostics == false,
+      "first healthy observation: diagnostics disappear while the banner remains")
+check(diagnosticIncident.observe(O(), at: at(20)).isEmpty && diagnosticIncident.alert() != nil,
+      "19 quiet seconds: the banner remains, without diagnostics")
+check(diagnosticIncident.observe(O(), at: at(21)) == [.resolved(.crashLoop)] && diagnosticIncident.alert() == nil,
+      "20 quiet seconds: the existing resolution boundary removes the banner")
+
+var recurringDiagnostics = HealthCheck()
+_ = recurringDiagnostics.observe(crashed, at: at(0))
+_ = recurringDiagnostics.observe(O(), at: at(1))
+check(recurringDiagnostics.observe(crashed, at: at(10)).isEmpty
+      && recurringDiagnostics.alert()?.diagnosticsVisible == true
+      && recurringDiagnostics.alert()?.action == .copyDiagnostics,
+      "a recurring fault restores diagnostics without a second incident notification")
+_ = recurringDiagnostics.observe(O(), at: at(11))
+check(recurringDiagnostics.observe(O(), at: at(30)).isEmpty && recurringDiagnostics.alert() != nil,
+      "recurrence restarts the quiet period")
+check(recurringDiagnostics.observe(O(), at: at(31)) == [.resolved(.crashLoop)] && recurringDiagnostics.alert() == nil,
+      "the recurring incident resolves after 20 fresh quiet seconds")
+
+var userStopped = O()
+userStopped.nodeStop = .switchedOff
+var stoppedDiagnostics = HealthCheck()
+_ = stoppedDiagnostics.observe(crashed, at: at(0))
+_ = stoppedDiagnostics.observe(userStopped, at: at(1))
+check(stoppedDiagnostics.alert()?.diagnosticsVisible == false && stoppedDiagnostics.alert()?.action == nil,
+      "the user switching off the node hides an old crash's diagnostics immediately")
+var expectedStop = HealthCheck()
+check(run(&expectedStop, userStopped, from: 0, to: 30).isEmpty && expectedStop.alert() == nil,
+      "an ordinary off node is not an incident")
+
+var missingIdentity = O()
+missingIdentity.nodeStop = .identityLost
+var identityDiagnostics = HealthCheck()
+_ = identityDiagnostics.observe(missingIdentity, at: at(0))
+check(identityDiagnostics.alert()?.action == .fixNode
+      && identityDiagnostics.alert()?.primaryActionCopiesDiagnostics == true
+      && identityDiagnostics.alert()?.diagnosticsVisible == true
+      && identityDiagnostics.alert()?.showsSeparateDiagnostics == false,
+      "the node reason's primary diagnostics action has no duplicate secondary button")
+_ = identityDiagnostics.observe(O(), at: at(1))
+check(identityDiagnostics.alert()?.diagnosticsVisible == false
+      && identityDiagnostics.alert()?.showsSeparateDiagnostics == false && identityDiagnostics.alert()?.action == nil,
+      "a repaired identity leaves no diagnostics or stale node action beside the held banner")
+
+var retainedFixDiagnostics = HealthCheck()
+var identityCrash = missingIdentity
+identityCrash.stopped = .identityLost
+_ = retainedFixDiagnostics.observe(identityCrash, at: at(0))
+check(retainedFixDiagnostics.alert()?.action == .fixNode
+      && retainedFixDiagnostics.alert()?.primaryActionCopiesDiagnostics == true,
+      "a crash can use the node reason's primary diagnostics action")
+_ = retainedFixDiagnostics.observe(missingIdentity, at: at(1))
+check(retainedFixDiagnostics.alert()?.issue == .crashLoop
+      && retainedFixDiagnostics.alert()?.diagnosticsVisible == false
+      && retainedFixDiagnostics.alert()?.action == nil,
+      "an old crash's .fixNode diagnostics action is hidden as soon as that crash condition clears")
+
+var storageDiagnostics = HealthCheck()
+_ = storageDiagnostics.observe(halfDead, at: at(0))
+check(storageDiagnostics.alert()?.action == .openStorage
+      && storageDiagnostics.alert()?.showsSeparateDiagnostics == true,
+      "an unresolved storage incident retains diagnostics beside its recovery action")
+_ = storageDiagnostics.observe(O(), at: at(1))
+check(storageDiagnostics.alert()?.showsSeparateDiagnostics == false,
+      "a cleared storage incident hides the secondary diagnostic action immediately")
+
+var proverDiagnostics = HealthCheck()
+var proverFault = proving
+proverFault.proverError = true
+proverFault.proverLag = 1
+_ = proverDiagnostics.observe(proverFault, at: at(0))
+proverFault.proverLag = 2
+_ = run(&proverDiagnostics, proverFault, from: 2, to: 602)
+check(proverDiagnostics.alert()?.diagnosticsVisible == true && proverDiagnostics.alert()?.action == .copyDiagnostics,
+      "a stalled prover retains its primary diagnostics action")
+proverFault.proverError = false
+_ = proverDiagnostics.observe(proverFault, at: at(604))
+check(proverDiagnostics.alert() != nil && proverDiagnostics.alert()?.diagnosticsVisible == false
+      && proverDiagnostics.alert()?.action == nil,
+      "a recovered prover's old primary diagnostics action disappears before the banner")
+
 print("health-check: all checks passed")

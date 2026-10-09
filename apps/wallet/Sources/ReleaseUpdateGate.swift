@@ -1,6 +1,7 @@
 #if os(macOS)
 import CryptoKit
 import Foundation
+#if canImport(Sparkle)
 import Sparkle
 
 /// Pins are read from the network.json inside the *currently running* signed
@@ -26,6 +27,7 @@ struct PendingRelease {
     let availableAt: Date?
     let emergency: Bool
 }
+#endif
 
 /// Sparkle's shouldProceed callback is synchronous. A first check starts a
 /// background preflight and refuses this cycle. Once it succeeds, the app
@@ -33,6 +35,20 @@ struct PendingRelease {
 /// the archive it actually downloads. Different bytes cannot reuse that
 /// EdDSA signature, even if the distribution server changes the URL contents.
 final class ReleaseUpdateGate {
+    /// Kept independent of Sparkle so the archive's file reader is tested directly.
+    static func archiveSHA256(_ url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while try autoreleasepool(invoking: { () throws -> Bool in
+            guard let part = try handle.read(upToCount: 1024 * 1024), !part.isEmpty else { return false }
+            hasher.update(data: part)
+            return true
+        }) {}  // Keep each bridged NSData inside this iteration's pool.
+        return Data(hasher.finalize()).map { String(format: "%02x", $0) }.joined()
+    }
+
+#if canImport(Sparkle)
     private let lock = NSLock()
     private var approvedUntil: [String: TimeInterval] = [:]
     private var checking = Set<String>()
@@ -140,11 +156,7 @@ final class ReleaseUpdateGate {
         let (download, response) = try await URLSession.shared.download(for: request)
         defer { try? FileManager.default.removeItem(at: download) }
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw GateError.unavailable }
-        let handle = try FileHandle(forReadingFrom: download)
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        while let part = try handle.read(upToCount: 1024 * 1024), !part.isEmpty { hasher.update(data: part) }
-        let archiveHash = Data(hasher.finalize()).map { String(format: "%02x", $0) }.joined()
+        let archiveHash = try archiveSHA256(download)
         guard decide(archiveHash) == .ready else { return (nil, String(localized: "This update is not approved by the network yet."), false) }
         return (pending, nil, true)
     }
@@ -164,5 +176,6 @@ final class ReleaseUpdateGate {
     }
 
     private enum GateError: Error { case unavailable }
+#endif
 }
 #endif

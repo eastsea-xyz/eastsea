@@ -91,6 +91,9 @@ struct AetherWalletApp: App {
             }
             CommandMenu("Go") { PageCommands() }
             BrowserCommands()
+            CommandGroup(after: .help) {
+                Button(DiagnosticReport.copyLabel(helpMenu: true)) { appDelegate.health.copyDiagnostics() }
+            }
         }
         #endif
         #if os(macOS)
@@ -264,7 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         unattended.wrongLocation = node.wrongLocation
         unattended.storageShards = node.storageShards
         node.unattended = unattended
-        unattended.refreshStatus()
+        unattended.restore()
         unattended.refreshPower()
         node.restore()
         // A slow data move finishing in the background (M1) lets the node
@@ -353,14 +356,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             signing: model.busy,
             migrating: migration.moving,
             // The block-data move (claude/node-status-storage) wires in here.
-            storageMoving: node.storageMovePercent != nil)
+            storageMoving: node.storageMovePreparing)
     }
 
     /// AppKit asks this before willTerminate. A held Sparkle update cannot
     /// bypass the same storage/signing/membership gate merely because we quit.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
-            guard !migration.moving, node?.storageMovePercent == nil, model?.busy != true else {
+            guard !migration.moving, node?.storageMovePreparing != true, model?.busy != true else {
                 if updateShutdownReady {
                     updateShutdownReady = false
                     self.node?.abortUpdatePreparation()

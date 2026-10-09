@@ -19,6 +19,12 @@ import Foundation
 /// `null` until the app checks its binaries against a ReleaseLog manifest
 /// (§2.2 — layer 2's job).
 enum DiagnosticReport {
+    /// Help is the permanent entry point; incident buttons use the short label.
+    static func copyLabel(helpMenu: Bool = false, locale: Locale = .current, bundle: Bundle = .main) -> String {
+        if helpMenu { return String(localized: "Copy Diagnostics…", bundle: bundle, locale: locale) }
+        return String(localized: "Copy Diagnostics", bundle: bundle, locale: locale)
+    }
+
     struct Snapshot {
         /// CFBundleShortVersionString.
         var appVersion = ""

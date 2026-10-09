@@ -94,8 +94,8 @@ f = NodeResumeFacts(); f.migrating = true
 check(NodeResume.decide(f) == .wait(.migrating), "migration copying")
 f = NodeResumeFacts(); f.migrationGate = "x"
 check(NodeResume.decide(f) == .wait(.migrationBlocked("x")), "migration gate")
-f = NodeResumeFacts(); f.movingStoragePercent = 42
-check(NodeResume.decide(f) == .wait(.movingStorage(percent: 42)), "storage move")
+f = NodeResumeFacts(); f.preparingStorage = true
+check(NodeResume.decide(f) == .wait(.startingStorage(height: 0, target: 0)), "fresh-location preparation")
 f = NodeResumeFacts(); f.onBattery = true
 check(NodeResume.decide(f) == .wait(.onBattery), "battery")
 f.isValidator = true
@@ -270,14 +270,15 @@ let all: [NodeStopReason] = [.switchedOff, .onBattery, .wrongLocation, .noHelper
                              .otherNodeRunning, .diskFull(freeBytes: GiB, resumeBytes: 7 * GiB, volume: nil),
                              .diskMissing(volume: "v"), .diskNoAccess(volume: "v"), .restarting(inSeconds: 3),
                              .crashLoop(.other, retryInSeconds: 300), .needsAttention(.database), .upgradeNeeded,
-                             .identityLost, .waitingForMacConfirmation, .keyElsewhere, .launchFailed("e"), .movingStorage(percent: 5)]
+                             .identityLost, .waitingForMacConfirmation, .keyElsewhere, .launchFailed("e"), .startingStorage(height: 5, target: 10)]
 var codes = Set<String>()
 for r in all {
     codes.insert(r.code)
     for language in ["en", "ko", "ja", "zh-Hans", "zh-Hant"] {
         let c = r.copy(locale: walletTestLocale(language), bundle: walletTestBundle(language))
         check(!c.title.isEmpty && !c.detail.isEmpty, "\(r.code) has a title and a detail (language=\(language))")
-        check(c.title.count <= 40, "\(r.code) title fits the sidebar: \(c.title)")
+        let limit = r.code == "starting_storage" ? 100 : 40
+        check(c.title.count <= limit, "\(r.code) title fits the wrapping sidebar: \(c.title)")
         check((c.action == nil) == (c.actionLabel == nil), "\(r.code) button has a label")
         check(!c.paragraph.lowercased().contains("rpc") && !c.paragraph.contains("exit "), "\(r.code) has no jargon")
         if r.isIncident && r != .identityLost && r != .keyElsewhere && r != .wrongLocation && r != .noHelper {
@@ -289,6 +290,21 @@ check(codes.count == all.count, "codes are unique")
 check(NodeStopReason.crashLoop(.other, retryInSeconds: 540).copy(locale: koLocale, bundle: koBundle).resume == "9분 뒤 저절로 다시 시도해요.", "minutes")
 check(NodeStopReason.restarting(inSeconds: 4).copy(locale: enLocale, bundle: enBundle).resume == "Starting in 4 s.", "seconds")
 check(!NodeStopReason.onBattery.isIncident && NodeStopReason.otherNodeRunning.isIncident, "incident flags")
+
+// A retained NodeStopRow must read the current reason and switch. This also
+// covers the menu-bar panel, which uses the same row for identityLost.
+for reason in all {
+    check(reason.showsDiagnostics(currentReason: reason, nodeEnabled: true) == reason.isIncident,
+          "\(reason.code): diagnostics belong only to a current incident")
+    check(!reason.showsDiagnostics(currentReason: reason, nodeEnabled: false),
+          "\(reason.code): switching off removes diagnostics")
+    check(!reason.showsDiagnostics(currentReason: nil, nodeEnabled: true),
+          "\(reason.code): recovery removes diagnostics from a retained row")
+}
+check(!NodeStopReason.identityLost.showsDiagnostics(currentReason: .switchedOff, nodeEnabled: true),
+      "an old identity incident cannot leave diagnostics beside an ordinary user stop")
+check(!NodeStopReason.identityLost.showsDiagnostics(currentReason: .onBattery, nodeEnabled: true),
+      "an old identity incident cannot leave diagnostics beside an expected battery pause")
 
 // MARK: node-status.log
 
@@ -311,5 +327,46 @@ try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: t
 NodeStatusLog.append("a\n", in: dir)
 NodeStatusLog.append("b\n", in: dir)
 check((try? String(contentsOf: dir.appendingPathComponent("node-status.log"), encoding: .utf8)) == "a\nb\n", "append-only on disk")
+// Oversized logs keep the same half-on-overflow and whole-line trimming.
+// A disk reader must not load their entire old contents before enforcing cap.
+for oldSize in [0, NodeStatusLog.cap, NodeStatusLog.cap + 1, 4 * NodeStatusLog.cap] {
+    let old = Data(String(repeating: "older line\n", count: (oldSize + 10) / 11).utf8.prefix(oldSize))
+    for addition in ["", "newest line\n"] {
+        let url = dir.appendingPathComponent(NodeStatusLog.fileName)
+        try old.write(to: url)
+        NodeStatusLog.append(addition, in: dir)
+        check(try Data(contentsOf: url) == NodeStatusLog.appending(old, line: addition),
+              "disk log cap preserves trimming for \(oldSize) bytes, addition \(addition.count)")
+    }
+}
+// Read windows from a sparse database-sized log without loading its prefix.
+let sparseLog = dir.appendingPathComponent("node.log")
+FileManager.default.createFile(atPath: sparseLog.path, contents: Data())
+let logHandle = try FileHandle(forWritingTo: sparseLog)
+try logHandle.truncate(atOffset: (2 << 30) + 73)
+try logHandle.seekToEnd()
+try logHandle.write(contentsOf: Data("last log line\n".utf8))
+try logHandle.close()
+check(try NodeLogTail.read(sparseLog, wanted: 8_192).count == 8_192, "a >=2 GiB log reads only its 8 KiB window")
+check(try NodeLogTail.read(sparseLog, wanted: 65_536).count == 65_536, "Mac confirmation reads only its 64 KiB window")
+check(try NodeLogTail.read(sparseLog, wanted: 0).isEmpty && NodeLogTail.read(sparseLog, wanted: -1).isEmpty,
+      "zero and negative log windows read nothing")
+check(try NodeLogTail.read(sparseLog, wanted: 14) == Data("last log line\n".utf8), "the latest log line survives")
+NodeStatusLog.append("latest status\n", in: dir, fileName: "node.log")
+check(try NodeLogTail.read(sparseLog, wanted: NodeStatusLog.cap + 1).count <= NodeStatusLog.cap,
+      "an oversized status/migration log is trimmed with a bounded read")
+try Data().write(to: sparseLog)
+check(try NodeLogTail.read(sparseLog, wanted: 65_536).isEmpty, "empty logs have an empty tail")
+try Data("short log\n".utf8).write(to: sparseLog)
+check(try NodeLogTail.read(sparseLog, wanted: 65_536) == Data("short log\n".utf8), "short logs read from zero")
+check((try? NodeLogTail.read(dir.appendingPathComponent("missing"), wanted: 8_192)) == nil,
+      "a missing log fails closed")
+check((try? NodeLogTail.read(dir, wanted: 8_192)) == nil, "failed log seeks/reads fail closed")
 try? FileManager.default.removeItem(at: dir)
+// 0.7.3 crashed on every Mac whose node.log was shorter than the 64 KB tail.
+check(NodeLogTail.offset(size: 0, wanted: 65_536) == 0, "an empty log reads from the start")
+check(NodeLogTail.offset(size: 1_000, wanted: 65_536) == 0, "a short log reads from the start")
+check(NodeLogTail.offset(size: 65_536, wanted: 65_536) == 0, "an exact-size log reads from the start")
+check(NodeLogTail.offset(size: 100_000, wanted: 65_536) == 34_464, "a long log reads only its tail")
+check(NodeLogTail.offset(size: 10, wanted: -5) == 10, "a negative window reads nothing")
 print("OK node-stop")

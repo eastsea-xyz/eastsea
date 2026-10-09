@@ -403,10 +403,12 @@ enum DataMigration {
         do {
             let fh = try FileHandle(forReadingFrom: url)
             defer { try? fh.close() }
-            while let chunk = try fh.read(upToCount: 1 << 20) {   // nil = end of file
+            while try autoreleasepool(invoking: { () throws -> Bool in
+                guard let chunk = try fh.read(upToCount: meter?.readSize(maximum: 1 << 20) ?? (1 << 20)), !chunk.isEmpty else { return false }
                 sha.update(chunk)
                 meter?.add(Int64(chunk.count))
-            }
+                return true
+            }) {}  // Release bridged NSData before reading the next chunk.
         } catch { return nil }
         return sha.finalHex()
     }
@@ -420,10 +422,9 @@ enum DataMigration {
         return sha.finalHex()
     }
 
-    /// Incremental SHA-256 (FIPS 180-4). Blocks are consumed as slices of
-    /// one buffer with a single `removeSubrange` per update, so streaming a
-    /// file stays linear instead of quadratic.
-    private struct SHA256 {
+    /// Incremental SHA-256 (FIPS 180-4). Consume full blocks directly from
+    /// the input; retain only a fixed 64-byte tail between updates.
+    struct SHA256 {
         private static let k: [UInt32] = [
             0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
             0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -436,39 +437,56 @@ enum DataMigration {
 
         private var h: [UInt32] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
                                    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
-        private var buffer = Data()
+        private var tail = [UInt8](repeating: 0, count: 64)
+        private var tailCount = 0
         private var bytes = UInt64(0)
 
         mutating func update(_ data: Data) {
-            buffer.append(data)
             bytes &+= UInt64(data.count)
-            var start = buffer.startIndex
-            while buffer.endIndex - start >= 64 {
-                compress(buffer[start..<start + 64])
-                start += 64
+            data.withUnsafeBytes { (input: UnsafeRawBufferPointer) in
+                var start = 0
+                if tailCount > 0 {
+                    let count = min(64 - tailCount, input.count)
+                    for byteIndex in 0..<count { tail[tailCount + byteIndex] = input[byteIndex] }
+                    tailCount += count
+                    start += count
+                    if tailCount == 64 {
+                        tail.withUnsafeBytes { compress($0) }
+                        tailCount = 0
+                    }
+                }
+                while input.count - start >= 64 {
+                    compress(UnsafeRawBufferPointer(rebasing: input[start..<start + 64]))
+                    start += 64
+                }
+                if start < input.count {
+                    tailCount = input.count - start
+                    for byteIndex in 0..<tailCount { tail[byteIndex] = input[start + byteIndex] }
+                }
             }
-            buffer.removeSubrange(buffer.startIndex..<start)
         }
 
         mutating func finalHex() -> String {
-            var tail = buffer
             let bitLength = bytes &* 8
-            tail.append(0x80)
-            while tail.count % 64 != 56 { tail.append(0) }
-            for shift in stride(from: 56, through: 0, by: -8) { tail.append(UInt8((bitLength >> UInt64(shift)) & 0xff)) }
-            var start = tail.startIndex
-            while tail.endIndex - start >= 64 {
-                compress(tail[start..<start + 64])
-                start += 64
+            tail[tailCount] = 0x80
+            tailCount += 1
+            if tailCount > 56 {
+                for byteIndex in tailCount..<64 { tail[byteIndex] = 0 }
+                tail.withUnsafeBytes { compress($0) }
+                tailCount = 0
             }
+            for byteIndex in tailCount..<56 { tail[byteIndex] = 0 }
+            for byteIndex in 0..<8 {
+                tail[56 + byteIndex] = UInt8(truncatingIfNeeded: bitLength >> UInt64(56 - byteIndex * 8))
+            }
+            tail.withUnsafeBytes { compress($0) }
             return h.map { String(format: "%08x", $0) }.joined()
         }
 
-        private mutating func compress(_ block: Data) {
-            let base = block.startIndex
+        private mutating func compress(_ block: UnsafeRawBufferPointer) {
             var w = [UInt32](repeating: 0, count: 64)
             for i in 0..<16 {
-                let j = base + i * 4
+                let j = i * 4
                 w[i] = UInt32(block[j]) << 24 | UInt32(block[j + 1]) << 16 | UInt32(block[j + 2]) << 8 | UInt32(block[j + 3])
             }
             for i in 16..<64 {
@@ -545,10 +563,9 @@ enum DataMigration {
         return x.isEqual(y)
     }
 
-    /// The bytes a verified copy of `entries` works through: each file is
-    /// copied once and hashed on both sides.
+    /// Hash the source while copying, then read the destination once.
     private static func copyWork(_ entries: [String: Int64]) -> Int64 {
-        entries.filter { $0.key != lockName && !$0.key.hasPrefix(quarantinePrefix) }.values.reduce(0, +) * 3
+        entries.filter { $0.key != lockName && !$0.key.hasPrefix(quarantinePrefix) }.values.reduce(0, +) * 2
     }
 
     /// Verified copy of a tree, file by file (the cross-volume path and the
@@ -557,7 +574,7 @@ enum DataMigration {
     /// SHA-256; `run.lock` is never copied. True only when every file the old
     /// tree vouches for is at the new home with the content it had.
     static func syncTreeVerified(_ old: URL, _ new: URL, meter: ProgressMeter? = nil,
-                                 excluding: Set<String> = []) -> Bool {
+                                 excluding: Set<String> = [], verified: ((String, String) -> Bool)? = nil) -> Bool {
         guard let entries = manifest(of: old) else { return false }
         // The old tree's live lock is never copied, and its quarantine
         // directories are recovery copies for a human — not cargo for the
@@ -573,16 +590,23 @@ enum DataMigration {
         if let meter, meter.total == 0 { meter.expect(copyWork(entries.filter { syncable($0.key) })) }
         for (rel, bytes) in entries where syncable(rel) {
             let o = old.appending(path: rel), n = new.appending(path: rel)
-            if let have = size(of: n), have == bytes, fileMatches(o, n, meter: meter) {
-                meter?.add(bytes)   // no copy needed
-                continue
+            if let have = size(of: n), have == bytes {
+                meter?.holdCompletion()
+                guard let hash = streamSHA256(o, meter: meter), let copiedHash = streamSHA256(n, meter: meter) else { return false }
+                if hash == copiedHash {
+                    if verified?(rel, hash) == false { return false }
+                    meter?.releaseCompletion()
+                    continue
+                }
+                // A corrupt resume adds a repair copy and verification to
+                // the pair comparison already counted above.
+                meter?.expect((meter?.total ?? 0) + bytes * 2)
+                meter?.releaseCompletion()
             }
             // Reuse the verified temporary-file replacement: any existing
             // destination is kept aside, including data created by another
             // install. A crash leaves the old file or its recovery copy intact.
-            guard copyVerifiedReadable(o, n) else { return false }
-            meter?.add(bytes)
-            if !fileMatches(o, n, meter: meter) { return false }
+            guard let hash = streamCopyVerified(o, n, meter: meter), verified?(rel, hash) != false else { return false }
         }
         guard let copied = manifest(of: new) else { return false }
         // Contents were hash-checked file by file above; here every old file
@@ -616,31 +640,82 @@ enum DataMigration {
 
     private static func copyVerifiedReadable(_ old: URL, _ new: URL) -> Bool {
         if fileMatches(old, new) { return true }
+        return streamCopyVerified(old, new) != nil
+    }
+
+    /// A verified temporary copy. The digest returned is from the source
+    /// bytes read during the copy, and is also the verified destination digest.
+    static func streamCopyVerified(_ old: URL, _ new: URL, meter: ProgressMeter? = nil) -> String? {
         let dir = new.deletingLastPathComponent()
         let temp = dir.appending(path: ".\(new.lastPathComponent).migrating-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: temp) }
+        var sha = SHA256()
+        var before = stat()
         do {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            try fm.copyItem(at: old, to: temp)
+            let inputFD = open(old.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard inputFD >= 0 else { return nil }
+            let input = FileHandle(fileDescriptor: inputFD, closeOnDealloc: true)
+            defer { try? input.close() }
+            guard fstat(inputFD, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG else { return nil }
+            let outputFD = open(temp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, before.st_mode & 0o777)
+            guard outputFD >= 0 else { return nil }
+            let output = FileHandle(fileDescriptor: outputFD, closeOnDealloc: true)
+            defer { try? output.close() }
+            var copied: Int64 = 0
+            while try autoreleasepool(invoking: { () throws -> Bool in
+                guard let chunk = try input.read(upToCount: meter?.readSize(maximum: 8 << 20) ?? (8 << 20)),
+                      !chunk.isEmpty else { return false }
+                try output.write(contentsOf: chunk)
+                sha.update(chunk)
+                copied += Int64(chunk.count)
+                meter?.add(Int64(chunk.count))
+                return true
+            }) {}  // Release bridged NSData before reading the next chunk.
+            var after = stat(), path = stat()
+            guard copied == before.st_size, fstat(inputFD, &after) == 0, lstat(old.path, &path) == 0,
+                  before.st_dev == path.st_dev, before.st_ino == path.st_ino,
+                  before.st_size == after.st_size,
+                  before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+                  before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+                  before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+                  before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else { return nil }
+            #if os(macOS)
+            // Keep access controls and file-protection attributes, including
+            // the small signing files copied by identity migration.
+            guard fcopyfile(inputFD, outputFD, nil, copyfile_flags_t(COPYFILE_METADATA)) == 0 else { return nil }
+            #endif
+            guard syncFile(outputFD) else { return nil }
+            try output.close()
         } catch {
-            try? fm.removeItem(at: temp)
-            return false
+            return nil
         }
-        guard fileMatches(old, temp) else {
-            try? fm.removeItem(at: temp)
-            return false
-        }
+        let hash = sha.finalHex()
+        meter?.holdCompletion()
+        guard size(of: old) == size(of: temp), streamSHA256(temp, meter: meter) == hash else { return nil }
+        var current = stat()
+        guard lstat(old.path, &current) == 0,
+              before.st_dev == current.st_dev, before.st_ino == current.st_ino, before.st_size == current.st_size,
+              before.st_mtimespec.tv_sec == current.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == current.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == current.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == current.st_ctimespec.tv_nsec else { return nil }
+        meter?.releaseCompletion()
         if fm.fileExists(atPath: new.path) {
-            let aside = dir.appending(path: "\(new.lastPathComponent).\(replacedPrefix)\(Int(Date().timeIntervalSince1970 * 1000))")
-            guard (try? fm.moveItem(at: new, to: aside)) != nil else {
-                try? fm.removeItem(at: temp)
-                return false
-            }
+            let aside = dir.appending(path: "\(new.lastPathComponent).\(replacedPrefix)\(UUID().uuidString)")
+            guard (try? fm.moveItem(at: new, to: aside)) != nil else { return nil }
         }
-        guard rename(temp.path, new.path) == 0 else {
-            try? fm.removeItem(at: temp)
-            return false
-        }
-        return fileMatches(old, new)
+        guard rename(temp.path, new.path) == 0 else { return nil }
+        return hash
+    }
+
+    /// Ask macOS to flush through the drive cache; other filesystems may
+    /// only implement fsync. A failed flush never publishes the temp file.
+    static func syncFile(_ fd: Int32) -> Bool {
+        #if os(macOS)
+        if fcntl(fd, F_FULLFSYNC) == 0 { return true }
+        #endif
+        return fsync(fd) == 0
     }
 
     /// B4, the resume path after a stale done flag: the new tree may already
@@ -853,11 +928,16 @@ enum DataMigration {
         private(set) var total: Int64 = 0
         private var done: Int64 = 0
         private var reported: Int64 = 0
+        private var fractionReported: Double = 0
+        private var completionHeld = false
         private let reportEvery: Int64
         private let report: (Double) -> Void
+        private let reportBytes: ((Int64, Int64) -> Void)?
 
-        init(reportEvery: Int64 = 64 << 20, report: @escaping (Double) -> Void) {
-            self.reportEvery = max(1, reportEvery)
+        init(reportEvery: Int64 = 64 << 20, reportBytes: ((Int64, Int64) -> Void)? = nil,
+             report: @escaping (Double) -> Void) {
+            self.reportEvery = min(64 << 20, max(1, reportEvery))
+            self.reportBytes = reportBytes
             self.report = report
         }
 
@@ -865,14 +945,38 @@ enum DataMigration {
             lock.lock(); total = max(total, bytes); lock.unlock()
         }
 
+        /// Matching a resume can discover repair work. Its final read must
+        /// not advertise 100% until the comparison has decided the budget.
+        func holdCompletion() {
+            lock.lock(); completionHeld = true; lock.unlock()
+        }
+
+        func releaseCompletion() {
+            lock.lock(); completionHeld = false; lock.unlock()
+            add(0)
+        }
+
+        /// Stop a read exactly at the next report boundary. A short final
+        /// chunk in one file must not make the next file exceed 64 MiB.
+        func readSize(maximum: Int) -> Int {
+            lock.lock(); defer { lock.unlock() }
+            // Tiny thresholds are useful in fixtures; keep their reads
+            // buffered rather than issuing one system call per byte.
+            guard reportEvery >= 1 << 20 else { return maximum }
+            return min(maximum, Int(max(1, reportEvery - (done - reported))))
+        }
+
         func add(_ bytes: Int64) {
             lock.lock()
             done += bytes
-            let due = done - reported >= reportEvery
+            let due = !(completionHeld && total > 0 && done >= total)
+                && (done - reported >= reportEvery || (total > 0 && done >= total && reported < done))
             if due { reported = done }
-            let fraction = total > 0 ? min(1, Double(done) / Double(total)) : 0
+            let fraction = max(fractionReported, total > 0 ? min(1, Double(done) / Double(total)) : 0)
+            if due { fractionReported = fraction }
+            let completed = done, expected = total
             lock.unlock()
-            if due { report(fraction) }
+            if due { report(fraction); reportBytes?(completed, expected) }
         }
     }
 

@@ -5,6 +5,43 @@ import Foundation
 /// Macs in or entering the voting set), attach-vs-start when a daemon node
 /// already runs, the pmset/fdesetup readings, and the honest power sentences.
 enum UnattendedDecision {
+    /// ServiceManagement's lookup can return notFound for a service it has
+    /// never seen, even when the notarized app carries the complete helper.
+    /// Keep that fact separate from a missing bundle or a thrown registration
+    /// error; neither registration nor approval can be inferred from signing.
+    enum ServiceStatus {
+        case notRegistered, enabled, requiresApproval, notFound, unknown
+    }
+
+    enum Status: Equatable {
+        case off, needsApproval, approved
+        case failed(String)
+
+        var allowsMarker: Bool { self == .approved || self == .needsApproval }
+    }
+
+    static func shouldRegister(enabled: Bool, bundledService: Bool, service: ServiceStatus) -> Bool {
+        enabled && bundledService && (service == .notRegistered || service == .notFound)
+    }
+
+    static func status(enabled: Bool, bundledService: Bool, service: ServiceStatus,
+                       registrationFailure: String? = nil,
+                       locale: Locale = .current, bundle: Bundle = .main) -> Status {
+        guard enabled else { return .off }
+        guard bundledService else {
+            return .failed(String(localized: "This build of the app cannot keep the node running after restarts.",
+                                  bundle: bundle, locale: locale))
+        }
+        switch service {
+        case .enabled: return .approved
+        case .requiresApproval: return .needsApproval
+        case .notRegistered, .notFound:
+            if let registrationFailure { return .failed(registrationFailure) }
+            return .needsApproval
+        case .unknown: return .off
+        }
+    }
+
     /// The node the daemon runs and the node the app runs take the same
     /// arguments, so a restart never changes behavior — except the app's own
     /// child also gets `--exit-with-parent` (the daemon has no parent that

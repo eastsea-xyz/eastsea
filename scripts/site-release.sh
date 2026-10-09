@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 repo=eastsea-xyz/eastsea
 new=${1:-$(gh release view --repo "$repo" --json tagName -q .tagName | sed 's/^app-v//')}
-[[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a version: $new" >&2; exit 1; }
+[[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo "not a version: $new" >&2; exit 1; }
 gh release view "app-v$new" --repo "$repo" --json isDraft -q .isDraft | grep -qx false \
   || { echo "app-v$new is not a published release" >&2; exit 1; }
 old=$(python3 -c 'import json;print(json.load(open("site/release.json"))["version"])')

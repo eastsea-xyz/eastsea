@@ -47,7 +47,9 @@ final class HealthMonitor: ObservableObject {
     /// Design preview: the banner for `issue`, as the check would raise it.
     func loadPreview(issue: HealthCheck.Issue) {
         let c = HealthCheck()
-        alert = HealthCheck.Alert(issue: issue, sentence: c.sentence(issue), action: c.action(issue))
+        let action = c.action(issue)
+        alert = HealthCheck.Alert(issue: issue, sentence: c.sentence(issue), action: action,
+                                  diagnosticsVisible: true, primaryActionCopiesDiagnostics: action == .copyDiagnostics)
         healthyBadgeAllowed = issue != .diskPaused
     }
     #endif
@@ -211,7 +213,7 @@ extension HealthCheck.Action {
         case .checkForUpdates: return String(localized: "Check for Updates")
         case .retryConnection: return String(localized: "Try Again")
         case .openStorage: return String(localized: "Open Storage Settings")
-        case .copyDiagnostics: return String(localized: "Copy Diagnostics")
+        case .copyDiagnostics: return DiagnosticReport.copyLabel()
         case .fixNode: return String(localized: "Fix")
         }
     }
@@ -237,7 +239,7 @@ struct HealthBanner: View {
                             Button(action == .fixNode ? (health.nodeActionLabel ?? action.label()) : action.label()) { health.perform(action) }
                                 .buttonStyle(EastSeaPrimaryButtonStyle())
                         }
-                        if alert.action != .copyDiagnostics {
+                        if alert.showsSeparateDiagnostics {
                             Button(copied ? (String(localized: "Copied"))
                                           : HealthCheck.Action.copyDiagnostics.label()) {
                                 health.copyDiagnostics()

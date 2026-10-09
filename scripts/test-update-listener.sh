@@ -2,7 +2,7 @@
 # R11 listener ownership: only task-created signed helper process trees.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-mkdir -p tmp
+mkdir -p tmp/swift-module-cache
 root=$(pwd -P)
 export TMPDIR="$root/tmp"
 work=$(mktemp -d "$root/tmp/R11-listener.XXXXXX")
@@ -68,5 +68,5 @@ C
 "$gate" && /usr/bin/clang -DR11_LABEL='"A"' "$work/R11-helper.c" -o "$work/R11-A" || exit "$?"
 "$gate" && /usr/bin/clang -DR11_LABEL='"B"' "$work/R11-helper.c" -o "$work/R11-B" || exit "$?"
 /usr/bin/codesign --force --sign - --identifier com.pipln.eastsea.R11.listener "$work/R11-A" "$work/R11-B"
-"$gate" && swiftc -o "$work/R11-listener-check" apps/wallet/Sources/NodeReleaseIdentity.swift apps/wallet/Tests/update-daemon-tree/main.swift || exit "$?"
+python3 scripts/swift-test-cache.py --output "$work/R11-listener-check" -- apps/wallet/Sources/NodeReleaseIdentity.swift apps/wallet/Tests/update-daemon-tree/main.swift
 "$work/R11-listener-check" "$work/R11-A" "$work/R11-B" "$work"

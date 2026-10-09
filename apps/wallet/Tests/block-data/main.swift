@@ -7,7 +7,7 @@ import Foundation
 import AppKit
 
 // Legacy cleanup preferences stay in memory; fixtures never write cfprefsd.
-final class MoveMemoryDefaults: UserDefaults {
+final class MoveMemoryDefaults: UserDefaults, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: Any] = [:]
     init() { super.init(suiteName: nil)! }
@@ -380,13 +380,32 @@ try Data("authoritative".utf8).write(to: sentinel)
 mover.chainDataPath = authoritative.path
 NodeController.storageMoveDefaults.set(nestedSource.path, forKey: NodeController.cleanupKey)
 mover.finishBlockDataMove()
-try await Task.sleep(nanoseconds: 100_000_000)
+check(NodeController.storageMoveDefaults.object(forKey: NodeController.cleanupKey) == nil,
+      "R01 legacy cleanup preferences do not authorize deletion")
+BlockDataMove.cleanup(confirmedTarget: authoritative, internalRoot: NodeController.dataDir)
 check(FileManager.default.fileExists(atPath: sentinel.path), "R01 cleanup rechecks ancestry")
 
+func waitForFixture(_ message: String, until complete: () -> Bool) async throws {
+    let deadline = ProcessInfo.processInfo.systemUptime + 30
+    while !complete() {
+        guard ProcessInfo.processInfo.systemUptime < deadline else {
+            throw NSError(domain: "BlockDataFixture", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "timed out after 30s waiting for \(message)"])
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+}
 func waitForMove(_ node: NodeController) async throws {
-    let end = Date().addingTimeInterval(10)
-    while node.storageMovePercent != nil && Date() < end { try await Task.sleep(nanoseconds: 10_000_000) }
-    check(node.storageMovePercent == nil, "fixture move completes within deadline")
+    try await waitForFixture("move completion (source=\(node.chainDataPath))") { node.storageMovePercent == nil }
+}
+func waitForCleanup(_ node: NodeController) async throws {
+    let target = BlockDataLocation.resolvedRoot(node.chainRoot).path
+    let file = NodeController.dataDir.appendingPathComponent(BlockDataMove.recordName)
+    try await waitForFixture("committed cleanup record (target=\(target), file=\(file.path))") {
+        guard let data = try? Data(contentsOf: file),
+              let record = try? JSONDecoder().decode(BlockDataMove.Record.self, from: data) else { return false }
+        return record.committed && record.cleanupDone && record.target == target
+    }
 }
 // R02: force a failed copy into somebody else's preexisting chain tree.
 let badSource = moveFixture.appendingPathComponent("bad-source")
@@ -467,12 +486,11 @@ try FileManager.default.removeItem(at: verifiedTarget.appendingPathComponent("ar
 let lateFile = verifiedSource.appendingPathComponent("follow/new-after-copy.db")
 try Data("new-history".utf8).write(to: lateFile)
 goodMover.finishBlockDataMove()
-try await Task.sleep(nanoseconds: 150_000_000)
+try await waitForCleanup(goodMover)
 check(!FileManager.default.fileExists(atPath: copiedFile.path), "R03 verified source file can be cleaned")
 check((try? Data(contentsOf: lateFile)) == Data("new-history".utf8), "R03 unmanifested source data survives cleanup")
 check((try? Data(contentsOf: archiveFile)) == Data("archive-history".utf8), "R03 missing destination history retains its only source copy")
-goodMover.finishBlockDataMove()
-try await Task.sleep(nanoseconds: 50_000_000)
+BlockDataMove.cleanup(confirmedTarget: verifiedTarget, internalRoot: NodeController.dataDir)
 check(FileManager.default.fileExists(atPath: lateFile.path), "R03 cleanup replay is idempotent")
 // A stale unpublished copy must not permanently exclude future safe moves.
 let staleSource = moveFixture.appendingPathComponent("stale-source")
@@ -763,10 +781,9 @@ check(roundTripMover.chainDataPath == roundTripTarget.path
       && (try? Data(contentsOf: internalKey)) == keyBytes,
       "R07 outward move leaves the endpoint identity on the internal disk")
 roundTripMover.finishBlockDataMove()
-let cleanupEnd = Date().addingTimeInterval(5)
-while FileManager.default.fileExists(atPath: internalState.path) && Date() < cleanupEnd {
-    try await Task.sleep(nanoseconds: 10_000_000)
-}
+// Unlink is an intermediate step. A return move must wait for the outward
+// record's cleanupDone publication, or it can replay that unfinished record.
+try await waitForCleanup(roundTripMover)
 check(!FileManager.default.fileExists(atPath: internalState.path),
       "R07 fixture cleanup leaves the default follow directory key-only")
 roundTripMover.moveBlockData(to: nil)

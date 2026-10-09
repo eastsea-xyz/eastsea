@@ -23,8 +23,8 @@ run() {
   : > "tmp/sw-$n.err"
   : > "tmp/sw-$n.out"
   compiler_flags=(-Onone)
-  if [ "$n" = rename-migration ]; then
-    # Large migration fixtures hash hundreds of MB with the release code.
+  if [ "$n" = rename-migration ] || [ "$n" = hash-memory ]; then
+    # Large file fixtures hash hundreds of MB or more with the release code.
     # Optimize that code while keeping Swift assertions and preconditions on.
     compiler_flags=(-O -assert-config Debug)
   fi
@@ -69,6 +69,7 @@ run localization ProverMenuText.swift
 run key-safety Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift
 run release-approval ReleaseApproval.swift
 run rename-migration DataMigration.swift
+run hash-memory DataMigration.swift ReleaseUpdateGate.swift
 run resources ProverFlags.swift
 run resend ResendIntent.swift
 run tx-track TxTrack.swift

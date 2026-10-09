@@ -711,7 +711,9 @@ final class NodeController: ObservableObject {
 
     /// The last lines of `node-status.log`, for "copy diagnostics".
     func statusLogTail(lines: Int = 40) -> String {
-        let text = (try? String(contentsOf: Self.dataDir.appendingPathComponent(NodeStatusLog.fileName), encoding: .utf8)) ?? ""
+        let url = Self.dataDir.appendingPathComponent(NodeStatusLog.fileName)
+        let data = (try? NodeLogTail.read(url, wanted: NodeStatusLog.cap)) ?? Data()
+        let text = String(data: data, encoding: .utf8) ?? ""
         return text.split(separator: "\n").suffix(lines).joined(separator: "\n")
     }
 
@@ -1092,11 +1094,9 @@ final class NodeController: ObservableObject {
     /// The tail of the node's log: what the watchdog reads to tell a full disk
     /// from a damaged database when the node exits with the storage code.
     private func nodeLogTail(_ bytes: Int = 8_192) -> String {
-        guard let h = try? FileHandle(forReadingFrom: Self.dataDir.appendingPathComponent("node.log")) else { return "" }
-        defer { try? h.close() }
-        let size = (try? h.seekToEnd()) ?? 0
-        try? h.seek(toOffset: NodeLogTail.offset(size: size, wanted: bytes))
-        return String(data: h.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let url = Self.dataDir.appendingPathComponent("node.log")
+        guard let data = try? NodeLogTail.read(url, wanted: bytes) else { return "" }
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     /// The latest transition wins; once both markers leave the bounded tail,

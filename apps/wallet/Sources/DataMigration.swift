@@ -403,10 +403,12 @@ enum DataMigration {
         do {
             let fh = try FileHandle(forReadingFrom: url)
             defer { try? fh.close() }
-            while let chunk = try fh.read(upToCount: 1 << 20) {   // nil = end of file
+            while try autoreleasepool(invoking: { () throws -> Bool in
+                guard let chunk = try fh.read(upToCount: 1 << 20), !chunk.isEmpty else { return false }
                 sha.update(chunk)
                 meter?.add(Int64(chunk.count))
-            }
+                return true
+            }) {}  // Release bridged NSData before reading the next chunk.
         } catch { return nil }
         return sha.finalHex()
     }
@@ -420,10 +422,9 @@ enum DataMigration {
         return sha.finalHex()
     }
 
-    /// Incremental SHA-256 (FIPS 180-4). Blocks are consumed as slices of
-    /// one buffer with a single `removeSubrange` per update, so streaming a
-    /// file stays linear instead of quadratic.
-    private struct SHA256 {
+    /// Incremental SHA-256 (FIPS 180-4). Consume full blocks directly from
+    /// the input; retain only a fixed 64-byte tail between updates.
+    struct SHA256 {
         private static let k: [UInt32] = [
             0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
             0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -436,39 +437,56 @@ enum DataMigration {
 
         private var h: [UInt32] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
                                    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
-        private var buffer = Data()
+        private var tail = [UInt8](repeating: 0, count: 64)
+        private var tailCount = 0
         private var bytes = UInt64(0)
 
         mutating func update(_ data: Data) {
-            buffer.append(data)
             bytes &+= UInt64(data.count)
-            var start = buffer.startIndex
-            while buffer.endIndex - start >= 64 {
-                compress(buffer[start..<start + 64])
-                start += 64
+            data.withUnsafeBytes { (input: UnsafeRawBufferPointer) in
+                var start = 0
+                if tailCount > 0 {
+                    let count = min(64 - tailCount, input.count)
+                    for byteIndex in 0..<count { tail[tailCount + byteIndex] = input[byteIndex] }
+                    tailCount += count
+                    start += count
+                    if tailCount == 64 {
+                        tail.withUnsafeBytes { compress($0) }
+                        tailCount = 0
+                    }
+                }
+                while input.count - start >= 64 {
+                    compress(UnsafeRawBufferPointer(rebasing: input[start..<start + 64]))
+                    start += 64
+                }
+                if start < input.count {
+                    tailCount = input.count - start
+                    for byteIndex in 0..<tailCount { tail[byteIndex] = input[start + byteIndex] }
+                }
             }
-            buffer.removeSubrange(buffer.startIndex..<start)
         }
 
         mutating func finalHex() -> String {
-            var tail = buffer
             let bitLength = bytes &* 8
-            tail.append(0x80)
-            while tail.count % 64 != 56 { tail.append(0) }
-            for shift in stride(from: 56, through: 0, by: -8) { tail.append(UInt8((bitLength >> UInt64(shift)) & 0xff)) }
-            var start = tail.startIndex
-            while tail.endIndex - start >= 64 {
-                compress(tail[start..<start + 64])
-                start += 64
+            tail[tailCount] = 0x80
+            tailCount += 1
+            if tailCount > 56 {
+                for byteIndex in tailCount..<64 { tail[byteIndex] = 0 }
+                tail.withUnsafeBytes { compress($0) }
+                tailCount = 0
             }
+            for byteIndex in tailCount..<56 { tail[byteIndex] = 0 }
+            for byteIndex in 0..<8 {
+                tail[56 + byteIndex] = UInt8(truncatingIfNeeded: bitLength >> UInt64(56 - byteIndex * 8))
+            }
+            tail.withUnsafeBytes { compress($0) }
             return h.map { String(format: "%08x", $0) }.joined()
         }
 
-        private mutating func compress(_ block: Data) {
-            let base = block.startIndex
+        private mutating func compress(_ block: UnsafeRawBufferPointer) {
             var w = [UInt32](repeating: 0, count: 64)
             for i in 0..<16 {
-                let j = base + i * 4
+                let j = i * 4
                 w[i] = UInt32(block[j]) << 24 | UInt32(block[j + 1]) << 16 | UInt32(block[j + 2]) << 8 | UInt32(block[j + 3])
             }
             for i in 16..<64 {

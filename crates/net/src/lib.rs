@@ -710,7 +710,10 @@ impl ProtocolHandler for RpcProtocol {
 
 /// Serve JSON-RPC over `aether/rpc/1` on `endpoint`; with `p2p_target`, also
 /// accept validator tunnels (`aether/p2p/1`) and forward them to that local
-/// Commonware p2p listener. `registered` is the finalized-registry check
+/// Commonware p2p listener. This legacy wrapper forwards reshare to the next
+/// port; validators with a configured listener use `serve_with_reshare` or
+/// `serve_with_services_and_public_read` instead.
+/// `registered` is the finalized-registry check
 /// wallet-server announcements are listed under (validators pass one;
 /// `None` refuses announcements).
 pub fn serve<F, Fut>(
@@ -724,6 +727,27 @@ where
     Fut: Future<Output = Value> + Send + 'static,
 {
     serve_with_services(endpoint, handler, p2p_target, registered, None, None)
+}
+
+/// Serve RPC and independently configured consensus and reshare tunnels.
+pub fn serve_with_reshare<F, Fut>(
+    endpoint: Endpoint,
+    handler: F,
+    p2p_target: Option<std::net::SocketAddr>,
+    reshare_target: Option<std::net::SocketAddr>,
+    registered: Option<RegisteredCandidate>,
+) -> Router
+where
+    F: Fn(Value) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Value> + Send + 'static,
+{
+    serve_with_services_and_public_read(endpoint, handler, p2p_target, reshare_target, registered, None, None, None)
+}
+
+fn legacy_reshare_target(p2p_target: Option<std::net::SocketAddr>) -> Option<std::net::SocketAddr> {
+    p2p_target.and_then(|target| {
+        target.port().checked_add(1).map(|port| std::net::SocketAddr::new(target.ip(), port))
+    })
 }
 
 /// Serve optional presence alongside the existing public transports.
@@ -759,14 +783,17 @@ where
     F: Fn(Value) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Value> + Send + 'static,
 {
-    serve_with_services_and_public_read(endpoint, handler, p2p_target, registered, presence, apps, None)
+    serve_with_services_and_public_read(endpoint, handler, p2p_target, legacy_reshare_target(p2p_target), registered, presence, apps, None)
 }
 
 /// Serve optional public reads, presence and app seeding on the same endpoint.
+/// The reshare listener is supplied independently of the consensus target.
+#[allow(clippy::too_many_arguments)]
 pub fn serve_with_services_and_public_read<F, Fut>(
     endpoint: Endpoint,
     handler: F,
     p2p_target: Option<std::net::SocketAddr>,
+    reshare_target: Option<std::net::SocketAddr>,
     registered: Option<RegisteredCandidate>,
     presence: Option<PresenceCallback>,
     apps: Option<AppsHandler>,
@@ -793,9 +820,9 @@ where
     }
     if let Some(target) = p2p_target {
         r = r.accept(ALPN_P2P, tunnel::Inbound { target });
-        // The background reshare listens on the next port.
-        let reshare = std::net::SocketAddr::new(target.ip(), target.port() + 1);
-        r = r.accept(ALPN_RESHARE, tunnel::Inbound { target: reshare });
+    }
+    if let Some(target) = reshare_target {
+        r = r.accept(ALPN_RESHARE, tunnel::Inbound { target });
     }
     if let Some(callback) = presence {
         r = r.accept(ALPN_PRESENCE, PresenceProtocol::new(callback));
@@ -1441,17 +1468,18 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, SocketAddr};
 
+    struct OpenReadBudget;
+    impl ReadBudget for OpenReadBudget {
+        fn reserve(&self, maximum: usize) -> std::result::Result<Reservation, String> {
+            Ok(Reservation { period: 0, bytes: maximum })
+        }
+        fn refund(&self, _reservation: Reservation, _unused: usize) -> std::result::Result<(), String> {
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn public_read_presence_and_apps_share_one_router() {
-        struct Budget;
-        impl ReadBudget for Budget {
-            fn reserve(&self, maximum: usize) -> std::result::Result<Reservation, String> {
-                Ok(Reservation { period: 0, bytes: maximum })
-            }
-            fn refund(&self, _reservation: Reservation, _unused: usize) -> std::result::Result<(), String> {
-                Ok(())
-            }
-        }
         let server = bind_local(SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), peers::PeerTracker::new()).await.unwrap();
         let client = bind_local(SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), peers::PeerTracker::new()).await.unwrap();
         let addr = EndpointAddr::from_parts(server.id(), [TransportAddr::Ip(
@@ -1467,10 +1495,10 @@ mod tests {
             assert_eq!(request, b"archive");
             Ok(b"app archive".to_vec())
         }));
-        let read = PublicRead::new(|req| async move { rpc_ok(&req, Value::String("public".into())) }, Arc::new(Budget), vec![]);
+        let read = PublicRead::new(|req| async move { rpc_ok(&req, Value::String("public".into())) }, Arc::new(OpenReadBudget), vec![]);
         let router = serve_with_services_and_public_read(
             server, |req| async move { rpc_ok(&req, Value::String("native".into())) },
-            None, None, Some(presence), Some(apps), Some(read),
+            None, None, None, Some(presence), Some(apps), Some(read),
         );
         for (alpn, expected) in [(ALPN_RPC, "native"), (ALPN_READ, "public")] {
             let conn = tokio::time::timeout(Duration::from_secs(5), client.connect(addr.clone(), alpn)).await.unwrap().unwrap();
@@ -1478,6 +1506,62 @@ mod tests {
         }
         assert_eq!(presence_exchange(&client, addr.clone(), b"presence").await.unwrap(), b"presence reply");
         assert_eq!(app_call(&client, &addr, b"archive", Duration::from_secs(5)).await.unwrap(), b"app archive");
+        client.close().await;
+        router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reshare_tunnels_reach_the_configured_listener() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let consensus = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let consensus_addr = consensus.local_addr().unwrap();
+        let (reshare, reshare_addr) = loop {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            if Some(addr.port()) != consensus_addr.port().checked_add(1) {
+                break (listener, addr);
+            }
+        };
+        let targets = [
+            (consensus, b"consensus".as_slice()),
+            (reshare, b"reshare".as_slice()),
+        ];
+        for (listener, reply) in targets {
+            tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut ping = [0; 4];
+                stream.read_exact(&mut ping).await.unwrap();
+                assert_eq!(&ping, b"ping");
+                stream.write_all(reply).await.unwrap();
+                stream.shutdown().await.unwrap();
+            });
+        }
+        let server = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .alpns(vec![ALPN_P2P.to_vec(), ALPN_RESHARE.to_vec()])
+            .bind().await.unwrap();
+        let port = server.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
+        let addr = EndpointAddr::from_parts(server.id(), [TransportAddr::Ip(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST), port,
+        ))]);
+        let read = PublicRead::new(|_req| async move { unreachable!() }, Arc::new(OpenReadBudget), vec![]);
+        let router = serve_with_services_and_public_read(
+            server, |_req| async move { unreachable!() },
+            Some(consensus_addr), Some(reshare_addr), None, None, None, Some(read),
+        );
+        let client = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled).bind().await.unwrap();
+        for (alpn, expected) in [(ALPN_P2P, b"consensus".as_slice()), (ALPN_RESHARE, b"reshare".as_slice())] {
+            let reply = tokio::time::timeout(Duration::from_secs(5), async {
+                let conn = client.connect(addr.clone(), alpn).await.unwrap();
+                let (mut send, mut recv) = conn.open_bi().await.unwrap();
+                send.write_all(b"ping").await.unwrap();
+                send.finish().unwrap();
+                recv.read_to_end(32).await.unwrap()
+            }).await.expect("tunnel must reach its configured TCP listener");
+            assert_eq!(reply, expected, "ALPN {} routed to the wrong listener", String::from_utf8_lossy(alpn));
+        }
         client.close().await;
         router.shutdown().await.unwrap();
     }

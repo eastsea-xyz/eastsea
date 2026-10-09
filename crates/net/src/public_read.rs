@@ -304,6 +304,6 @@ where
     Fut: Future<Output = Value> + Send + 'static,
 {
     super::serve_with_services_and_public_read(
-        endpoint, handler, p2p_target, registered, None, None, Some(read),
+        endpoint, handler, p2p_target, super::legacy_reshare_target(p2p_target), registered, None, None, Some(read),
     )
 }

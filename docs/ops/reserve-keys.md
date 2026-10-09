@@ -27,7 +27,7 @@
 
 - `install`은 network.json에 committee identity가 있는지, 세 키가 모두 `"reserve"`에 있는지 먼저 확인한다.
 - 바이너리는 `~/aether-reserve/bin/aether`로 복사하고 Developer ID로 서명한다. launchd가 외장 볼륨(`/Volumes`)의 파일을 못 읽는 경우가 있어서다.
-- 포트: 키 i의 p2p는 `19200 + 2i`, 재공유는 그 다음 번호, RPC는 `18700 + i`다. `RESERVE_P2P_BASE`와 `RESERVE_RPC_BASE`로 바꾼다. 앱 노드(18545, 19101)나 테스트넷(8601~, 9101~)과 겹치지 않는다.
+- 포트: 키 i의 p2p는 `19200 + 2i`, 재공유 기본값은 p2p에 11000을 더한 `30202`, `30204`, `30206`, RPC는 `18700 + i`다. `RESERVE_P2P_BASE`와 `RESERVE_RPC_BASE`로 바꾼다. 앱 노드(18545, 19101)나 테스트넷(8601~, 9101~)과 겹치지 않는다. 새 제네시스의 예비 키를 iroh 재공유로 운용하기 전에는 아래의 터널 포트와도 겹치지 않는 명시적 `--reshare-port` 또는 `--link-base`를 정해야 한다.
 - 로그: `~/aether-reserve/reserve{1,2,3}.log`.
 
 ## 잠자기 방지

@@ -43,6 +43,31 @@ child ≈ lines 1380–1520, genesis driver ≈ 2660–2785).
   (`main.rs` reshare child); a retried round never reads an older attempt's
   Commonware state.
 
+### Background transport
+
+The supervisor keeps consensus and reshare on separate Commonware listeners:
+`aether run` defaults the reshare listener to `--port + 11000`, or accepts an
+explicit `--reshare-port` (required if the default exceeds 65535). The port
+must be nonzero and distinct from the local consensus and RPC ports. A
+plus-one default would collide with the next validator when several local
+validators use consecutive consensus ports, as the 7780 launch scripts do.
+The +11000 offset also keeps 9101 away from the app's fixed 19101 listener;
+the branch's proposed +10000 offset did not. This is a default for the known
+7780 layout, not general port discovery. New-genesis reserve layouts must
+choose explicit nonoverlapping ports: the staged iroh tunnel range defaults
+to `30000 + 100 * union_index + peer_index`, which can intersect a reserve
+listener such as 30204. Reserve/genesis rollout remains a 0.7.5 task.
+
+The supervisor passes the resolved port to both the validator child and the
+staged reshare child. The validator's public iroh endpoint forwards
+`aether/reshare/1` to that configured loopback listener; consensus continues
+on `aether/p2p/1`. Reshare still uses the `_DKG` namespace and the union of
+old and new rosters. A validator's reshare child dials from an unpublished
+endpoint (`--via-node`); a candidate serves reshare under its own node id.
+TCP devnets discover the separate listeners through `--dev-peer-dir`.
+These transport settings do not change DKG messages, committee rounds,
+legacy 7780 agreement, history replay or the proving program.
+
 ### 1.2 Messages (`Msg`, `dkg.rs:68`)
 
 | Message | Carries | Addressing |

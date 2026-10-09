@@ -12,7 +12,7 @@
 # independent operators); it reshares and hands over by itself either way.
 # The launchd wrapper keeps the Mac awake on power; exit 15 stops restarts.
 # Env: AETHER_RESERVE (default ~/aether-reserve), AETHER_BIN (default: aether on PATH),
-#      RESERVE_P2P_BASE (19200: key i uses base+2i and base+2i+1 for reshares),
+#      RESERVE_P2P_BASE (19200: key i uses base+2i, reshare defaults to +11000),
 #      RESERVE_RPC_BASE (18700: key i uses base+i), SIGN_IDENTITY.
 set -euo pipefail
 R=${AETHER_RESERVE:-$HOME/aether-reserve}

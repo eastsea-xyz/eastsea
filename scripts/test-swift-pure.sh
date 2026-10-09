@@ -65,7 +65,7 @@ run network-upgrade Brand.swift NetworkUpgrade.swift
 run node-stop Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift
 run block-data Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift UnattendedDecision.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift DataMigration.swift BlockDataMove.swift NodeStorageMove.swift
 run block-data-progress DataMigration.swift
-run block-data-full-volume Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift ArchiveMeasurement.swift BlockDataLocation.swift DataMigration.swift BlockDataMove.swift
+run block-data-full-volume Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift DataMigration.swift BlockDataMove.swift
 run prover-menu ProverMenuText.swift
 run localization ProverMenuText.swift
 run key-safety Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift

@@ -72,13 +72,18 @@ struct BlockDataSection: View {
             Text(placeLine).font(.aeFootnote.monospaced()).foregroundStyle(.secondary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(String(localized: "Only the block data moves; the keys and the node's identity stay on this Mac. APFS or Mac OS Extended disks only."))
+            Text(String(localized: "Block data starts fresh at the selected location; your keys and node identity stay on this Mac. APFS or Mac OS Extended disks only."))
                 .font(.aeFootnote).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if let p = node.storageMovePercent {
-                ProgressView(value: node.storageMoveFraction) {
-                    Text(NodeController.storageMoveSentence(percent: p, done: node.storageMoveBytesDone,
-                                                            total: node.storageMoveBytesTotal))
+            if node.storageMovePreparing || node.storageMoveSync != nil {
+                let progress = node.storageMoveSync ?? BlockDataMove.Progress()
+                VStack(alignment: .leading, spacing: 6) {
+                    if progress.target > 0 {
+                        ProgressView(value: Double(progress.height), total: Double(progress.target))
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(NodeStopReason.startingStorage(height: progress.height, target: progress.target).copy().title)
                         .font(.aeFootnote.monospacedDigit())
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -86,7 +91,7 @@ struct BlockDataSection: View {
                 HStack {
                     Button(String(localized: "Choose Location…")) { node.chooseBlockDataLocation() }
                     if !node.chainDataPath.isEmpty {
-                        Button(String(localized: "Move Back to Default")) { node.moveBlockData(to: nil) }
+                        Button(String(localized: "Move Back to Default")) { node.confirmBlockDataMove(to: nil) }
                     }
                 }
             }
@@ -105,6 +110,7 @@ struct BlockDataSection: View {
                 Text(String(localized: "Keep full history (archive)")).font(.aeBody)
             }
             .toggleStyle(.switch)
+            .disabled(node.storageMovePreparing || node.storageMoveSync != nil)
             Text(String(localized: "Off, the node fetches the recent state and catches up fast. On, it re-checks every block from the first and keeps the whole history."))
                 .font(.aeFootnote).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

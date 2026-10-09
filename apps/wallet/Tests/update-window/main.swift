@@ -10,7 +10,7 @@ let delegateURL = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     .appendingPathComponent("Sources/AetherWalletApp.swift")
 let delegateSource = try String(contentsOf: delegateURL, encoding: .utf8)
-check(delegateSource.contains("storageMoving: node.storageMovePercent != nil"),
+check(delegateSource.contains("storageMoving: node.storageMovePreparing"),
       "R09 active storage mover is wired into the update gate")
 
 typealias W = UpdateWindow

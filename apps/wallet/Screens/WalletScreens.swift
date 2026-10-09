@@ -238,7 +238,7 @@ final class Renderer {
         .diskMissing(volume: "Samsung T7"), .diskNoAccess(volume: "Samsung T7"), .restarting(inSeconds: 20),
         .crashLoop(.other, retryInSeconds: 300), .needsAttention(.database), .upgradeNeeded, .identityLost,
         .waitingForMacConfirmation, .keyElsewhere,
-        .launchFailed("posix_spawn failed"), .movingStorage(percent: 42),
+        .launchFailed("posix_spawn failed"), .startingStorage(height: 42, target: 100),
     ]
 
     // MARK: drawing

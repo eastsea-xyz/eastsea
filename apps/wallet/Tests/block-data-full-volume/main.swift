@@ -202,16 +202,11 @@ func exerciseFullVolume() async throws {
     guard let fd = moveFD else { throw FixtureFailure(description: "existing run.lock must be acquired with zero free bytes") }
     try require(fcntl(fd, F_GETFL) & O_ACCMODE == O_RDONLY, "existing lock must use a read-only descriptor")
     try require(try FileSnapshot(lock) == initialLock, "lock acquisition must preserve the existing inode and bytes")
-    var progress: [Double] = []
-    let meter = DataMigration.ProgressMeter(reportEvery: 1 << 20) { progress.append($0) }
-    meter.expect(Int64(history.count) * 2)
-    let copied = try BlockDataMove.copy(source: source, target: target, sourceID: sourceID,
-                                        internalRoot: source, preservingInternalKeys: false, meter: meter)
-    try require(copied == UInt64(history.count), "full-volume copy publishes every block-data byte")
-    try require(progress.count >= 2 && progress.last == 1, "copy and verification must both report progress through completion")
-    try require(zip(progress, progress.dropFirst()).allSatisfy { pair in pair.0 <= pair.1 }, "full-volume callbacks must be monotonic")
-    try require(try Data(contentsOf: target.appendingPathComponent("follow/state.db")) == history,
-                "destination bytes must match the full source")
+    try BlockDataMove.prepare(source: source, target: target, sourceID: sourceID,
+                              internalRoot: source, preservingInternalKeys: false)
+    try require(!fm.fileExists(atPath: target.appendingPathComponent("follow").path)
+                && !fm.fileExists(atPath: target.appendingPathComponent("archive").path),
+                "zero-space source can commit an empty fresh destination without copying a block database")
     try require(try FileSnapshot(state) == initialState && Data(contentsOf: state) == history,
                 "source state must remain untouched until explicit destination confirmation")
     try require(try FileSnapshot(endpoint) == initialEndpoint && Data(contentsOf: endpoint) == endpointBytes,
@@ -226,7 +221,7 @@ func exerciseFullVolume() async throws {
                 "the committed target must survive lost preference writes")
     let record = try JSONDecoder().decode(BlockDataMove.Record.self,
                                          from: Data(contentsOf: source.appendingPathComponent(BlockDataMove.recordName)))
-    try require(record.committed && !record.cleanupDone, "the journal commits without authorizing premature deletion")
+    try require(record.committed && !record.ready && !record.cleanupDone, "the journal commits without authorizing premature deletion")
     let names = try fm.contentsOfDirectory(atPath: target.path)
     var preservedLogs = 0
     for (name, bytes) in diagnosticBytes {
@@ -247,16 +242,25 @@ func exerciseFullVolume() async throws {
     BlockDataMove.cleanup(confirmedTarget: fixture, internalRoot: source)
     try require(fm.fileExists(atPath: state.path), "a different target must not authorize cleanup")
     BlockDataMove.cleanup(confirmedTarget: target, internalRoot: source)
-    try require(!fm.fileExists(atPath: state.path), "confirmed destination cleanup removes the verified old state")
+    try require(fm.fileExists(atPath: state.path), "a fresh destination alone must not authorize cleanup")
+    _ = try BlockDataMove.observe(confirmedTarget: target, internalRoot: source, answered: true, height: 10, certifiedHeight: nil)
+    BlockDataMove.cleanup(confirmedTarget: target, internalRoot: source)
+    try require(fm.fileExists(atPath: state.path), "an answer alone must not authorize cleanup")
+    try fm.createDirectory(at: target.appendingPathComponent("follow"), withIntermediateDirectories: false)
+    let freshBytes = Data("fresh checkpoint-synced state".utf8)
+    try freshBytes.write(to: target.appendingPathComponent("follow/state.redb"))
+    _ = try BlockDataMove.observe(confirmedTarget: target, internalRoot: source, answered: true, height: 11, certifiedHeight: 11)
+    try require(BlockDataMove.cleanup(confirmedTarget: target, internalRoot: source), "answered-and-followed cleanup completes")
+    try require(!fm.fileExists(atPath: state.path), "confirmed fresh node cleanup frees the old state allocation")
     try require(try Data(contentsOf: endpoint) == endpointBytes && Data(contentsOf: validator) == validatorBytes,
                 "confirmation cleanup must retain both private keys")
-    try require(try Data(contentsOf: target.appendingPathComponent("follow/state.db")) == history,
-                "confirmation cleanup must retain destination block data")
+    try require(try Data(contentsOf: target.appendingPathComponent("follow/state.redb")) == freshBytes,
+                "confirmation cleanup must retain fresh destination block data")
     try hdiutil(["detach", roots[0]], in: fixture, tmpRoot: tmpRoot)
     attachedDevice = nil
     try require(!mounted(at: point), "the fixture must detach its source image")
     completed = true
-    print("PASS block-data-full-volume: real ENOSPC, zero available blocks, \(filled) filler bytes, \(progress.count) monotonic callbacks, \(preservedLogs) preserved diagnostic logs")
+    print("PASS block-data-full-volume: real ENOSPC, zero available blocks, \(filled) filler bytes, no block-data copy, guarded cleanup, \(preservedLogs) preserved diagnostic logs")
 }
 
 do { try await exerciseFullVolume() }

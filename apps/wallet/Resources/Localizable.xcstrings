@@ -4859,6 +4859,76 @@
         }
       }
     },
+    "Block data starts fresh at the selected location; your keys and node identity stay on this Mac. APFS or Mac OS Extended disks only." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Block data starts fresh at the selected location; your keys and node identity stay on this Mac. APFS or Mac OS Extended disks only."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "選択した保存先でブロックデータを新たに構築します。キーとノードの識別情報はこのMacに残ります。APFSまたはMac OS拡張形式のディスクのみ使えます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "선택한 위치에서 블록 데이터를 새로 쌓아요. 키와 노드 신원은 이 Mac에 그대로 남아요. APFS 또는 Mac OS 확장 형식의 디스크만 쓸 수 있어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "区块数据会在所选位置从头重建；密钥和节点身份仍留在此 Mac 上。仅支持 APFS 或 Mac OS Extended 磁盘。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "區塊資料會在所選位置從頭重建；金鑰與節點身分仍留在此 Mac。僅支援 APFS 或 Mac OS 擴充格式的磁碟。"
+          }
+        }
+      }
+    },
+    "Block data starts fresh here. Your keys and node identity stay on this Mac. The wallet keeps working while the node syncs." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Block data starts fresh here. Your keys and node identity stay on this Mac. The wallet keeps working while the node syncs."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この場所でブロックデータを新たに構築します。キーとノードの識別情報はこのMacに残ります。ノードの同期中もウォレットは使えます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이곳에서 블록 데이터를 새로 쌓아요. 키와 노드 신원은 이 Mac에 그대로 남아요. 노드가 동기화되는 동안에도 지갑을 사용할 수 있어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "区块数据会在这里从头重建。密钥和节点身份仍留在此 Mac 上。节点同步期间，钱包仍可使用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "區塊資料會在這裡從頭重建。金鑰與節點身分仍留在此 Mac。節點同步期間，錢包仍可使用。"
+          }
+        }
+      }
+    },
     "Block explorer" : {
       "localizations" : {
         "en" : {
@@ -5399,6 +5469,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "候選 · 已連線 %llu 小時，共 %llu 小時"
+          }
+        }
+      }
+    },
+    "Cannot move back to default: the internal disk has %@ free; %@ is needed to start fresh." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cannot move back to default: the internal disk has %@ free; %@ is needed to start fresh."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "デフォルトの保存先に戻せません。内蔵ディスクの空き容量は%@ですが、新たに開始するには%@が必要です。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "기본 위치로 돌아갈 수 없어요. 내장 디스크의 여유 공간은 %@이고 새로 시작하려면 %@이 필요해요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法移回默认位置：内置磁盘可用空间为 %@；从头开始需要 %@。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法移回預設位置：內建磁碟的可用空間為 %@；重新開始需要 %@。"
           }
         }
       }
@@ -6938,41 +7043,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在複製並確認 · %lld%%"
-          }
-        }
-      }
-    },
-    "Copying and checking · %lld%% · %@ / %@" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Copying and checking · %lld%% · %@ / %@"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "コピーして確認中 · %lld%% · %@ / %@"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "옮기고 확인하는 중 · %lld%% · %@ / %@"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "正在复制并检查 · %lld%% · %@ / %@"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "正在複製並確認 · %lld%% · %@ / %@"
           }
         }
       }
@@ -9752,6 +9822,41 @@
         }
       }
     },
+    "In archive mode, the extra history is rebuilt from peers and era files over time." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In archive mode, the extra history is rebuilt from peers and era files over time."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アーカイブモードでは、追加の履歴をピアと履歴区間ファイルから時間をかけて再構築します。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "아카이브 모드에서는 추가 기록을 피어와 구간 기록 파일에서 차츰 다시 쌓아요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在存档模式下，额外的历史记录会逐步从对等节点和分段历史文件重建。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在封存模式下，額外的歷史紀錄會逐步從對等節點與分段歷史檔案重建。"
+          }
+        }
+      }
+    },
     "Install Command-Line Tools…" : {
       "localizations" : {
         "en" : {
@@ -11706,41 +11811,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "上移"
-          }
-        }
-      }
-    },
-    "Moving block data · %@%%" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Moving block data · %@%%"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ブロックデータを移動中 · %@%%"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "블록 데이터 옮기는 중 · %@%%"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "正在移动区块数据 · %@%%"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "正在移動區塊資料 · %@%%"
           }
         }
       }
@@ -13972,40 +14042,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "僅在您刻意移轉此 Mac 的節點時繼續。在兩台 Mac 上使用相同金鑰執行節點，會導致驗證者遭到罰沒。"
-          }
-        }
-      }
-    },
-    "Only the block data moves; the keys and the node's identity stay on this Mac. APFS or Mac OS Extended disks only." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Only the block data moves; the keys and the node's identity stay on this Mac. APFS or Mac OS Extended disks only."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "移動するのはブロックデータだけです。キーとノードの識別情報はこのMacに残ります。APFSまたはMac OS拡張形式のディスクのみ使えます。"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "블록 데이터만 옮겨요. 키와 노드 신원은 이 Mac에 그대로 남아요. APFS 또는 Mac OS 확장 형식의 디스크만 쓸 수 있어요."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "只移动区块数据，密钥和节点身份仍留在此 Mac 上。仅支持 APFS 或 Mac OS Extended 磁盘。"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "只移動區塊資料，金鑰與節點身分會留在此 Mac。僅支援 APFS 或 Mac OS 擴充格式的磁碟。"
           }
         }
       }
@@ -19766,6 +19802,76 @@
         }
       }
     },
+    "Start Fresh" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start Fresh"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新たに開始"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "새로 시작"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新开始"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新開始"
+          }
+        }
+      }
+    },
+    "Start fresh at the new place?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start fresh at the new place?"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新しい場所で新たに開始しますか？"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "새 위치에서 새로 시작할까요?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要在新位置重新开始吗？"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要在新位置重新開始嗎？"
+          }
+        }
+      }
+    },
     "Start recovery" : {
       "localizations" : {
         "en" : {
@@ -19796,6 +19902,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "開始復原"
+          }
+        }
+      }
+    },
+    "Starting fresh at the new place · syncing (height %@ / %@)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starting fresh at the new place · syncing (height %@ / %@)"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新しい場所で新たに開始 · 同期中（ブロック高 %@ / %@）"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "새 위치에서 새로 시작 · 동기화 중 (블록 높이 %@ / %@)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在新位置重新开始 · 正在同步（区块高度 %@ / %@）"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在新位置重新開始 · 同步中（區塊高度 %@ / %@）"
           }
         }
       }
@@ -20834,41 +20975,6 @@
         }
       }
     },
-    "The block data is being copied and checked at its new place. The wallet keeps working." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The block data is being copied and checked at its new place. The wallet keeps working."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ブロックデータを新しい保存先へコピーして確認しています。その間もウォレットは使えます。"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "블록 데이터를 새 위치로 복사하고 확인하는 중이에요. 지갑은 그동안에도 써요."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "正在将区块数据复制到新位置并检查，钱包仍可使用。"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "正在將區塊資料複製至新位置並確認，錢包仍可使用。"
-          }
-        }
-      }
-    },
     "The block data is on an external disk, so after a restart the node starts when the app opens." : {
       "localizations" : {
         "en" : {
@@ -20972,36 +21078,37 @@
         }
       }
     },
-    "The block-data move record could not be read. Keep both copies and retry after reconnecting the disk." : {
+    "The block-data location record could not be read. Reconnect the disk and try again; existing data will be kept." : {
+      "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The block-data move record could not be read. Keep both copies and retry after reconnecting the disk."
+            "value" : "The block-data location record could not be read. Reconnect the disk and try again; existing data will be kept."
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "ブロックデータの移動記録を読み取れませんでした。両方のコピーを保管し、ディスクを接続し直してから再試行してください。"
+            "value" : "ブロックデータの保存先の記録を読み取れませんでした。ディスクを接続し直してから再試行してください。既存のデータは保持されます。"
           }
         },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "블록 데이터 이동 기록을 읽을 수 없어요. 두 사본을 모두 보관하고 디스크를 다시 연결한 뒤 재시도하세요."
+            "value" : "블록 데이터 위치 기록을 읽을 수 없어요. 디스크를 다시 연결한 뒤 재시도하세요. 기존 데이터는 보관해요."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法读取区块数据的移动记录。请保留两个副本，重新连接磁盘后再试。"
+            "value" : "无法读取区块数据的位置记录。请重新连接磁盘后再试；现有数据会保留。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "無法讀取區塊資料的移動記錄。請保留兩份副本，重新連接磁碟後再試。"
+            "value" : "無法讀取區塊資料的位置紀錄。請重新連接磁碟後再試；現有資料會保留。"
           }
         }
       }
@@ -21384,40 +21491,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已移轉的 EastSea 節點資料無法使用。請重新連接磁碟或復原目標位置。舊的復原副本未被更動。"
-          }
-        }
-      }
-    },
-    "The move did not complete: the copy did not verify or space ran out. The block data is still where it was." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The move did not complete: the copy did not verify or space ran out. The block data is still where it was."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "移動は完了しませんでした。コピーが一致しないか、空き容量が不足しています。ブロックデータは元の場所に残っています。"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "옮기지 못했어요. 복사한 내용이 원본과 맞지 않거나 공간이 모자라요. 블록 데이터는 원래 자리에 그대로 있어요."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "移动未完成：副本未通过验证，或空间已用尽。区块数据仍在原处。"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "移動未完成，可能是複製驗證失敗或空間不足。區塊資料仍在原來的位置。"
           }
         }
       }
@@ -22186,6 +22259,41 @@
         }
       }
     },
+    "The new location could not be saved. The block data is still where it was." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The new location could not be saved. The block data is still where it was."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新しい保存先を保存できませんでした。ブロックデータは元の場所にあります。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "새 위치를 저장하지 못했어요. 블록 데이터는 원래 위치에 그대로 있어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存新位置。区块数据仍在原来的位置。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法儲存新位置。區塊資料仍在原來的位置。"
+          }
+        }
+      }
+    },
     "The node cannot open its storage. Check the disk, then turn the node on again." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -22808,41 +22916,6 @@
         }
       }
     },
-    "The node starts after the block data move." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The node starts by itself when it is done."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "完了すると、ノードが自動で起動します。"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "다 옮기면 저절로 시작해요."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "完成后，节点会自行启动。"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "完成後，節點會自動啟動。"
-          }
-        }
-      }
-    },
     "The node starts by itself when it is done." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -22944,6 +23017,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "節點會在 30 秒內自動啟動。"
+          }
+        }
+      }
+    },
+    "The node starts empty here and syncs from the network. The old block data is deleted only after the new node answers and follows a certified block. Your keys, identity and settings stay on this Mac. The wallet keeps working while it syncs." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The node starts empty here and syncs from the network. The old block data is deleted only after the new node answers and follows a certified block. Your keys, identity and settings stay on this Mac. The wallet keeps working while it syncs."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ノードはこの場所で空の状態から起動し、ネットワークから同期します。新しいノードが応答し、認証済みブロックを1つ取り込んだ後にだけ、古いブロックデータを削除します。キー、識別情報、設定はこのMacに残ります。同期中もウォレットは使えます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "노드가 이곳에서 빈 상태로 시작해 네트워크에서 동기화해요. 새 노드가 응답하고 인증된 블록을 하나 이어 받은 뒤에만 이전 블록 데이터를 지워요. 키와 신원 정보, 설정은 이 Mac에 그대로 남아요. 동기화 중에도 지갑을 사용할 수 있어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "节点会在这里从空数据开始启动，并从网络同步。只有在新节点响应并同步了一个经过认证的区块后，才会删除旧区块数据。密钥、身份和设置仍留在此 Mac 上。同步期间，钱包仍可使用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "節點會在這裡從空資料開始啟動，並從網路同步。只有在新節點回應並同步了一個通過認證的區塊後，才會刪除舊區塊資料。金鑰、身分與設定仍留在此 Mac。同步期間，錢包仍可使用。"
           }
         }
       }
@@ -23257,6 +23365,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "新舊資料夾位於同一處，請選擇獨立的資料夾後重新開啟應用程式。"
+          }
+        }
+      }
+    },
+    "The old block data is deleted after the new node answers and follows a certified block." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The old block data is deleted after the new node answers and follows a certified block."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新しいノードが応答し、認証済みブロックを1つ取り込んだ後に、古いブロックデータを削除します。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "새 노드가 응답하고 인증된 블록을 하나 이어 받은 뒤에 이전 블록 데이터를 지워요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新节点响应并同步了一个经过认证的区块后，才会删除旧区块数据。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新節點回應並同步了一個通過認證的區塊後，才會刪除舊區塊資料。"
           }
         }
       }
@@ -28330,6 +28473,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在執行"
+          }
+        }
+      }
+    },
+    "Wait until the node has answered and followed a block at the new location before changing it again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wait until the node has answered and followed a block at the new location before changing it again."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新しい保存先でノードが応答し、ブロックを1つ取り込んでから、再び保存先を変更してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "새 위치의 노드가 응답하고 블록을 하나 이어 받을 때까지 기다린 뒤에 위치를 다시 바꾸세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请等待节点在新位置响应并同步了一个区块后，再次更改位置。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請等待節點在新位置回應並同步了一個區塊後，再次變更位置。"
           }
         }
       }

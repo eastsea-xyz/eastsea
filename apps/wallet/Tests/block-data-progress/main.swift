@@ -1,4 +1,4 @@
-// Standalone, real-I/O coverage for streamed block-data moves. Fixtures live
+// Standalone, real-I/O coverage for DataMigration's retained streaming copy. Fixtures live
 // under the test runner's repository tmp root; no app or node is started.
 import Foundation
 #if canImport(Darwin)

@@ -136,17 +136,17 @@ final class NodeController: ObservableObject {
     /// 블록 데이터 위치 (`BlockDataLocation`): the node's `--chain-data`
     /// folder on a disk the person picked; empty = the default (the node's
     /// data folder, internal disk). Changed only by `moveBlockData`, which
-    /// copies and verifies first.
+    /// saves the fresh-start selection durably before restarting.
     @AppStorage("nodeChainDataPath") var chainDataPath = ""
     /// 전체 기록 보관 (아카이브): run the follower as an archive (replays from
     /// genesis, never jumps, keeps the full history). Applies on restart.
     @AppStorage("nodeArchive") var archive = false {
         didSet { if archive != oldValue { restartIfRunning(); unattended?.syncMarker() } }
     }
-    /// The block data is moving (0…100), or nil.
-    @Published var storageMovePercent: Int?
-    @Published var storageMoveBytesDone: UInt64 = 0
-    @Published var storageMoveBytesTotal: UInt64 = 0
+    /// Only the short shutdown/journal phase holds the startup gate.
+    @Published var storageMovePreparing = false
+    /// A fresh node syncs normally; the wallet uses the network meanwhile.
+    @Published var storageMoveSync: BlockDataMove.Progress?
     var storageMoveCleanup: Task<Void, Never>?
     /// The last move's failure, in the person's words, until the next try.
     @Published var storageMoveError: String?
@@ -294,11 +294,12 @@ final class NodeController: ObservableObject {
             if let root = try BlockDataMove.authoritativeRoot(in: Self.dataDir) {
                 chainDataPath = root.path == BlockDataLocation.resolvedRoot(Self.dataDir).path ? "" : root.path
             }
+            if try BlockDataMove.pending(in: Self.dataDir) { storageMoveSync = BlockDataMove.Progress() }
         } catch {
             // An unreadable transaction record must never select an older
             // preference and start writing a second chain store.
-            storageMoveError = String(localized: "The block-data move record could not be read. Keep both copies and retry after reconnecting the disk.")
-            storageMovePercent = 0
+            storageMoveError = String(localized: "The block-data location record could not be read. Reconnect the disk and try again; existing data will be kept.")
+            storageMovePreparing = true
         }
         payoutSubscription = AccountStore.wallet().payoutAddressPublisher.removeDuplicates().dropFirst().sink { [weak self] address in
             guard let self, !address.isEmpty else { return }
@@ -329,7 +330,7 @@ final class NodeController: ObservableObject {
 
     func prepareForUpdate() async -> Bool {
         guard !updateInProgress else { return updateRunLock != nil }
-        guard storageMovePercent == nil else { return false }
+        guard !storageMovePreparing else { return false }
         updatePreparationGeneration &+= 1
         let generation = updatePreparationGeneration
         updateInProgress = true
@@ -460,7 +461,7 @@ final class NodeController: ObservableObject {
     /// on with no node and no reason (the founder's 0.7.0 report).
     func applyPower() {
         guard !updateInProgress else { return }
-        if storageMovePercent != nil {
+        if storageMovePreparing {
             refreshStopReason()
             return
         }
@@ -633,7 +634,7 @@ final class NodeController: ObservableObject {
         f.hasBinary = binary != nil
         f.migrating = DataMigration.Runner.shared.isRunning
         f.migrationGate = f.migrating ? nil : DataMigration.mayStartNode()
-        f.movingStoragePercent = storageMovePercent
+        f.preparingStorage = storageMovePreparing
         f.processRunning = process != nil
         f.confirmingMac = confirmingMac
         f.attached = attached
@@ -677,6 +678,8 @@ final class NodeController: ObservableObject {
                 let f = facts ?? resumeFacts()
                 facts = f
                 reason = .diskFull(freeBytes: f.freeBytes ?? 0, resumeBytes: NodeResume.resumeBytes, volume: f.volumeName)
+            } else if let progress = storageMoveSync {
+                reason = .startingStorage(height: progress.height, target: progress.target)
             } else {
                 reason = nil
             }
@@ -920,7 +923,7 @@ final class NodeController: ObservableObject {
     }
 
     func start() {
-        guard !updateInProgress, storageMovePercent == nil else { return }
+        guard !updateInProgress, !storageMovePreparing else { return }
         runningReleaseVerified = false
         #if WALLET_SCREENS
         // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
@@ -985,7 +988,7 @@ final class NodeController: ObservableObject {
             p.environment = env
         }
         // The replacement node must not wait for log space on the old full
-        // disk before it can answer and confirm the verified move.
+        // disk before it can answer and confirm the fresh start.
         let log = chainRoot.appendingPathComponent("node.log")
         FileManager.default.createFile(atPath: log.path, contents: nil)
         let logHandle = (try? FileHandle(forWritingTo: log)) ?? FileHandle.nullDevice
@@ -1439,7 +1442,7 @@ final class NodeController: ObservableObject {
     private var checkInFlight = false
 
     private func restartIfRunning() {
-        guard !updateInProgress, storageMovePercent == nil else { return }
+        guard !updateInProgress, !storageMovePreparing else { return }
         if attached {
             // A stall in the node we are attached to: take it over. The
             // watchdog's layer-2 rule applies no matter who started the node
@@ -1652,6 +1655,7 @@ final class NodeController: ObservableObject {
         let monitoredPID = process?.processIdentifier ?? unattended?.runningNodePID
         let requestedAt = clock.now
         let expected = Self.helperBinaryURL
+        let confirmingStorage = storageMoveSync != nil
         Task.detached {
             // One reading of the local node covers all three feeds: its
             // height, its stage-wise activity counter (red team #2), and —
@@ -1665,6 +1669,20 @@ final class NodeController: ObservableObject {
             let releaseMatches = sample.map { NodeReleaseIdentity.hasWriterLease(status: $0.value) } ?? false
             let status = releaseMatches ? sample?.value as? [String: Any] : nil
             let statusHeight = (status?["height"] as? NSNumber)?.uint64Value
+            // An installed snapshot has no locally followed certificate at
+            // its height. Ask this same attested process for the head's
+            // certificate; no old store or remote fallback can confirm it.
+            let certifiedHeight: UInt64?
+            if confirmingStorage, let height = statusHeight, height > 0,
+               let pid = monitoredPID, let expected,
+               let proofReply = await LocalRPC.callVerified(rootPID: pid, port: port, expected: expected,
+                    method: "aether_getFinalized", params: [height]),
+               let proof = proofReply.value as? [String: Any],
+               (proof["height"] as? NSNumber)?.uint64Value == height,
+               let block = proof["block"] as? String, !block.isEmpty,
+               let certificate = proof["finalization"] as? String, !certificate.isEmpty {
+                certifiedHeight = height
+            } else { certifiedHeight = nil }
             let local = statusHeight ?? localNodeHeight(port: port)
             // The network's height stays in the picture after the switch too
             // (red team #17): the wallet's own multi-source verified view,
@@ -1699,12 +1717,16 @@ final class NodeController: ObservableObject {
                 if self.rpcAnswering != answered { self.rpcAnswering = answered }
                 if answered, !self.answeredSinceStart {
                     self.answeredSinceStart = true
-                    // The node answered from its (new) block-data place:
-                    // only now may the old copy of a move go.
-                    if self.process != nil { self.finishBlockDataMove() }
                 }
+                let behind = (status?["behind"] as? NSNumber)?.uint64Value ?? 0
+                let (tip, overflow) = (statusHeight ?? 0).addingReportingOverflow(behind)
+                self.finishBlockDataMove(answered: answered, height: statusHeight, certifiedHeight: certifiedHeight,
+                                         networkHeight: network ?? (overflow ? UInt64.max : tip))
+                self.refreshStopReason()
                 if let mine = (status?["node_protocol"] as? NSNumber)?.uint64Value { self.nodeProtocol = mine }
-                let route = self.watchdog.useLocalNode(
+                // Keep wallet reads on the public/p2p path throughout this
+                // fresh sync, even when the remote height cannot answer.
+                let route = self.storageMoveSync != nil ? NodeWatchdog.Route.remote : self.watchdog.useLocalNode(
                     local: statusHeight, network: network,
                     responsive: status != nil, currentlyLocal: self.switched,
                     at: self.clock.now)

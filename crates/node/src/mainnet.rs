@@ -1857,6 +1857,9 @@ mod tests {
         assert_eq!(historical.state.code_hash(&MULTICALL3), MULTICALL3_CODE_HASH);
         assert!(historical.state.code(&PERMIT2).is_empty());
         assert!(aether_execution::predeploys::installed(|a| historical.state.code(a)));
+        // Frozen fixture pins captured against released production at e900960.
+        assert_eq!(historical.state.root().to_string(), "0x907a1724ed2122a0df608a0d0cadfea69286af7cb5603cead4ba5b0de92fa1f3");
+        assert_eq!(hex::encode(genesis.digest().as_ref()), "f002bc1a5dc7b9e4f45ce310a455bd5a0569731d388ccc15820d0139b0507869");
         // The new implementation can run protocol 4, but a cold participant
         // must still use the original protocol-3 genesis facts and root.
         assert!(cold.lock().protocol >= 4);

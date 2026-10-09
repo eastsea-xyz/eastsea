@@ -9,10 +9,10 @@ Can ordinary Macs run and prove a public network with no owner? EastSea tests
 this question using a drawn Simplex BFT committee, threshold BLS certificates,
 and asynchronous execution proofs generated with Jolt and Akita on Metal.
 Followers check certificates; new nodes can install certified snapshots.
-History is compressed into eras and can be pruned. Published issuance rules
+History is compressed into eras and can be pruned. Issuance rules
 divide rewards between node participation and proving, with address-based
 operator caps. The experiment is early and unproven. Its current network is
-a testnet, proof coverage is incomplete, and admission and software updates
+a testnet, proof coverage is incomplete, and voting admission and software updates
 retain operating authorities. We describe the implementation, branch proposals,
 measurements, fault assumptions, and compromises. We ask readers to run nodes,
 review the code, challenge the assumptions, and contribute measurements.
@@ -50,6 +50,13 @@ testnet 7780; its balances do not transfer to mainnet. An old README status
 table and several design sketches predate the code. Where they disagree, we
 identify the boundary instead of treating the sketch as a result. [R1] [R2] [R31]
 
+Public reading and source access coexist with permissioned voting admission.
+Founder reserve keys can hold a bootstrap quorum; independent operation is an
+objective, not a present guarantee. This is an infrastructure experiment.
+The paper does not yet establish external application demand or show that its
+use cases require a new L1 rather than an existing network or a simpler service.
+[R17] [R19] [R50] [R65]
+
 ## 2. Network and execution
 
 EastSea separates candidate Macs, seated voting nodes, followers, provers,
@@ -65,7 +72,9 @@ contains addresses, not block archives. Encryption protects the transport;
 it does not hide a node's IP address from its peers. Initial peer identifiers
 and the committee identity come from network configuration. Signed address
 records authenticate a publisher, not an independent path to the latest
-chain. [R2] [R36]
+chain. A remote reader can also observe the wallet addresses requested.
+Public registration and beacon records can link a node's identities and
+participation schedule. [R2] [R19] [R36]
 
 Voting nodes execute a proposed block before accepting it. The executor uses
 revm, verifies the block access list and gas, and computes state updates.
@@ -106,6 +115,13 @@ The intended fault model is at most `f` Byzantine seats and eventual network
 synchrony. Votes must also follow the application rules and preserve their
 safety journals across restarts. [R4] [R5] [R6] [R38]
 
+Honest signers must preserve non-rollback voting history as well as their
+shares. The journal guards refuse voting when local evidence indicates lost
+safety state; they do not establish detection of a complete old backup restored
+with its keys and markers. Refusal reduces available seats. Recovery through a
+fresh sharing still requires the old quorum; permanent loss of that quorum
+has no automatic recovery path under the existing trust anchor. [R6] [R30] [R63]
+
 A dealerless distributed key-generation ceremony creates the initial group
 identity. Resharing changes the holders of shares while retaining that identity.
 A client can therefore check certificates with one configured group key.
@@ -122,7 +138,10 @@ and signs the registration. The on-chain registry checks that signature;
 it does not independently contact Apple. Reattestation is also required.
 The operating policy seeks one candidate per Mac. DeviceCheck does not prove
 one person per operator address, nor cryptographically bind every future
-vote to the originally checked physical Mac. [R19] [R20] [R39]
+vote to the originally checked physical Mac. Reattestation checks a registered
+genuine device and possession of the voting key, not original-device identity.
+Its in-memory key/token-hash rate accounting is not a persistent physical-device
+identity. [R19] [R20] [R39]
 
 For a draw, the committee signs a domain-separated message containing the
 chain identifier and draw number. The eligible pool freezes from prior state
@@ -131,7 +150,10 @@ key. This is not the unused uptime-weighted VRF-selection sketch in the
 older consensus document. Protocol 3 combines those tickets with on-chain
 availability observations: greedy candidate selection improves the predicted
 worst-hour probability of retaining a quorum. Ticket order breaks ties.
-Thus the implemented selection is not a uniform lottery over people. [R4] [R5] [R12] [R40]
+Thus the implemented selection is not a uniform lottery over people. A unique
+threshold signature fixes the seed for that message; it does not guarantee
+timely publication or prevent a threshold coalition from evaluating it early.
+Succession still requires committee cooperation. [R4] [R5] [R12] [R40]
 
 New-genesis registry-v3 eligibility includes registration age, recent beacon
 stability, absence of unannounced low participation, availability at the draw
@@ -140,7 +162,7 @@ hour, and no departure announcement. Defaults use 3,600-block epochs and
 cadence; the actual rules count blocks. A candidate's availability profile is
 a model fitted to past participation, not a guarantee of future uptime. [R5] [R18] [R19]
 
-### 3.3 Growth and launch ceiling
+### 3.3 Growth and launch target
 
 Below the configured ceiling, protocol 3 adds eligible seats rather than
 performing the normal replacement draw. Each draw's addition or replacement
@@ -150,12 +172,14 @@ seat cap is expressed per registration address, separately from the issuance
 cap. The older “always draw a quarter of the pool” description omits the
 protocol-3 growth and availability rules. [R4] [R5] [R12]
 
-This paper adopts **16 as the proposed launch ceiling**, following the
-committee-scale recommendation. The new-genesis configuration already defaults
-to 16 and permits explicit ceilings from 4 to 128. The implementation's global
-128-seat bound has not been changed by this paper. The measurement report also
-changes no production rule. Launching with this recommendation requires the
-published genesis configuration to enforce it. [R5] [R29] [R31] [R32] [R41]
+This paper adopts **16 active seats as the proposed launch performance target**,
+following the committee-scale recommendation. New-genesis configuration
+defaults to 16 for genesis and the ordinary draw and accepts configured values
+from 4 to 128. The subsequent reserve override does not enforce that inclusive
+ceiling in this revision. Before presenting 16 as a maximum for all active
+rosters, the implementation must enforce it across reserve seating and handoff,
+or publish measurements and a policy for larger reserve-augmented rosters.
+The measurement report changes no production rule. [R5] [R12] [R29] [R31] [R32] [R41]
 
 The measured reason is upload demand. In a regional-link simulation with
 20 Mbps shared upload per validator and approximately 50 KB payloads, 16
@@ -182,10 +206,16 @@ The packaged prover embeds a RISC-V guest ELF. Jolt executes that guest, and
 Akita supplies the proving backend, with Metal kernels enabled by default.
 The source pins both forks and their archive hashes. CPU Akita is an
 alternative backend, not evidence of a hardware-neutral admission policy.
-The verifier and prover must agree on the guest program's SHA-256 identity;
-running the packaged sidecar requires no compiler. Public setup matrices are
-seed-derived, with verifier prefixes embedded and checked by repository
-tests. None of this amounts to an independent audit of the backend. [R10] [R13] [R42]
+Release nodes compile in the accepted guest ELF's SHA-256 identity and compare
+it with the sidecar's reported identity; unpinned development builds are
+unsuitable for deployment. This is a release-local pin, not a height-indexed
+program commitment. Program changes require coordinated validator acceptance,
+and historical program dispatch remains unfinished. Running the packaged
+sidecar requires no compiler. The fork derives public setup matrices from
+seeds and contains tests comparing embedded verifier prefixes with rederived
+values. These checks address setup consistency, not overall soundness. The
+deployed backend has no independent audit or published deployment-specific
+soundness analysis. [R10] [R13] [R42] [R44] [R45]
 
 The guest reconstructs a state witness, checks its pre-root, executes the
 transactions, and commits the block context, transaction hashes, pre/post
@@ -194,7 +224,9 @@ The pre-state is **after system writes**. Current block proofs therefore do
 not establish the correctness of reward issuance, proof payouts, registrar
 rotation, or committee changes. Voting nodes verify those rules by
 reexecution. Receipt commitments are also checked by the committee rather
-than included in the current guest statement. [R11] [R12] [R37] [R43]
+than included in the current guest statement. This is a transaction-execution
+argument from an authenticated intermediate state, not a proof of full-chain
+validity from genesis. [R11] [R12] [R37] [R43]
 
 Proof work is assigned locally. A prover chooses the oldest eligible unproved
 block among 32 recent finalized blocks whose required pre-state is available.
@@ -209,16 +241,18 @@ The implemented whole-block market pays the first valid, unclaimed proof
 against a statement recorded in state. A claim expires after the 30-day
 height window; a block can include at most two proof claims, each no more
 than 128 KiB. Address binding prevents another address from copying a proof
-to redirect its payment. Verification failure or an unavailable verification
-sidecar prevents that validator from accepting the proof-bearing proposal.
-It does not make all other blocks wait for proving. [R11] [R12] [R43]
+to redirect its payment. An invalid proof makes the proposal unacceptable.
+A persistent verifier outage stops the affected validator for supervised
+recovery, which can reduce the available quorum. Finality does not require
+generating proofs for every earlier block. [R11] [R12] [R43] [R44] [R51]
 
 “Every block is proved” is the intended coverage question, not today's
 guarantee. History-v2 blocks with neither transactions nor proof claims create
 no proving statement and no proof reward, even when they carry other system
 work. Other statements may remain unproved because of capacity, failure,
 eviction from the local work window, or expiry. Followers do not independently
-reverify these execution proofs, and wallet block-proof verification is not
+reverify these execution proofs: certified replay deliberately trusts the
+committee's acceptance of them. Wallet block-proof verification is not
 implemented. The current prove-gas meter also omits significant guest costs;
 execution admission does not prove that every admitted workload fits the
 guest trace bound. [R9] [R12] [R14] [R45]
@@ -240,7 +274,9 @@ completeness, handoff, and draw seed before installation. A manifest hash
 protects download integrity; authenticity comes from the certified commitments,
 not from a server hashing its own file. This skips replay before `H`; it is
 a certified snapshot, not a proof of execution from genesis. Archive nodes
-retain the replay path. [R7] [R8]
+can retain the replay path. Replay from genesis remains possible only while
+the required historical bytes are available from local storage or reachable
+holders; no published retention result establishes that guarantee. [R7] [R8] [R47]
 
 History v2 seals 8,192-block eras. Delta and dictionary encoding compress
 headers, and zstd compresses bodies. Every decoded block is reconstructed
@@ -313,13 +349,17 @@ on mainnet or an independent audit. [R12] [R26] [R50]
 
 Agent accounts use a device-local Secure Enclave key with an owner-authorized
 session. The account contract checks payment caps, allowed recipients, expiry,
-and replay state. The owner changes policy with Touch ID. Payments start
-disabled until a payee is approved; token permissions depend on new-genesis
-account code. A deceived agent can still spend within its valid permissions.
-Revocation cannot undo an already submitted transaction. Hardware key
-nonexportability does not establish the intent or safety of the software
+and replay state. The owner changes policy with Touch ID or the login password.
+Payments start disabled until a payee is approved; token permissions depend
+on new-genesis account code. A deceived agent can still spend within its valid permissions.
+Revocation takes effect when its transaction is finalized; it cannot undo an
+already finalized payment, and a pending payment can win the ordering race.
+Hardware key nonexportability does not establish the intent or safety of the software
 requesting a signature. Pipln does not custody the user's account keys or
-funds. [R1] [R2] [R27] [R28]
+funds. Consensus identity seeds and BLS shares instead live in owner-only
+files and are exportable. The Mac-binding guard is a local software control,
+not a nonexportable consensus key or an on-chain hardware proof.
+[R1] [R2] [R27] [R28] [R41] [R62]
 
 ## 7. Issuance and early operating authorities
 
@@ -331,7 +371,10 @@ rules; sixteen operators are **not** a condition for issuance to begin.
 Node distributions occur at epoch boundaries and proof rewards require
 accepted claims, so “from block 1” does not mean every reward is transferred
 in that block. The public testnet has a different funded genesis and reward
-path and is not evidence of the mainnet allocation. [R1] [R17] [R29] [R51]
+path and is not evidence of the mainnet allocation. These rules describe
+genesis allocation, not evidence of equitable later distribution or economic
+demand. Early participation and reserve credit can still concentrate rewards,
+and no monetary value or liquidity is promised. [R1] [R17] [R29] [R51]
 
 For `h ≥ 1`, let `I(h)` be the maximum scheduled issuance; genesis issues
 nothing. In base units
@@ -393,8 +436,10 @@ seating, not proof that each reserve key actually voted. Unnecessary reserve
 service credit stops after the documented grace epochs. [R17] [R18]
 
 Older operational notes say reserves fill missing seats below four independent
-operators and leave when four qualify. The current policy is broader: it
-also permits their return when modeled worst-hour quorum availability falls
+operators and leave when four qualify. The implementation counts distinct
+registration addresses; independent human control is not established.
+The current policy is broader: it also permits their return when modeled
+worst-hour quorum availability falls
 below 0.99, retaining current seating in the 0.99–0.995 band and allowing
 departure at 0.995 or above. These are model thresholds, not measurements
 of independence. The keys are correlated on one Mac. Three reserves in a
@@ -410,8 +455,10 @@ create a committee certificate, choose an arbitrary draw result, transfer
 an account balance, or change issuance rules. It can deny attestations,
 and a compromised service can feed admitted candidates over time. The
 registration rate cap limits speed, not eventual control of admission.
-Apple or registrar refusal can affect existing candidates after their
-reattestation grace, not just new entrants. [R19] [R20] [R39]
+Apple or registrar refusal can prevent existing candidates from supplying
+required reattestations after their grace, affecting accepted liveness beacons
+and future draw eligibility. It does not erase their registrations or directly
+stop current committee votes. [R5] [R18] [R19] [R20] [R39]
 
 The committee can rotate or zero the registrar through an authorized upgrade.
 Normal notice is 604,800 blocks. The emergency path requires the threshold
@@ -419,7 +466,10 @@ certificate plus `n − f` current-member Ed25519 approvals and one epoch's
 notice. These mechanisms depend on a functioning quorum. Secure Enclave
 registrar signing is an available launch configuration; disk-file signing
 also exists for development. Source support is not proof of a particular
-production key deployment. [R20] [R21]
+production key deployment. The registrar's unattended signer protects key
+nonexportability, while attestation policy remains in its caller. Production
+controller independence, signer isolation and rotation/recovery drills have
+not been established by these source checks. [R20] [R21] [R54] [R61]
 
 Distribution uses Pipln's Developer ID, notarization, and Sparkle, because
 users need an installable and maintainable Mac application. The new-genesis
@@ -427,8 +477,12 @@ release gate adds a pinned append-only ReleaseLog and three builder keys:
 ordinary releases need two signatures and 72 certified hours; emergency
 releases need all three and omit the wait. Publishing a log entry is
 permissionless and is not approval. The app verifies log state and code,
-archive hash, and the release signatures. The legacy testnet update path
-remains Sparkle-only, despite a design proposing the stronger gate there.
+archive hash, and the release signatures. The pins come from the installed app,
+so first installation remains a distribution trust assumption. Without usable
+certified network state, the automatic update gate defers installation; an
+emergency manual replacement needs independent artifact authentication.
+The legacy testnet update path remains Sparkle-only, despite a design proposing
+the stronger gate there.
 [R21] [R22] [R53]
 
 App approval and consensus-rule approval are distinct. Pipln's distribution
@@ -436,9 +490,13 @@ key alone cannot satisfy the new-genesis builder gate. Sufficient release
 signers can nevertheless distribute replacement wallet and bundled-node
 code, including future changes to client trust rules. That is a software
 supply-chain authority, not harmless metadata. Distinct keys do not prove
-independent human controllers. Under the current rules, the registrar alone
-cannot change consensus or issuance; changing those rules requires the
-committee upgrade path and matching software. [R21] [R22] [R54]
+independent human controllers. Under the current cooperating-client rules, the
+registrar alone cannot authorize a protocol upgrade. Declared upgrades require
+committee approval and matching software; unsupported clients refuse the
+activated protocol. This does not prove software semantics or prevent a buggy
+same-version release from causing disagreement. Insufficiently coordinated
+installation can also remove the voting quorum at activation. Keeping an older
+binary does not guarantee continued compatibility. [R21] [R22] [R54]
 
 The founder's position is **no forced sunset** for registrar or update keys.
 They exist for operating functions the current system needs. Their replacement
@@ -463,15 +521,19 @@ durable journals, sound cryptography, and the intended share-holding epoch.
 At 16 seats, `f = 5` and `q = 11`. The deterministic fault bound counts
 simultaneously faulty seats, not people. Shared power, connectivity, operator
 control, Apple service, software, and reserve hardware create correlated
-failure. The availability draw estimates quorum odds from observed profiles;
-it does not prove the correlations used in those estimates; correlated
-failures can exceed the fault bound. [R5] [R32]
+failure. Ordinary-seat quorum probabilities use an independence model;
+reserves are modeled as one correlated Mac. There is no measured general
+correlation model for ordinary operators. Correlated failures can exceed
+the fault bound. [R5] [R32]
 
-Resharing retains the committee identity. Protecting and retiring old shares
-is therefore part of the threat model: a valid signature under a stable key
-does not by itself prove that the currently intended roster produced it.
-Implementation and operational review of reshare transcripts, readiness,
-share handling, and journal recovery remains necessary. [R4] [R6] [R40]
+Resharing retains the committee identity; it does not cryptographically revoke
+retained shares from an earlier sharing. Safety also assumes that an adversary
+cannot obtain a usable quorum from any former sharing. Clients checking only
+the stable group key cannot identify which sharing produced a signature. The
+supervisor replaces active shares and attempts to remove old generation files,
+but these operations do not establish destruction of backup or snapshot copies.
+Historical-share retirement and recovery require independent review.
+[R4] [R6] [R40] [R63]
 
 For a light client, certificates and state proofs prevent an untrusted
 read server from inventing a different answer under the trusted root,
@@ -489,7 +551,8 @@ transition follows the pinned guest, even if committee execution is suspect.
 It does not validate the system writes outside that statement, select the
 canonical history, assure timely inclusion, or recover missing data. This
 assurance applies only where a proof exists and is independently checked;
-today's followers and wallets mostly rely on committee certification.
+Followers and wallets currently trust committee certification of proof
+acceptance; they do not cryptographically verify block proofs themselves.
 The word “ZK” also does not make public transactions private. We make no
 end-to-end post-quantum claim for a network using BLS and conventional
 account signatures. [R9] [R11] [R43] [R46]
@@ -545,8 +608,8 @@ three seconds' warm-up, 120 virtual seconds, and two seeds. [R32] [R34]
 | 16 | 0.671025 | 0.699002 | 0.700559 | 236 | 0/236 |
 | 32 | 0.997110 | 1.023128 | 1.023916 | 236 | 96/238 |
 
-Source: [R32] [R34]. These conditional observations justify testing a 16-seat
-launch ceiling in this envelope. They do not establish long-run failure
+Source: [R32] [R34]. These conditional observations justify testing a 16-active-seat
+performance target in this envelope. They do not establish long-run failure
 rates or physical deployment performance. Two longer 128-seat probes reached
 the harness's 1,200-second wall deadline without results; these are measurement
 failures, not evidence of a consensus stall. [R32]
@@ -554,7 +617,7 @@ failures, not evidence of a consensus stall. [R32]
 ### 9.2 Proving
 
 The sidecar report records **2026-09-27, M1 Max, Metal, machine load average
-25–75**. The sample workloads are not arbitrary contract blocks. [R10]
+25–75**. The sample workloads are P-256 payments, not arbitrary contract blocks. [R10]
 
 | Workload | Condition | Proving time | Proof bytes as reported |
 |---|---|---:|---:|
@@ -576,9 +639,18 @@ benchmark**. It motivates profiling the still CPU-heavy proving path;
 utilisation alone does not measure the fraction of cryptographic work on
 the GPU. [R31]
 
+Resource safeguards do not establish a sustained supported-Mac budget. The
+resource module records a **2026-09-29** incident on a **64 GB Mac**: the prover
+at **14 GB and 350% CPU**, reported system swap **17.5/18.4 GB**, load average
+approximately **1000**, and colocated validators slowing to approximately
+**0.45 blocks/s**. These are source-recorded incident values, not controlled
+telemetry or a current-release benchmark. Candidate-specific memory, swap,
+wall-power, thermal and foreground-impact measurements remain missing. [R64]
+
 ### 9.3 Disk and checkpoint sync
 
-An 8,192-block release-codec experiment with four rotating leaders and
+The history report's **2026-09-28 status section** preserves an 8,192-block
+release-codec experiment with four rotating leaders and
 approximately one-second timestamps with jitter records 1.2 bytes/block
 for an empty history-v2 era and 136 bytes/block for an era with one transfer
 per block. Its run date and hardware are not specified in that table.
@@ -619,7 +691,7 @@ are workable trades today; readers should test the stated reasons.
 |---|---|---|---|---|
 | Hardware neutrality | Apple Silicon Macs and Metal as the supported admission/proving path | One hardware/key platform and working measured proof workloads reduce the initial implementation surface. [R9] [R10] [R19] | Excludes other owners; correlated hardware and vendor failures. | A non-Apple path passes the same execution/proof vectors and publishes comparable memory and proving measurements, plus an admission model. |
 | Distribution independent of a vendor | Developer ID/notarization and Sparkle on Mac; Apple distribution on iPhone; ServiceManagement for unattended operation | Installable software, device keys, and approved background restart use existing platform facilities. [R53] [R57] | Apple policy or service changes can affect installation, updates, and admission. | No replacement promised; a tested installation/restart/admission path must preserve the required key and operating guarantees. |
-| Anyone can vote immediately | Drawn committee with proposed 16-seat launch ceiling | The 20 Mbps, 50 KB boundary simulation separates sixteen from thirty-two under the one-second goal. [R32] | Few seats, selection barriers, and correlations limit the claim of open validation. | Repeated physical-Mac runs with larger committees meet the same payload/upload conditions and deadline, including loss and unavailable-seat cases. |
+| Anyone can vote immediately | Drawn committee with a proposed 16-active-seat performance target; inclusive reserve ceiling remains unfinished | The 20 Mbps, 50 KB boundary simulation separates sixteen from thirty-two under the one-second goal. [R32] | Few seats, selection barriers, and correlations limit the claim of open validation. | Repeated physical-Mac runs with larger committees meet the same payload/upload conditions and deadline, including loss and unavailable-seat cases. |
 | No exceptional voting identities | Up to three founder reserve keys | A small committee can lack sufficient available seats; the implemented policy uses correlated reserves only when the model predicts a useful improvement. [R5] [R52] | One founder Mac can control a bootstrap quorum; modeled need can recur. | Sustained measured availability avoids reseating under the existing model; no permanent disappearance is promised. |
 | Permissionless admission and no publisher authority | Pipln registrar plus distribution and builder-release keys | DeviceCheck needs an off-chain signer; client installation and repair need an authenticated release path. [R19] [R20] [R21] | Admission denial, false admission, and harmful approved software. | **No forced sunset or removal plan.** Reviewable alternatives may be proposed; losing these functions without replacement is not a transition. |
 | Issuance only after a broad operator set exists | Published budgets from block 1, each address capped at 1/16 | The recorded decision rejects waiting for sixteen operators; unallocated budgets remain unissued. [R17] [R31] | Early operators still receive issuance; addresses do not prove human diversity. | No change planned: expose actual allocations and independence limits rather than claim the cap removes the trade. |
@@ -644,7 +716,9 @@ attestation service, key APIs, and distribution facilities. DeviceCheck
 and wallet addresses do not prove operator independence. The committee's
 home-upload limit is established only in simulation, and neither the draw's
 availability model nor the reserve exception removes common-mode failure.
-These are open limits, not solved decentralization claims. [R5] [R19] [R32] [R53]
+These are open limits, not solved decentralization claims. This is a scope
+decision, not evidence that Macs are more efficient or decentralized than
+other hardware. A matched comparison has not been published. [R5] [R19] [R32] [R53]
 
 The prover remains too slow to cover arbitrary traffic at the block cadence.
 Metal support should not be read as GPU dominance. Proof scheduling lacks
@@ -677,7 +751,11 @@ Monitoring failed to expose it for days. The node now encodes the full
 layout and round-trips it before submission. **2026-10-07** build-identity
 work also addressed guest metadata that could change the program identity
 across builds. Pinned inputs, deterministic metadata, and packaging checks
-reduce that risk; guest changes still require coordination. These corrections
+reduce that risk; guest changes still require coordination. The recorded
+cross-Mac result concerns guest identity under matching build inputs and stage
+configuration. Independent reproduction of the current distributed application
+and archive is not established here; signing envelopes, Xcode/SDK selection
+and extension compiler inputs retain separate boundaries. These corrections
 are source and rehearsal evidence, not proof that all future blocks or
 releases work. Testnet recovery and resets are disclosed separately from
 the proposed mainnet's irreversible history. [R30] [R59] [R60]
@@ -700,19 +778,27 @@ do not establish a network without controlling authorities, proof coverage
 of every block, or performance on ordinary home deployments. Those are
 questions for participants to test. [R7] [R9] [R14] [R31] [R32]
 
-Run a node on your Mac and report what breaks. Review the consensus and
-proving assumptions, inspect the code and this paper, and send measurements
-from your own hardware. Include the source revision, Mac model and RAM,
-OS, workload, network conditions, timing definition, and unsuccessful runs.
-Use the repository's local demo or node instructions, and report results
-through its issue tracker. The experiment is early and unproven. Participate
-to test the system, not expecting money. [R1] [R2] [R31]
+Try the local devnet in a disposable directory and report what breaks.
+It resets that directory and starts local validators; use the same directory
+for the stop command. It does not register a public-network voter. Public
+operator trials should use a specifically qualified release with its
+published genesis/reset notice, known issues, resource limits and human
+support route; this paper certifies none of those gates. Review the consensus
+and proving assumptions, inspect the code and paper, and send measurements
+from your own hardware. Include revision, Mac/RAM, OS, workload, network
+conditions, timing definition and unsuccessful runs. Report non-sensitive
+results through the issue tracker. The experiment is early and unproven.
+Participate to test the system, not expecting money. [R1] [R2] [R31] [R65]
 
 ## Source files
 
 References to local files describe the baseline revision in Section 1.
-Cross-branch references use immutable commit URLs. A source document's
-estimate or proposed rule remains an estimate or proposal even when cited.
+Cross-branch references use immutable commit URLs. A source document's estimate
+or proposed rule remains an estimate or proposal even when cited. Protocol
+constants are source observations at the dated
+2026-10-09 baseline, reviewed on 9–10 October; measurement dates and unknown
+run conditions are stated separately. The [dated critique](critique-2026-10-09.md)
+contains the numerical provenance ledger and proposed evidence work.
 
 - **R1** — [README](../../README.md): participation, current network, planned issuance; its dated status table is not authoritative over newer code.
 - **R2** — [DISCLAIMER](../../DISCLAIMER.md): network status, no sale/premine/founder allocation, noncustody, no independent audit.
@@ -754,7 +840,7 @@ estimate or proposed rule remains an estimate or proposal even when cited.
 - **R38** — [Consensus research](../research/nextgen-consensus.md): intended fault and synchrony model.
 - **R39** — [DeviceCheck implementation](../../crates/node/src/devicecheck.rs): what is actually checked and signed.
 - **R40** — [Handoff implementation](../../crates/node/src/handoff.rs): seeds, readiness, omission and reshare commitments.
-- **R41** — [Roster/genesis implementation](../../crates/node/src/roster.rs): committee ceiling and defaults.
+- **R41** — [Roster/genesis implementation](../../crates/node/src/roster.rs): ordinary/genesis committee cap and defaults.
 - **R42** — [Prover features](../../apps/prover/Cargo.toml): Metal and CPU Akita backend selection.
 - **R43** — [Block-proof statement](../../crates/proving/src/block.rs): public statement and guest transition boundary.
 - **R44** — [Prover service](../../crates/node/src/prover.rs): local attempts, retry limits and sidecar verification.
@@ -775,6 +861,10 @@ estimate or proposed rule remains an estimate or proposal even when cited.
 - **R59** — [Proving-input codec](../../crates/node/src/prover_input.rs): dated layout defect and native round-trip check.
 - **R60** — [Reproducible-build runbook](../ops/reproducible-builds.md): guest build identity, dated fixes and tested scope.
 - **R61** — [Audit 7](../research/audit-7-2026-10-06.md): source-review scope and excluded independent assurance.
+- **R62** — [Mac-binding guard](../../crates/node/src/key_binding.rs), [agent keys](../../apps/agent/Sources/Keys.swift), and [owner authorization](../../apps/agent/Sources/Owner.swift): local binding, key-role and user-presence boundaries.
+- **R63** — [Supervisor/share retirement](../../crates/node/src/supervisor.rs) and [atomic replacement](../../crates/node/src/atomic.rs): recovery and historical-copy limits.
+- **R64** — [Resource safeguards](../../crates/node/src/resources.rs): dated 2026-09-29 incident and monitoring; not a current resource benchmark.
+- **R65** — [Community readiness review](../research/community-2026-10-09.md): actual-release/reset/support qualification remains separate from source and demo evidence.
 
 [R1]: ../../README.md
 [R2]: ../../DISCLAIMER.md
@@ -837,3 +927,7 @@ estimate or proposed rule remains an estimate or proposal even when cited.
 [R59]: ../../crates/node/src/prover_input.rs
 [R60]: ../ops/reproducible-builds.md
 [R61]: ../research/audit-7-2026-10-06.md
+[R62]: ../../crates/node/src/key_binding.rs
+[R63]: ../../crates/node/src/supervisor.rs
+[R64]: ../../crates/node/src/resources.rs
+[R65]: ../research/community-2026-10-09.md

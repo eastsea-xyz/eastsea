@@ -2,14 +2,18 @@
 
 [English paper](eastsea.md) is the primary text; [Korean](eastsea.ko.md) is its
 faithful translation. Both are dated drafts, not evidence of a mainnet launch.
+The [dated critique](critique-2026-10-09.md) ranks the hardest questions in five
+reader voices and records the number ledger, text corrections and missing evidence.
 [Source notes](source-notes.md) pin the reviewed checkout and other lanes,
 and distinguish the founder's reported CPU/GPU observation from a reproducible
 benchmark. The paper's 128-word abstract (including citation labels) and numbered sections use plain
-technical prose. Markdown has no intrinsic page count. A temporary local
-pagination proof fits the English text, tables, and references into **11 A4
-pages**, using 15 mm margins, approximately 10.5-point Times body text, and
-8.6-point table text. That checks the requested 10–14-page length; another
-renderer or typography can paginate differently. The proof is not committed.
+technical prose. Markdown has no intrinsic page count. For the initial
+2026-10-09 draft, a temporary local pagination proof fitted the English text,
+tables, and references into **11 A4 pages**, using 15 mm margins,
+approximately 10.5-point Times body text, and
+8.6-point table text. That checked the original requested 10–14-page length;
+the critique revisions have not been repaginated. Another renderer or
+typography can paginate differently. The original proof is not committed.
 
 Use [announce-plain.txt](announce-plain.txt), also copied as the requested
 [announce-draft.txt](announce-draft.txt), for the Cryptography Mailing List
@@ -27,8 +31,8 @@ Use [announce-hook.txt](announce-hook.txt) for the founder's own email and
 broader channels such as Hacker News, Nostr, X/Bluesky, or Korean developer
 communities, adapting length and language to the channel. It gives five
 subjects and three openings. Its opening uses a specific recorded timing,
-then leaves the reader with the unresolved finality/proof trade. The desk-Mac
-image supplies a reason to care without promising benefits. Simulation and
+then leaves the reader with the unresolved finality/proof trade. Present voting
+and founder-reserve powers appear beside the ownership question. Simulation and
 workload qualifications stay next to the facts. The core sendable drafts are
 under 250 words; the hook alternatives are outside that body. Every version
 invites node runs, assumption challenges, code/paper review, and hardware

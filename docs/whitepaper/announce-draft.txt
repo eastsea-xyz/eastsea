@@ -1,28 +1,28 @@
 DRAFT — founder sends; refresh against the verified release before sending.
 Subject: EastSea: a public network experiment on Macs, for critique
 
-I've been working on EastSea, an experiment around one question:
-Can ordinary Macs run and prove a public network with no owner?
+I've been working on EastSea: can ordinary Macs run and prove a public
+network with no owner? Voting admission is gated, and founder reserves
+can hold a bootstrap quorum. [1]
 
-The paper describes a drawn Simplex BFT committee, threshold BLS
-certificates, asynchronous Jolt/Akita execution proofs on Metal, certified
-snapshot sync, and prunable history. It records testnet evidence and
-distinguishes implemented rules from proposals. [1]
+The paper covers drawn Simplex BFT, threshold BLS, asynchronous Jolt/Akita
+proofs on Metal, certified snapshots and pruning. Followers and wallets
+trust committee certification of block proofs; they do not verify them
+independently. Proofs can lag or be absent. [1]
 
-In a regional-link simulation with 20 Mbps upload per validator and
-approximately 50 KB payloads, 16 seats had empirical p99 finality of
-0.699002 seconds. [2] This is simulation evidence, not a distributed-Mac
-measurement. A recorded M1 Max/Metal warm sample proved 50 transactions
-in 47.2 seconds. [1]
+A 2026-10-09 regional simulation recorded conditional empirical p99
+finality of 0.699002 seconds across 236 completed proposals at 16 seats,
+20 Mbps shared upload and roughly 50 KB payloads. [2] A 2026-09-27 warm
+Metal sample of fifty payments took 47.2 seconds on an M1 Max. [3]
 
-This is early and unproven, without an independent security audit.
-Proofs can lag or be absent; admission and software updates retain
-operating keys. Please do not participate expecting money. [1]
+This is testnet; updates retain operating keys. Early, unproven,
+without an independent security audit. Please don't
+participate expecting money. I'd welcome assumption challenges, code/paper
+review, failure reports and measurements from your Mac. [1]
 
-I'd welcome critique of the consensus and proving assumptions, code and
-paper review, reports of what breaks, and measurements from your own Mac.
-
-Join the experiment:
+Try a disposable local devnet (resets the directory; no public voting seat).
+Participation uses your hardware and electricity at your cost.
+Use the repo's build prerequisites and stop commands below:
 Repo: https://github.com/eastsea-xyz/eastsea
 Paper/sources [1]: docs/whitepaper/eastsea.md in the repo.
 Run locally (four validators; disposable directory):
@@ -31,4 +31,8 @@ scripts/demo.sh
 scripts/devnet.sh stop
 Report results: https://github.com/eastsea-xyz/eastsea/issues
 
-[2] Repo revision 9e033c8, docs/research/committee-scale-2026-10-09.md.
+[2] 2026-10-09, revision 9e033c8, docs/research/committee-scale-2026-10-09.md.
+Two seeds, 120 virtual seconds, three-second warm-up, no faults/followers;
+physical transport, disk persistence and proving excluded. Not a home-Mac result.
+[3] apps/prover/README.md: 2026-09-27, warm Metal payments, load average 25–75.
+Not arbitrary-contract timing or a current-release throughput guarantee.

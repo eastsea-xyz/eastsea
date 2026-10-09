@@ -26,6 +26,7 @@ pub mod key_binding;
 pub mod p2p;
 pub mod presence;
 pub mod prover;
+pub mod prover_assignment;
 pub mod prover_input;
 pub mod prune;
 pub mod registrar_signer;

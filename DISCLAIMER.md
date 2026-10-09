@@ -1,6 +1,6 @@
 # EastSea: Legal Notice, Terms of Use, and Limitation of Liability
 
-**Last Updated:** October 4, 2026
+**Last Updated:** October 9, 2026
 **Language & Governing Law:** 본 약관은 대한민국 법률을 준거법으로 하며, 국문과 영문 내용이 상충할 경우 대한민국 관할 내에서는 국문 약관이 우선합니다. *(These terms are governed by the laws of the Republic of Korea; where the Korean and English texts conflict, the Korean text prevails within the jurisdiction of the Republic of Korea.)*
 
 ---
@@ -76,9 +76,8 @@ The legal status of peer-to-peer software, blockchain nodes, and digital assets 
 
 ## 8. Governing Law and Dispute Resolution
 
-Any dispute arising out of or in connection with the Software shall be governed by the laws of the Republic of Korea. The parties agree to submit to the exclusive jurisdiction of the Seoul Central District Court for the first instance.
+Any dispute arising out of or in connection with the Software shall be governed by the laws of the Republic of Korea. Proceedings shall be brought before a court that has jurisdiction under the Civil Procedure Act of the Republic of Korea. Nothing in these terms limits your right to bring proceedings in the court of your domicile or in any other court competent under mandatory law.
 
-> **TODO-for-lawyer (관할 조항 확인 요망):** 위 전속관할 문구는 리서치 메모(제3.5절 Redline)가 제안한 원문 그대로이다. 다만 약관규제법 제14조(소제기의 금지 등)는 소비자에게 부담이 되는 관할 합의를 제한하므로, 소비자를 상대로 하는 전속관할 조항은 그 범위에서 무효가 될 수 있다. 변호사 확인 전까지 원문을 유지하며, 확인 후 "소비자의 주소지 관할 법원 병기" 또는 "준거법만 명시" 등으로 교정한다.
 
 ---
 ---
@@ -137,6 +136,5 @@ Any dispute arising out of or in connection with the Software shall be governed 
 P2P 소프트웨어, 블록체인 노드, 디지털 자산의 법적 지위는 관할에 따라 다릅니다. 본 소프트웨어의 사용이 이용자에게 적용되는 모든 법령·규제·제재·수출 규정에 부합하는지 확인할 책임은 전적으로 이용자에게 있습니다.
 
 ### 8. 준거법 및 분쟁 해결
-본 소프트웨어에서 발생하거나 이와 관련된 분쟁은 대한민국 법률을 준거법으로 합니다. 당사자는 제1심에 관하여 서울중앙지방법원의 전속관할에 따르기로 합의합니다.
+본 소프트웨어에서 발생하거나 이와 관련된 분쟁은 대한민국 법률을 준거법으로 합니다. 소송은 대한민국 민사소송법에 따른 관할 법원에 제기합니다. 이 약관은 이용자가 자신의 주소지 관할 법원 등 강행법규상 인정되는 법원에 소를 제기할 권리를 제한하지 않습니다.
 
-> **TODO-for-lawyer (변호사 확인 요망 — 관할 조항):** 위 전속관할 문구는 리서치 메모(제3.5절 Redline)가 제안한 원문 그대로이다. 다만 약관규제법 제14조(소제기의 금지 등)는 소비자에게 부담이 되는 관할 합의를 제한하므로, 소비자를 상대로 하는 전속관할 조항은 그 범위에서 무효가 될 수 있다. 변호사 확인 전까지 원문을 유지하며, 확인 후 "소비자의 주소지 관할 법원 병기" 또는 "준거법만 명시" 등으로 교정한다.

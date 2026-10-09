@@ -20,6 +20,7 @@ enum Terms {
     }
 
     static let privacyURL = URL(string: "https://eastsea.xyz/privacy")!
+    static let privacyContactURL = URL(string: "mailto:privacy@eastsea.xyz")!
 }
 
 /// The chain's voting-set rules, as shown to the user (registry params and
@@ -91,10 +92,11 @@ struct TermsSheet: View {
                 Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule(locale: Terms.legalLocale, bundle: Terms.legalBundle))
                 Bullet(icon: "network", text: String(localized: "Private keys stay on this device. Addresses, balances, transactions, rewards and registration records are public on chain indefinitely, even after you stop using the app.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
                 Bullet(icon: "iphone.and.arrow.forward", text: String(localized: "Joining encrypts a DeviceCheck token to Pipln's registrar; only it can decrypt it and send it to Apple (USA), at registration and for daily checks. The registrar keeps the voting key, operator and beacon addresses, node ID and registration time without automatic expiry.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
-                Bullet(icon: "globe", text: String(localized: "Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Ask privacy@eastsea.xyz to delete removable service data; public chain copies cannot be recalled.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
+                Bullet(icon: "globe", text: String(localized: "Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Contact privacy support to delete removable service data; public chain copies cannot be recalled.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
                 Bullet(icon: "key.fill", text: String(localized: "Your key stays on this device. If you lose the device and have not set up a recovery key, nobody can restore the account.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
                 Link("Read the full terms and disclaimer", destination: Terms.disclaimerURL).font(.aeFootnote)
                 Link("Read the privacy policy", destination: Terms.privacyURL).font(.aeFootnote)
+                Link("Contact privacy support", destination: Terms.privacyContactURL).font(.aeFootnote)
                 HStack {
                     #if os(macOS)
                     Button("Quit") { NSApp.terminate(nil) }.buttonStyle(EastSeaQuietButtonStyle())
@@ -146,17 +148,13 @@ struct VotingNodeInvite: View {
 #endif
 
 #if os(macOS)
-/// Both founder policies stop at the same screen. The preselected value is
-/// view-local and cannot become a country payload until a button is pressed.
+/// Country permission comes only from an explicit Share country action.
+/// The legacy mode argument remains compatible with isolated screen fixtures.
 struct CountryNoticeSheet: View {
     @EnvironmentObject private var node: NodeController
-    let mode: PresenceCountry.Mode
-    @State private var sharing: Bool
     @State private var country: String
 
-    init(mode: PresenceCountry.Mode = PresenceCountry.mode, country: String) {
-        self.mode = mode
-        _sharing = State(initialValue: mode.initiallySelected)
+    init(mode _: PresenceCountry.Mode = PresenceCountry.mode, country: String) {
         _country = State(initialValue: PresenceCountry.normalize(country)
                          ?? PresenceCountry.suggestedCountry(region: Locale.current.region?.identifier))
     }
@@ -170,37 +168,24 @@ struct CountryNoticeSheet: View {
             VStack(alignment: .leading, spacing: 16) {
                 Image(systemName: "globe").font(.system(size: 30)).foregroundStyle(Color.aether)
                 Text("Country sharing").font(.title2.bold())
-                Text("EastSea can use the country in your Mac's Region setting to choose a broad region bucket. The country stays on this Mac. No country preference is sent until you answer here.")
-                Text(mode == .defaultOn
-                     ? String(localized: "Country sharing is selected below. You can turn it off before continuing.")
-                     : String(localized: "Choose whether to share a country. Declining keeps all wallet and node features available."))
-                if mode == .defaultOn {
-                    Toggle("Share this Mac's country", isOn: $sharing)
-                }
-                if mode == .askBeforeSending || sharing {
-                    Picker("Country", selection: $country) {
-                        Text("Choose a country").tag("")
-                        ForEach(PresenceCountry.codes, id: \.self) { code in
-                            Text(verbatim: countryLocale.localizedString(forRegionCode: code) ?? code).tag(code)
-                        }
+                Text("Your Mac's Region setting chooses a UN M49 sub-region by default. Country sharing is off until you choose Share country.")
+                LabeledContent("Default sub-region", value: node.presenceDefaultRegionLabel)
+                Text("Choose whether to share a country. Declining keeps all wallet and node features available.")
+                Picker("Country", selection: $country) {
+                    Text("Choose a country").tag("")
+                    ForEach(PresenceCountry.codes, id: \.self) { code in
+                        Text(verbatim: countryLocale.localizedString(forRegionCode: code) ?? code).tag(code)
                     }
                 }
-                Text("The choice contributes only to broad regional counts. Public observations hide groups smaller than three. This choice is not saved on chain. Stop future sharing anytime in Settings; already received aggregate copies may remain.")
+                Text("Your chosen country stays on this Mac and can select its M49 sub-region. Public presence publishes only thresholded regional observations, not country codes or individual Macs. Turning country sharing off restores the default sub-region; already received aggregates may remain.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("Don't share country") { answer(sharing: false) }
                     Spacer()
-                    if mode == .askBeforeSending {
-                        Button("Share country") { answer(sharing: true) }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(PresenceCountry.normalize(country) == nil)
-                    } else {
-                        Button("Continue") { answer(sharing: sharing) }
-                            .buttonStyle(.borderedProminent)
-                            .keyboardShortcut(.defaultAction)
-                            .disabled(sharing && PresenceCountry.normalize(country) == nil)
-                    }
+                    Button("Share country") { answer(sharing: true) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(PresenceCountry.normalize(country) == nil)
                 }
             }
             .font(.callout)

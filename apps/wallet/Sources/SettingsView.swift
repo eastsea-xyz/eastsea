@@ -64,11 +64,12 @@ struct SettingsView: View {
                     Group {
                         Text("Private keys stay on this device. Addresses, balances, transactions, rewards and registration records are public on chain indefinitely, even after you stop using the app.")
                         Text("Joining encrypts a DeviceCheck token to Pipln's registrar; only it can decrypt it and send it to Apple (USA), at registration and for daily checks. The registrar keeps the voting key, operator and beacon addresses, node ID and registration time without automatic expiry.")
-                        Text("Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Ask privacy@eastsea.xyz to delete removable service data; public chain copies cannot be recalled.")
+                        Text("Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Contact privacy support to delete removable service data; public chain copies cannot be recalled.")
                     }
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     Link("Read the privacy policy", destination: Terms.privacyURL)
+                    Link("Contact privacy support", destination: Terms.privacyContactURL)
                 }
                 SettingsSection(LocalizedStringKey("Developer"), explanation: LocalizedStringKey("Extra controls for local development.")) {
                     SettingsControlRow(LocalizedStringKey("Developer mode")) {
@@ -307,6 +308,7 @@ struct PresencePrivacySection: View {
 
     var body: some View {
         Section("Live network privacy") {
+            LabeledContent("Default sub-region", value: node.presenceDefaultRegionLabel)
             if node.needsCountryNotice {
                 Button("Choose country sharing…") { showCountryNotice = true }
             } else {
@@ -320,7 +322,7 @@ struct PresencePrivacySection: View {
                     }
                 }
             }
-            Text("Country sharing is optional. Your selected country stays on this Mac and chooses a broad region bucket. Public observations show only counts for groups of at least three. Turning it off stops future use of the country preference. Your relay's region and connection IP address remain visible to peers.")
+            Text("The default UN M49 sub-region follows this Mac's Region setting independently of country sharing. Country sharing requires an explicit choice and can select a different sub-region. Public presence does not publish country codes. Turning it off keeps the default sub-region. Peers and relays still see connection IP addresses.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

@@ -10,10 +10,10 @@
 		<string>zh-Hans</string>
 		<string>zh-Hant</string>
 	</array>
-	<!-- Founder policy: default-on preselects the first-launch choice; ask-before-sending
-	     requires an explicit share/decline choice. Both send no country before an answer. -->
+	<!-- Country permission requires the explicit Share country action at first launch.
+	     The default UN M49 sub-region is independent of this optional country choice. -->
 	<key>PresenceCountrySharingMode</key>
-	<string>default-on</string>
+	<string>ask-before-sending</string>
 	<!-- Sparkle: signed appcast on the GitHub release feed (EdDSA public key). EastSea has its own
 	     feed; appcast.xml is the legacy one Aether <= 0.6.6 reads, which lists the Aether bridge. -->
 	<!-- 블록 데이터 위치: the node's chain data may live on an external disk the person picks. -->

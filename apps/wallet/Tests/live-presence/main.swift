@@ -18,8 +18,17 @@ let value: [String: Any] = [
 let presence = LivePresence.parse(value, now: now)
 check(presence?.total == 9 && presence?.byRole["other"] == 6, "schema 2 decodes thresholded role counts")
 check(presence?.byRegion["asia"] == 3 && presence?.byRegion["world"] == 3, "folded region buckets decode")
-check(presence?.line == "9 node observations · Asia 3 · Europe 3 · All regions 3",
+check(presence?.line == "9 node observations · Asia (legacy broad region) 3 · Europe (legacy broad region) 3 · All regions 3",
       "headline does not describe unverified cohorts as distinct physical Macs")
+var m49 = value
+m49["by_region"] = ["030": 3, "202": 3, "419": 3]
+let regional = LivePresence.parse(m49, now: now)
+check(regional?.byRegion["030"] == 3 && regional?.line.contains("Eastern Asia 3") == true,
+      "canonical M49 sub-regions are accepted and labeled")
+for intermediate in ["014", "017", "029", "013", "005"] {
+    m49["by_region"] = [intermediate: 9]
+    check(LivePresence.parse(m49, now: now) == nil, "intermediate-region codes are not sub-regions")
+}
 check(LivePresence.parse(nil, now: now) == nil, "missing RPC is unavailable, never zero")
 check(LivePresence.parse(["code": -32601, "message": "Method not found"], now: now) == nil, "old node RPC is unavailable")
 
@@ -92,7 +101,7 @@ let strings = catalog["strings"] as! [String: [String: Any]]
 let keys = ["%lld node observations", "%@ %lld", "Asia", "Europe", "North America", "South America",
             "Africa", "Oceania", "Unknown region", "All regions", "Counts withheld for privacy",
             "Unverified cohort observations, not a count of distinct Macs. Broad regions use a local country choice or relays; small groups are folded together."]
-for language in ["en", "ko", "ja", "zh-Hans", "es"] {
+for language in ["en", "ko", "ja", "zh-Hans", "zh-Hant"] {
     for key in keys {
         let localizations = strings[key]?["localizations"] as? [String: [String: Any]]
         let unit = localizations?[language]?["stringUnit"] as? [String: String]

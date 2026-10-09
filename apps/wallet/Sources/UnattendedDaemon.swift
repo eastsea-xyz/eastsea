@@ -290,6 +290,7 @@ private enum Marker {
             "argv": argv,
             "prove": proveAddress ?? "",
         ]
+        // The default M49 region survives independently of country consent.
         // New wrappers discard legacy country arguments unless this marker
         // records an explicit answer and the exact authorized preference.
         dict.merge(PresenceCountry.preference().markerFields) { _, choice in choice }

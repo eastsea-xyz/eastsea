@@ -6,6 +6,7 @@ func check(_ condition: Bool, _ message: String) {
 
 check(LiveGlobeBundlePolicy.path(for: LiveGlobeBundlePolicy.entry) == "index.html", "entry is bundled")
 check(LiveGlobeBundlePolicy.path(for: URL(string: "eastsea-globe://network/live-globe/live-globe.js")!) == "live-globe/live-globe.js", "canonical ES module is allowed")
+check(LiveGlobeBundlePolicy.path(for: URL(string: "eastsea-globe://network/live-globe/subregions.js")!) == "live-globe/subregions.js", "bundled M49 artwork module is allowed")
 for input in [
     "https://eastsea.xyz/index.html", "http://127.0.0.1:18545/", "file:///etc/passwd",
     "eastsea-globe://other/index.html", "eastsea-globe://user@network/index.html",

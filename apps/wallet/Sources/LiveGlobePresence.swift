@@ -102,7 +102,7 @@ struct LiveGlobePresence: Equatable, Sendable {
                               reserveKeys: reserveKeys, regions: regions, recentBlocks: recentBlocks)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        aggregateJSON = String(decoding: try encoder.encode(payload), as: UTF8.self)
+        self.aggregateJSON = String(decoding: try encoder.encode(payload), as: UTF8.self)
     }
 
     /// Reject malformed or expired local replies and discard every unlisted field.
@@ -248,7 +248,7 @@ struct LiveGlobePresence: Equatable, Sendable {
     private static func cohort(_ source: [String: Any], now: TimeInterval) throws -> Self {
         guard now.isFinite, now > 0, let sample = LivePresence.parse(source, now: now),
               let total = sample.total, total <= maxNodes else { throw Invalid.presence }
-        let regions = (continents + ["world"]).compactMap { name -> Region? in
+        let regions = PresenceRegion.observationCodes.compactMap { name -> Region? in
             guard let size = sample.byRegion[name] else { return nil }
             return Region(continent: name, country: nil, count: size, quality: .unmeasured(count: size))
         }

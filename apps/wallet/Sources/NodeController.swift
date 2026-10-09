@@ -130,9 +130,17 @@ final class NodeController: ObservableObject {
     @AppStorage("presenceCountryCode") var presenceCountryCode = "" {
         didSet { if presenceCountryCode != oldValue, !applyingCountryChoice { pushPresenceCountry() } }
     }
+    @Published private(set) var presenceDefaultRegion = PresenceRegion.fromRegion(Locale.current.region?.identifier)
+    private var presenceRegionLocaleObserver: NSObjectProtocol?
     private var applyingCountryChoice = false
     var presenceCountryPreference: PresenceCountry.Preference {
-        PresenceCountry.Preference(choice: presenceCountryChoice, country: presenceCountryCode)
+        PresenceCountry.Preference(choice: presenceCountryChoice, country: presenceCountryCode,
+                                   region: presenceDefaultRegion)
+    }
+    var presenceDefaultRegionLabel: String { PresenceRegion.label(presenceDefaultRegion) }
+    var presenceLocalRegionLabel: String { PresenceRegion.label(presenceCountryPreference.effectiveRegion) }
+    var presenceSelectedCountryLabel: String? {
+        presenceCountryPreference.shared.map { AppLanguage.locale.localizedString(forRegionCode: $0) ?? $0 }
     }
     var needsCountryNotice: Bool { !presenceCountryPreference.answered }
     var presenceShareCountry: Bool {
@@ -238,8 +246,15 @@ final class NodeController: ObservableObject {
         restartPresenceCountryIfNeeded()
     }
 
+    private func refreshPresenceRegion() {
+        let region = PresenceRegion.fromRegion(Locale.current.region?.identifier)
+        guard region != presenceDefaultRegion else { return }
+        presenceDefaultRegion = region
+        pushPresenceCountry()
+    }
+
     private func restartPresenceCountryIfNeeded() {
-        guard presenceCountryRestartPending, !updateInProgress, storageMovePercent == nil,
+        guard presenceCountryRestartPending, !confirmingMac, !updateInProgress, storageMovePercent == nil,
               restartTimer == nil, process != nil || attached else { return }
         presenceCountryRestartPending = false
         restartIfRunning()
@@ -253,20 +268,21 @@ final class NodeController: ObservableObject {
         presenceCountrySyncInFlight = true
         lastPresenceCountryAttempt = Date()
         let preference = presenceCountryPreference
-        let country = preference.shared
         let pid = process?.processIdentifier ?? unattended?.runningNodePID
         let params = preference.controlParams
+        let regionParams = preference.regionControlParams
         Task {
+            let regionResult = await LocalRPC.call(port: Self.port, method: "aether_setPresenceRegion", params: regionParams)
             let result = await LocalRPC.call(port: Self.port, method: "aether_setPresenceCountry", params: params)
             presenceCountrySyncInFlight = false
             guard process != nil || attached,
                   (process?.processIdentifier ?? unattended?.runningNodePID) == pid else { return }
-            let latest = presenceCountryPreference.shared
-            if latest != country {
+            let latest = presenceCountryPreference
+            if latest != preference {
                 lastPresenceCountryAttempt = .distantPast
                 syncPresenceCountry()
             } else {
-                presenceCountryNeedsSync = result == nil
+                presenceCountryNeedsSync = result == nil || regionResult == nil
             }
         }
     }
@@ -380,6 +396,11 @@ final class NodeController: ObservableObject {
             let changed = self.savedProveAddress.lowercased() != address.lowercased()
             self.savedProveAddress = address
             if changed && self.prove { self.restartIfRunning() }
+        }
+        presenceRegionLocaleObserver = NotificationCenter.default.addObserver(
+            forName: NSLocale.currentLocaleDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshPresenceRegion() }
         }
     }
     /// The update owns the node's startup gate and run.lock until this
@@ -1712,6 +1733,7 @@ final class NodeController: ObservableObject {
     }
 
     private func check() {
+        refreshPresenceRegion()
         restartPresenceCountryIfNeeded()
         if refusePersistedBindingMismatch() { return }
         refreshMacConfirmation()

@@ -1,14 +1,29 @@
-# Readable live network globe — continuous Quality, v3 (0.7.4)
+# Live network globe — privacy cohorts and aggregate examples
 
 Canonical renderer: `codex/live-globe`. Wallet integration: `codex/wallet-globe`.
-Presence producer: `codex/live-peers` (merged into the wallet lane).
-This is the public aggregate contract. The producer must adopt v3 and
-`quality_version: 1` before the lead enables public web live data. The wallet
-also accepts the local schema-1 observation through the native aggregate
-adapter described below, with quality explicitly unavailable. These are source,
-fixture, test and documentation changes; no installed app or testnet is changed.
+The integrated privacy producer serves **schema 2**, with frozen ten-minute,
+thresholded cohort observations. Both web and native consumers accept it;
+individual schema-1 records are rejected. Known group codes follow the 17
+official UN M49 sub-regions, while older relay-based fields remain explicitly
+broad. Missing counts are withheld/unreported, never zero; operation quality is
+unavailable. The producer generally knows only its own region, so its single
+contribution normally folds into world/unknown counts. Consumers do not invent
+finer geography or distinct-Mac totals.
+
+The schema-3 quality contract and dated manual examples below are retained for
+explicit aggregate fixtures and possible future producers. They describe no
+currently collected public quality evidence and are not a gate on schema-2
+display. These changes do not alter an installed app or testnet.
 
 ## Readability and disclosure
+
+Live cohort pulses use known M49 groups and bundled representative anchors;
+unknown and folded-world groups remain in the list without invented positions.
+Legacy broad regions are labeled separately. The native view displays this
+Mac's local effective sub-region outside the public count and shows its country
+only after an affirmative choice. These labels do not add a Mac to the count.
+The country and quality descriptions in this section apply to the explicit
+schema-3 aggregate examples rather than the current privacy producer.
 
 The opening view centers the largest group within the most populated known
 continent, including session jitter; today's snapshot opens toward Korea/Asia. Thin Natural Earth coastlines,
@@ -81,7 +96,7 @@ events are fabricated. The former 24-Mac example remains only in
 `apps/explorer/test/fixtures/presence-example.json` for regression coverage.
 A failed live request never substitutes these fixture counts.
 
-## Quality gradient
+## Quality gradient specification for schema-3 examples
 
 Continuous quality model: `quality_version: 1`.
 
@@ -240,23 +255,26 @@ Today's aggregate `result` has this exact shape:
   presence records belong to this public model. Unknown fields are not copied
   into the normalized model. RPC/transport errors are never echoed by the page.
 
-### Country acquisition and privacy limits
+### Default geography, country choice and privacy limits
 
-The producer/app integration contract obtains the country from
-`Locale.current.region`, **on by default**. Its first-launch notice is exactly:
+`Locale.current.region` maps locally to an independent default UN M49
+sub-region using the bundled 247-country/area table. This uses the official
+Sub-region column (17 groups), including `202` and `419`, rather than the finer
+Intermediate Region column. Unknown areas stay unknown.
 
-> 지구본에 내 나라를 표시해요. 설정에서 끌 수 있어요.
+The shipped policy is **ask-before-sending**. First launch requires an explicit
+**Share country** or **Don't share country** action, without preselection.
+Before that answer the node receives only the known default M49 code, never a
+raw country. The default `--presence-region` survives a decline or later opt-out;
+an affirmative `--presence-country` uses that country's canonical M49 parent.
+An unlisted selected country remains unknown. No IP lookup or location request
+is used. Region settings do not prove residence or physical location.
 
-English:
-
-> Your country is shown on the globe; you can turn it off in Settings
-
-Turning country sharing off in Settings omits the code; the Mac remains in its
-continent-only aggregate. No IP lookup or location request is used. Region
-settings are user-controlled and do not prove residence or physical location.
-The wallet implements this notice and toggle in source. It resolves the current
-Mac region on each country update, preserves a saved opt-out, and applies the
-same preference to unattended restarts. No installed app is changed by this lane.
+Both live setting controls are native-loopback-only. The wallet serializes
+region and country updates, updates unattended markers, and preserves the
+default region when removing country disclosure. Current public RPC/gossip
+contain no country codes. Country names in explicit aggregate fixtures do not
+prove that a real participant consented or that production collects them.
 
 Country k=3 limits **country disclosure**, not metric indistinguishability.
 Small continent-only aggregates may imply a unique Mac's score, and sparse
@@ -269,21 +287,24 @@ cross-tabulated by role/version.
 
 ### Producer integration gate
 
-The interim response's individual `nodes`, `observer` identifiers and singleton
-`by_country` entries must not be served to this page. The producer must emit v3,
-`quality_version: 1`, complete quality summaries and country k=3 folding before
-exposure. Internal signed presence/gossip, chain evidence and per-Mac proof
-bindings stay internal. The consumer rejects v1/v2/interim schemas and unknown
-quality versions; it never interprets missing quality as established operation.
-This is a producer handoff, not a claim that browser filtering can retract
-identifiers or forbidden country buckets already transmitted.
+The actual producer exports only privacy schema-2 aggregates. Individual
+`nodes`, observer identifiers and `by_country` fields fail closed at the producer
+and consumer boundary. Every disclosed partition is complete and k≥3; totals
+below three are null, and releases stay frozen for ten minutes. Overlapping
+anonymous cohorts are not added. No build versions, per-peer quality, reserve
+seating or block-region sequences are inferred from transport presence.
+
+Consumers also validate schema-3 aggregate examples and their quality version.
+A future quality producer would need the evidence described above and additional
+suppression appropriate to its richer data. Browser filtering cannot retract
+identifiers or small country buckets already transmitted.
 
 ## Shared module and runtime
 
 Canonical ES modules live in `apps/explorer/live-globe/`; byte-identical site
 and wallet copies are generated by `scripts/sync-live-globe.mjs`. All surfaces serve
 committed local assets without a build or CDN. Explorer uses `#/network`,
-caption **Macs this node can see**, and the Settings public read gateway.
+caption **cohort observations**, and the Settings public read gateway.
 The site's Korean/English section and `site/live-network.json` remain intact.
 Only `aether_presence` is polled, every 10 seconds, without credentials or
 referrers; no peer/committee/individual method is called.
@@ -291,15 +312,16 @@ referrers; no peer/committee/individual method is called.
 Centroids, coastlines and graticules are internal bundled artwork, never
 positions supplied by presence. Session jitter is bounded to 0.035 radians
 per axis, in memory only and stable across mounts in one page. Its key includes
-the home-relay continent and optional country. Country pulses use the bundled
-country anchors; continent-only pulses use continent anchors. No new dependency
+the known regional code and optional fixture country. M49 pulses use bundled
+sub-region anchors; legacy broad and fixture country pulses retain their own
+anchors. No new dependency
 or external asset request is introduced.
 
 Reduced motion and WebGL failure use the static map with the same labeled
 pulses and text equivalent. GPU context loss switches to the map; restoration
 rebuilds buffers without losing counts or quality. Animation, CSS pulses and
 polling stop in hidden tabs or outside the viewport. Resuming visibility
-requests fresh presence. Loading, unavailable, stale and empty states remain
+requests fresh presence. Loading, unavailable, stale, withheld and fixture-empty states remain
 explicit.
 
 ### Wallet Network screen
@@ -313,16 +335,14 @@ scripts and inline style attributes. No wallet provider, signing bridge or
 JavaScript message handler is installed. All RPC reads remain native.
 
 `WalletModel` asks only its own loopback node's `aether_presence` every ten
-seconds. `LiveGlobePresence` projects a validated schema-3 response into fresh
-aggregate fields. For the merged schema-1 node, it validates the observation,
-groups records natively, folds countries below three within each relay continent,
-and discards all identifiers/timestamps before encoding the v3-shaped count
-payload. Schema-1 pings contain no chain quality evidence: the conservative
-zero summaries are marked unmeasured in display settings, and the host omits
-quality strips, numeric quality, the quality gradient and reserve-key claims.
-It never manufactures duration, proof coverage, reserve seating or recent-block
-sequences. A measured v3 response displays the canonical quality gradient and
-region strips. No individual response is passed into JavaScript.
+seconds. `LiveGlobePresence` validates schema-2 cohorts, accepts canonical M49
+codes and honest legacy broad/unknown/world fields, and encodes the original
+aggregate schema without synthetic versions, quality or reserves. Schema-1
+individual records are rejected. A valid withheld answer clears an earlier
+aggregate; unavailable quality is neutral and explicitly labeled. It never
+manufactures duration, proof coverage, reserve seating or block sequences.
+Schema-3 aggregate examples retain their validated fixture quality summaries.
+No individual response is passed into JavaScript.
 
 The inbound host API accepts aggregate updates, a reset, and local display
 preferences. A failed RPC preserves an explicitly stale aggregate; a first
@@ -331,7 +351,8 @@ Window visibility/occlusion, minimization and Low Power Mode pause rendering;
 unchanged wallet publications do not redraw the globe, and new snapshots remain
 native until rendering resumes. Reduce Motion uses the existing static map.
 Appearance follows the wallet. Globe labels, the menu summary and country notice
-support English, Korean, Japanese, Simplified Chinese and Spanish.
+support English, Korean, Japanese, Simplified Chinese and Traditional Chinese.
+The public web component additionally retains Spanish copy.
 
 The menu-bar panel uses a static system globe glyph and the same aggregate count.
 Its button opens Network, including from a closed wallet window or Developer

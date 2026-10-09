@@ -145,6 +145,7 @@ test('every populated region has a front marker or an explicit list-only visibil
     for (let angle = 0; angle < 25; angle++) {
       for (const { key, continent, visibility: state } of visibility) {
         const marker = host.find('lg-marker', key);
+        if (state === 'empty') { assert.ok(!marker || marker.hidden, continent); continue; }
         if (state === 'front') assert.equal(marker?.hidden, false, continent);
         else {
           assert.ok(['back', 'unknown'].includes(state), continent);
@@ -231,11 +232,11 @@ test('globe continents include their countries, including a continent with only 
   globe.destroy();
 });
 
-test('headline gives the connected Mac count in all five languages and hides zero roles', () => {
+test('headline gives the connected Mac count in all six languages and hides zero roles', () => {
   const host = browserHost();
   const component = mountLiveGlobe(host.root, { host: true, seed: 'answer-first' });
   component.update(example);
-  const answers = { en: '24 Macs connected now', ko: '지금 연결된 맥 24대', ja: '現在接続中のMac 24台', 'zh-Hans': '当前连接的Mac：24台', es: '24 Macs conectados ahora' };
+  const answers = { en: '24 Macs connected now', ko: '지금 연결된 맥 24대', ja: '現在接続中のMac 24台', 'zh-Hans': '当前连接的Mac：24台', 'zh-Hant': '目前連線的 Mac：24台', es: '24 Macs conectados ahora' };
   for (const [lang, expected] of Object.entries(answers)) {
     component.setLanguage(lang);
     const headline = host.find('lg-caption');
@@ -656,13 +657,13 @@ test('native pause and Reduce Motion settings stop frames and pulses, preserving
   component.destroy();
 });
 
-test('native missing quality evidence remains neutral and explicitly unavailable in all five languages', () => {
+test('native missing quality evidence remains neutral and explicitly unavailable in all six languages', () => {
   const host = browserHost();
   const component = mountLiveGlobe(host.root, { host: true, seed: 'evidence' });
   component.update(today);
   component.configure({ evidenceAvailable: false });
   assert.ok(!host.find('lg-role-summary').textContent.includes('Reserve keys'));
-  for (const lang of ['en', 'ko', 'ja', 'zh-Hans', 'es']) {
+  for (const lang of ['en', 'ko', 'ja', 'zh-Hans', 'zh-Hant', 'es']) {
     assert.equal(component.configure({ lang }), true);
     assert.equal(host.root.lang, lang);
     assert.equal(host.find('lg-art-legend').hidden, true);
@@ -698,6 +699,9 @@ test('wallet entry offers a ready inbound-only API with measured height and loca
   assert.equal(api.configure({ lang: 'ko', theme: 'dark', fixture: true }), true);
   assert.equal(host.doc.title, '네트워크 · EastSea');
   assert.equal(host.doc.documentElement.lang, 'ko');
+  assert.equal(api.configure({ lang: 'zh-Hant' }), true);
+  assert.equal(host.doc.title, '網路 · EastSea');
+  assert.equal(host.doc.documentElement.lang, 'zh-Hant');
   assert.equal(api.update(today), true);
   assert.equal(host.find('lg-status').dataset.state, 'fixture');
   assert.equal(api.captureFrame(), true);
@@ -706,4 +710,132 @@ test('wallet entry offers a ready inbound-only API with measured height and loca
   assert.equal(host.find('lg-total').textContent, '—');
   assert.equal(host.timers.size, 0);
   assert.equal(host.frames.size, 0);
+});
+
+function cohortSnapshot(by_region = { '030': 3 }, extras = {}) {
+  const total = Object.values(by_region).reduce((sum, count) => sum + count, 0);
+  return {
+    schema: 2, available: true, scope: 'unverified cohort observation',
+    observed_at: Math.floor(Date.now() / 600_000) * 600, ttl_seconds: 600, minimum_bucket_size: 3,
+    total, by_role: { unknown: total }, by_version: { unknown: total }, by_region, ...extras,
+  };
+}
+
+test('Traditional Chinese renders native and cohort copy without an English or Simplified fallback', () => {
+  const host = browserHost({ reduced: true });
+  const view = mountLiveGlobe(host.root, { host: true, seed: 'traditional-chinese' });
+  assert.equal(view.configure({ lang: 'zh-Hant' }), true);
+  assert.equal(host.root.lang, 'zh-Hant');
+  assert.equal(host.find('lg-status').textContent, '正在讀取連線狀態…');
+  assert.equal(view.update(today), true);
+  assert.equal(host.find('lg-status').textContent, '即時快照 · 來自這台 Mac 的節點');
+  assert.equal(host.find('lg-caption').children.map(el => el.textContent).join(''), '目前連線的 Mac：4台');
+  assert.match(host.find('lg-region-button', 'asia').getAttribute('aria-label'), /亞洲, 4 台 Mac/);
+  assert.match(host.find('lg-role-summary').textContent, /驗證者 4.*錢包節點 3.*備用金鑰 3/);
+  const regions = new Intl.DisplayNames(['zh-Hant'], { type: 'region' });
+  const country = host.find('lg-country', 'asia:KR').children[0];
+  assert.equal(country.textContent, regions.of('KR'));
+  assert.notEqual(country.textContent, new Intl.DisplayNames(['en'], { type: 'region' }).of('KR'));
+  assert.equal(view.configure({ evidenceAvailable: false }), true);
+  assert.equal(host.find('lg-quality-status').textContent, '無法取得運作品質 · 此節點尚未提供實測的品質依據。');
+  assert.equal(view.update(cohortSnapshot()), true);
+  assert.equal(host.find('lg-caption').children.map(el => el.textContent).join(''), '節點連線觀測：3筆');
+  assert.equal(host.find('lg-status').textContent, '未經驗證的觀測群組 · 數量以固定的 10 分鐘區間公布');
+  assert.equal(host.find('lg-region-button', '030').textContent, regions.of('030'));
+  assert.notEqual(host.find('lg-region-button', '030').textContent, 'Eastern Asia');
+  assert.equal(view.configure({ state: 'stale' }), true);
+  assert.equal(host.find('lg-status').textContent, '上次觀測群組 · 最新重新整理失敗。');
+  assert.equal(view.update(cohortSnapshot({}, { total: null, by_role: {}, by_version: {} })), true);
+  assert.equal(host.find('lg-status').textContent, '為保護隱私而隱藏數量 · 少於 3 筆的群組不會公布。');
+  view.destroy();
+});
+
+test('schema-2 native cohorts show known M49 groups, withheld omissions and unavailable quality', () => {
+  const host = browserHost({ reduced: true });
+  const view = mountLiveGlobe(host.root, { host: true, seed: 'cohort-native' });
+  assert.equal(view.update(cohortSnapshot({ '030': 3, unknown: 3, world: 3 },
+    { by_role: { unknown: 6, other: 3 } })), true);
+  assert.equal(host.find('lg-total').textContent, '9');
+  assert.equal(host.find('lg-status').dataset.state, 'live');
+  assert.match(host.find('lg-status').textContent, /Unverified cohort/);
+  assert.match(host.find('lg-role-summary').textContent, /Unknown role 6.*Other roles 3/);
+  assert.doesNotMatch(host.find('lg-role-summary').textContent, /Reserve|Wallet/);
+  assert.equal(host.root.dataset.evidenceAvailable, 'false');
+  assert.equal(host.find('lg-art-legend').hidden, true);
+  assert.equal(host.find('lg-quality-status').hidden, false);
+  const known = host.find('lg-region', '030');
+  assert.equal(known.children[0].children[0].textContent, 'Eastern Asia');
+  assert.equal(known.children[1].textContent, '3');
+  assert.equal(known.dataset.quality, '');
+  const omitted = host.find('lg-region', '021');
+  assert.equal(omitted.children[1].textContent, '—');
+  assert.equal(omitted.dataset.count, '');
+  assert.match(omitted.children[0].children[0].getAttribute('aria-label'), /Withheld or unreported/);
+  assert.equal(host.find('lg-marker', '030').dataset.count, '3');
+  assert.equal(host.find('lg-marker', '030').dataset.quality, '');
+  assert.match(host.find('lg-marker', '030').getAttribute('aria-label'), /quality unavailable/);
+  for (const code of ['unknown', 'world']) {
+    assert.equal(host.find('lg-region', code).dataset.count, '3');
+    assert.equal(host.find('lg-region', code).dataset.visibility, 'unknown');
+    assert.equal(host.find('lg-marker', code), undefined);
+  }
+  assert.equal(view.configure({ evidenceAvailable: true }), true);
+  assert.equal(host.root.dataset.evidenceAvailable, 'false');
+  view.destroy();
+});
+
+test('withheld cohorts and native withheld state remove previously visible countries and counts', () => {
+  const host = browserHost({ reduced: true });
+  const view = mountLiveGlobe(host.root, { host: true, seed: 'cohort-withheld' });
+  view.update(today);
+  assert.equal(host.find('lg-marker', 'asia:KR').hidden, false);
+  const withheld = cohortSnapshot({}, { total: null, by_role: {}, by_version: {} });
+  assert.equal(view.update(withheld), true);
+  assert.equal(host.find('lg-status').dataset.state, 'withheld');
+  assert.match(host.find('lg-status').textContent, /withheld for privacy/);
+  assert.equal(host.find('lg-total').textContent, '—');
+  assert.ok(!host.descendants(host.root).some(element => element.dataset.country));
+  assert.ok(host.descendants(host.root).filter(element => element.className === 'lg-marker')
+    .every(marker => marker.hidden && marker.dataset.count === '0'));
+  view.update(today);
+  assert.equal(view.configure({ state: 'withheld' }), true);
+  assert.equal(host.find('lg-status').dataset.state, 'withheld');
+  assert.equal(host.find('lg-total').textContent, '—');
+  assert.ok(!host.descendants(host.root).some(element => element.dataset.country));
+  assert.equal(view.update(cohortSnapshot()), true);
+  assert.equal(host.find('lg-total').textContent, '3');
+  assert.equal(host.find('lg-status').dataset.state, 'live');
+  view.destroy();
+});
+
+test('legacy broad cohorts stay labeled broad and never create M49 counts', () => {
+  const host = browserHost({ reduced: true });
+  const view = mountLiveGlobe(host.root, { host: true, seed: 'cohort-legacy' });
+  assert.equal(view.update(cohortSnapshot({ asia: 3 })), true);
+  assert.equal(host.find('lg-region', 'asia').dataset.count, '3');
+  assert.match(host.find('lg-region', 'asia').children[0].children[0].textContent, /legacy broad region/);
+  assert.equal(host.find('lg-region', '030').children[1].textContent, '—');
+  assert.equal(host.find('lg-marker', '030').hidden, true);
+  for (const lang of ['en', 'ko', 'ja', 'zh-Hans', 'zh-Hant', 'es']) {
+    view.setLanguage(lang);
+    assert.equal(host.find('lg-total').textContent, '3');
+    assert.equal(host.root.dataset.evidenceAvailable, 'false');
+    assert.equal(host.find('lg-quality-status').hidden, false);
+    assert.ok(host.find('lg-status').textContent.length > 0);
+  }
+  view.destroy();
+});
+
+test('public web polling automatically treats schema-2 quality as unavailable', async () => {
+  const host = browserHost({ reduced: true });
+  const view = mountLiveGlobe(host.root, {
+    endpoint: 'https://read.invalid/rpc', seed: 'cohort-web',
+    fetch: async () => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: cohortSnapshot() }) }),
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(host.find('lg-total').textContent, '3');
+  assert.equal(host.root.dataset.evidenceAvailable, 'false');
+  assert.equal(host.find('lg-art-legend').hidden, true);
+  assert.equal(host.find('lg-region', '021').children[1].textContent, '—');
+  view.destroy();
 });

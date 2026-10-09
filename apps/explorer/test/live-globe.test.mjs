@@ -10,6 +10,20 @@ const site = new URL('../../../site/live-globe/', import.meta.url);
 const wallet = new URL('../../../apps/wallet/Resources/LiveGlobe/live-globe/', import.meta.url);
 const root = new URL('../../../', import.meta.url);
 
+test('shared globe modules resolve entirely inside their standalone asset root', async () => {
+  const names = (await readdir(source)).filter(name => name.endsWith('.js'));
+  assert.ok(names.includes('subregions.js'));
+  for (const name of names) {
+    const code = await readFile(new URL(name, source), 'utf8');
+    for (const [, specifier] of code.matchAll(/\b(?:from\s+|import\s*\(\s*)['"]([^'"]+)['"]/g)) {
+      const resolved = new URL(specifier, new URL(name, source));
+      assert.ok(specifier.startsWith('./'), `${name} imports outside the standalone root: ${specifier}`);
+      assert.equal(resolved.href, new URL(specifier.slice(2), source).href);
+      assert.ok(names.includes(specifier.slice(2)), `${name} imports a missing bundled module: ${specifier}`);
+    }
+  }
+});
+
 test('site, explorer and wallet deploy the identical self-contained globe without a build', async () => {
   const names = (await readdir(source)).sort();
   for (const destination of [site, wallet]) {

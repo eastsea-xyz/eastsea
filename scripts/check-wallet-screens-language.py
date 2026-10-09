@@ -38,7 +38,7 @@ SPEC = re.compile(r"%(?:\d+\$)?[-+ #0]*\d*(?:\.\d+)?(?:lld|llu|ld|lu|@|d|u|f|g|e
 # Brand/protocol names, fixture ticker symbols and measurements, not ordinary
 # English UI words. The declaration is explicit so a new exception is reviewed.
 NAMES = ("EastSea", "Doubloon", "Aether", "DBLN", "Mac", "Touch ID", "Face ID", "Secure Enclave", "Apple",
-         "DeviceCheck", "Pipln", "Sparkle", "Safari", "WebKit", "Ledger", "Trezor", "Samsung T7",
+         "DeviceCheck", "Pipln", "Sparkle", "Cloudflare", "GitHub", "Safari", "WebKit", "Ledger", "Trezor", "Samsung T7",
          "Finder", "FileVault", "iCloud", "iPhone", "macOS", "iOS", "Claude Code", "Codex", "Metal",
          "AI", "SSD", "BLS", "EIP-7864", "SHA-256", "ID", "PATH", "APFS", "Mac OS Extended", "OS",
          "http", "https", "sea", "DuckDuckGo", "Google", "Bing", "eastsea-earnings.csv",

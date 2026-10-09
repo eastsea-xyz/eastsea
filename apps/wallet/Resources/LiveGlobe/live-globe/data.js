@@ -1,14 +1,22 @@
 // The only boundary between an RPC response and the public globe model.
 // Artwork and session jitter live locally; this model never contains positions.
 import { QUALITY_VERSION, QUALITY_BINS, qualityMean } from './quality.js';
+import { SUBREGION_CODES } from './subregions.js';
 
 export const CONTINENTS = Object.freeze([
   'africa', 'asia', 'europe', 'north_america', 'south_america',
   'oceania', 'antarctica', 'unknown',
 ]);
 
-const CONTINENT_CODES = new Set(CONTINENTS);
+export const GEOGRAPHIES = Object.freeze([...SUBREGION_CODES, ...CONTINENTS, 'world']);
+const CONTINENT_CODES = new Set(GEOGRAPHIES);
 const ROLES = ['validator', 'wallet', 'candidate', 'follower'];
+const COHORT_ROLES = ['validator', 'candidate', 'follower', 'unknown', 'other'];
+const COHORT_FIELDS = ['schema', 'available', 'scope', 'observed_at', 'ttl_seconds',
+  'minimum_bucket_size', 'total', 'by_role', 'by_version', 'by_region'];
+const WINDOW_SECONDS = 600;
+const MINIMUM_BUCKET_SIZE = 3;
+const MAX_COHORT = 4096;
 const MAX_REGIONS = 1024;
 const MAX_VERSIONS = 128;
 const MAX_RECENT_BLOCKS = 8;
@@ -131,7 +139,7 @@ function normalized(payload) {
 
   // Merge before testing k, so duplicate country buckets cannot either evade
   // the threshold or cause an already anonymous country to be discarded.
-  const buckets = new Map(CONTINENTS.map((code) => [code, {
+  const buckets = new Map(GEOGRAPHIES.map((code) => [code, {
     count: 0, quality: emptyQuality(), countries: new Map(),
   }]));
   const regionSource = collection(field(source, 'regions'), MAX_REGIONS);
@@ -155,7 +163,7 @@ function normalized(payload) {
   if (regionTotal !== total) invalid();
 
   const regions = [];
-  for (const code of CONTINENTS) {
+  for (const code of GEOGRAPHIES) {
     const bucket = buckets.get(code);
     const countries = [];
     for (const [country, countryBucket] of [...bucket.countries].sort(([a], [b]) => a.localeCompare(b))) {
@@ -184,20 +192,81 @@ function normalized(payload) {
   return { schema_version: 3, scope: 'node', quality_version: QUALITY_VERSION, total, roles, versions, reserve_keys, regions, recent_blocks };
 }
 
+function partition(value, keys, total) {
+  const source = record(value);
+  const names = Object.keys(source).sort();
+  if (names.length > keys.length) invalid();
+  const result = {};
+  let sum = 0;
+  for (const key of names) {
+    if (!keys.includes(key)) invalid();
+    const size = count(field(source, key));
+    if (size < MINIMUM_BUCKET_SIZE || size > MAX_COHORT) invalid();
+    sum = add(sum, size);
+    result[key] = size;
+  }
+  if (sum !== (total ?? 0)) invalid();
+  return result;
+}
+
+function cohort(payload, now) {
+  const source = record(payload);
+  if (Object.keys(source).length !== COHORT_FIELDS.length
+    || Object.keys(source).some(key => !COHORT_FIELDS.includes(key))
+    || field(source, 'schema') !== 2 || field(source, 'available') !== true
+    || field(source, 'scope') !== 'unverified cohort observation'
+    || field(source, 'ttl_seconds') !== WINDOW_SECONDS
+    || field(source, 'minimum_bucket_size') !== MINIMUM_BUCKET_SIZE
+    || !Number.isSafeInteger(now) || now < 0) invalid();
+  const observed_at = count(field(source, 'observed_at'));
+  if (observed_at <= 0 || observed_at % WINDOW_SECONDS !== 0
+    || now - observed_at >= WINDOW_SECONDS || observed_at - now > 60) invalid();
+  const rawTotal = field(source, 'total');
+  const total = rawTotal === null ? null : count(rawTotal);
+  if (total !== null && (total < MINIMUM_BUCKET_SIZE || total > MAX_COHORT)) invalid();
+  return {
+    schema: 2, available: true, scope: 'unverified cohort observation', observed_at,
+    ttl_seconds: WINDOW_SECONDS, minimum_bucket_size: MINIMUM_BUCKET_SIZE, total,
+    by_role: partition(field(source, 'by_role'), COHORT_ROLES, total),
+    by_version: partition(field(source, 'by_version'), ['unknown'], total),
+    by_region: partition(field(source, 'by_region'), GEOGRAPHIES, total),
+  };
+}
+
 /** Reject malformed responses; copy only the explicitly public aggregate data. */
-export function normalizePresence(payload) {
-  try { return normalized(payload); }
+export function normalizePresence(payload, now = Math.floor(Date.now() / 1000)) {
+  try {
+    const source = record(payload);
+    return field(source, 'schema') === 2 ? cohort(source, now) : normalized(source);
+  }
   catch { throw new Error(BAD_DATA); }
 }
 
-/** A stable, accessible list, including continents with no observed Macs. */
+// A previously accepted snapshot can remain visible with an explicit stale
+// status. Display helpers recheck its shape, without treating age as new input.
+function displayModel(payload) {
+  const source = record(payload);
+  return field(source, 'schema') === 2 ? cohort(source, field(source, 'observed_at')) : normalized(source);
+}
+
+export function presenceRegions(model) {
+  const clean = displayModel(model);
+  return clean.schema === 2 ? GEOGRAPHIES.flatMap(code => Object.hasOwn(clean.by_region, code)
+    ? [{ continent: code, count: clean.by_region[code], quality: null }] : []) : clean.regions;
+}
+
+/** Cohort omissions remain null; explicit v3 examples can include zero totals. */
 export function continentTotals(model) {
-  const clean = normalizePresence(model);
-  const totals = new Map(CONTINENTS.map((code) => [code, { count: 0, quality: emptyQuality() }]));
+  const clean = displayModel(model);
+  if (clean.schema === 2) return GEOGRAPHIES.map(code => ({
+    continent: code, count: clean.by_region[code] ?? null, quality: null,
+  }));
+  const codes = clean.regions.some(region => !CONTINENTS.includes(region.continent)) ? GEOGRAPHIES : CONTINENTS;
+  const totals = new Map(codes.map((code) => [code, { count: 0, quality: emptyQuality() }]));
   for (const region of clean.regions) {
     mergeCounts(totals.get(region.continent), region.count, region.quality);
   }
-  return CONTINENTS.map((code) => ({ continent: code, ...totals.get(code) }));
+  return codes.map((code) => ({ continent: code, ...totals.get(code) }));
 }
 
 /** Disjoint pulse/row key; the same country on different relays stays separate. */
@@ -228,7 +297,7 @@ export function sessionJitter(code, seed) {
 }
 
 /** Presence is a read-only request without browser credentials or referrers. */
-export async function requestPresence(endpoint, { fetch = globalThis.fetch, signal } = {}) {
+export async function requestPresence(endpoint, { fetch = globalThis.fetch, signal, now = Math.floor(Date.now() / 1000) } = {}) {
   try {
     if (typeof endpoint !== 'string' || endpoint.length > 2048 || typeof fetch !== 'function') invalid();
     const url = new URL(endpoint);
@@ -247,7 +316,7 @@ export async function requestPresence(endpoint, { fetch = globalThis.fetch, sign
     const envelope = record(await response.json());
     if (field(envelope, 'jsonrpc') !== '2.0' || field(envelope, 'id') !== 1
       || Object.hasOwn(envelope, 'error') || !Object.hasOwn(envelope, 'result')) invalid();
-    return normalizePresence(field(envelope, 'result'));
+    return normalizePresence(field(envelope, 'result'), now);
   } catch {
     // Errors must never echo an RPC body, server message, URL or transport data.
     throw new Error(UNAVAILABLE);

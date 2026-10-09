@@ -1,6 +1,7 @@
-import { continentTotals, normalizePresence, regionKey, sessionJitter } from './data.js';
+import { continentTotals, normalizePresence, presenceRegions, regionKey, sessionJitter } from './data.js';
 import { qualityMean, qualityColor } from './quality.js';
 import { COUNTRY_CENTROIDS } from './countries.js';
+import { SUBREGION_CENTROIDS, SUBREGION_NAMES } from './subregions.js';
 import { LAND_POINTS, COASTLINE_POINTS } from './land.js';
 
 // These are bundled artwork anchors, never locations supplied by a node.
@@ -238,7 +239,8 @@ export function createGlobe(canvas, {
       position: new Float32Array([Math.cos(latitude) * Math.sin(longitude), Math.sin(latitude), Math.cos(latitude) * Math.cos(longitude)]),
     };
   }
-  const markers = Object.entries(CENTROIDS).map(([continent, anchor]) => makeMarker({ continent }, anchor));
+  const markers = Object.entries({ ...CENTROIDS, ...SUBREGION_CENTROIDS })
+    .map(([continent, anchor]) => makeMarker({ continent }, anchor));
   const byRegion = new Map(markers.map(marker => [marker.key, marker]));
   const byContinent = new Map(markers.map(marker => [marker.continent, marker]));
   const land = new Float32Array(LAND_POINTS);
@@ -252,8 +254,9 @@ export function createGlobe(canvas, {
   let width = 1, height = 1, dpr = 1, radius = 1;
   let yaw = INITIAL_YAW, pitch = INITIAL_PITCH, time = 0;
   let homeYaw = yaw, homePitch = pitch, centered = false, idleUntil = 0;
-  let labels = { continents: {}, regions: {}, quality: 'Operator quality' }, visibilityKey = '';
-  let unknownCount = 0;
+  let labels = { continents: {}, regions: {}, quality: 'Operator quality', qualityUnavailable: 'Operation quality unavailable' }, visibilityKey = '';
+  let sourceEvidence = true;
+  const unplaced = new Map([['unknown', 0], ['world', 0]]);
   let frame = 0, lastFrame = 0, paused = Boolean(initiallyPaused), visible = true, destroyed = false;
   let hostReducedMotion = Boolean(reducedMotion);
   let staticMode = true, pointer = null;
@@ -538,17 +541,20 @@ export function createGlobe(canvas, {
       marker.leader.style.width = `${Math.max(0, length - pulseRadius).toFixed(2)}px`;
       marker.leader.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
     }
-    states.push({ key: 'unknown', continent: 'unknown', visibility: unknownCount ? 'unknown' : 'empty' });
+    for (const [code, count] of unplaced) {
+      states.push({ key: code, continent: code, visibility: count ? 'unknown' : 'empty' });
+    }
     const key = states.map(region => `${region.key}:${region.visibility}`).join(',');
     if (key !== visibilityKey) { visibilityKey = key; onVisibility(states); }
   }
 
   function labelMarkers() {
     for (const marker of markers) {
-      const name = labels.regions?.[marker.key] || labels.continents[marker.continent] || marker.continent;
+      const name = labels.regions?.[marker.key] || labels.continents[marker.continent]
+        || SUBREGION_NAMES[marker.continent] || marker.continent;
       const text = `${name} ${marker.count.toLocaleString()}`;
       marker.label.textContent = text;
-      const quality = labels.qualityAvailable === false ? labels.qualityUnavailable
+      const quality = !sourceEvidence || labels.qualityAvailable === false ? labels.qualityUnavailable
         : `${labels.quality} ${(marker.score * 100).toFixed(1)} / 100`;
       marker.button.setAttribute('aria-label', `${text} · ${quality}`);
     }
@@ -592,8 +598,9 @@ export function createGlobe(canvas, {
     const end = readColor(canvas, 'quality-end').css;
     const unknown = readColor(canvas, 'quality-unknown').css;
     for (const marker of markers) {
-      marker.button.style.setProperty('--marker-color', labels.qualityAvailable === false ? unknown : qualityColor(marker.score, start, end));
-      marker.button.style.setProperty('--marker-intensity', String(labels.qualityAvailable === false ? .8 : .65 + .35 * marker.score));
+      const measured = sourceEvidence && labels.qualityAvailable !== false;
+      marker.button.style.setProperty('--marker-color', measured ? qualityColor(marker.score, start, end) : unknown);
+      marker.button.style.setProperty('--marker-intensity', String(measured ? .65 + .35 * marker.score : .8));
     }
     measureLabels();
     return draw(force);
@@ -612,6 +619,8 @@ export function createGlobe(canvas, {
   function update(model, { reset = false } = {}) {
     if (destroyed) return;
     const clean = normalizePresence(model);
+    sourceEvidence = clean.schema !== 2;
+    const regions = presenceRegions(clean);
     if (reset) {
       yaw = homeYaw = INITIAL_YAW;
       pitch = homePitch = INITIAL_PITCH;
@@ -621,15 +630,15 @@ export function createGlobe(canvas, {
       if (pointer && canvas.hasPointerCapture(pointer.id)) canvas.releasePointerCapture(pointer.id);
       pointer = null;
     }
-    const activeKeys = new Set(clean.regions.map(regionKey));
+    const activeKeys = new Set(regions.map(regionKey));
     for (let i = markers.length - 1; i >= 0; i--) {
       const marker = markers[i];
       if (marker.country && !activeKeys.has(marker.key)) {
         marker.button.remove(); byRegion.delete(marker.key); markers.splice(i, 1);
       } else { marker.count = 0; marker.score = 0; }
     }
-    unknownCount = 0;
-    for (const region of clean.regions) {
+    for (const code of unplaced.keys()) unplaced.set(code, 0);
+    for (const region of regions) {
       const key = regionKey(region);
       let marker = byRegion.get(key);
       if (!marker && region.country) {
@@ -637,13 +646,16 @@ export function createGlobe(canvas, {
         markers.push(marker); byRegion.set(key, marker);
       }
       if (marker && region.country) { marker.count = region.count; marker.score = qualityMean(region.quality, region.count); }
-      else if (region.continent === 'unknown') unknownCount = region.count;
+      else if (unplaced.has(region.continent)) unplaced.set(region.continent, region.count);
     }
     const totals = new Map();
     for (const total of continentTotals(clean)) {
       totals.set(total.continent, total.count);
       const marker = byContinent.get(total.continent);
-      if (marker) { marker.count = total.count; marker.score = qualityMean(total.quality, total.count); }
+      if (marker) {
+        marker.count = total.count ?? 0;
+        marker.score = total.quality ? qualityMean(total.quality, total.count) : 0;
+      }
     }
     const home = [...totals.keys()].reduce((best, code) =>
       markers.some(marker => marker.continent === code && marker.count) && totals.get(code) > (totals.get(best) || 0) ? code : best, null);
@@ -657,11 +669,11 @@ export function createGlobe(canvas, {
       if (!marker.count) marker.button.hidden = true;
       marker.button.style.setProperty('--marker-size', `${Math.min(60, 16 + Math.sqrt(marker.count) * 8)}px`);
       marker.button.dataset.count = String(marker.count);
-      marker.button.dataset.quality = String(marker.score);
+      marker.button.dataset.quality = sourceEvidence ? String(marker.score) : '';
     }
     labelMarkers();
     arcCount = 0;
-    const blocks = clean.recent_blocks;
+    const blocks = clean.recent_blocks || [];
     for (let i = 1; i < Math.min(blocks.length, MAX_ARCS + 1); i++) {
       const from = byContinent.get(blocks[i - 1].continent), to = byContinent.get(blocks[i].continent);
       if (!from || !to || from === to) continue;

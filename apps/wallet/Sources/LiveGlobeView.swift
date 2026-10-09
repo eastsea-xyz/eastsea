@@ -7,12 +7,26 @@ import WebKit
 /// WebKit receives aggregate JSON and display preferences as named arguments.
 struct LiveGlobeView: View {
     @EnvironmentObject private var model: WalletModel
+    @EnvironmentObject private var node: NodeController
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var height: CGFloat = 680
     @State private var loadFailed = false
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LabeledContent("This Mac's local sub-region", value: node.presenceLocalRegionLabel)
+                .font(.aeCaption)
+            if let country = node.presenceSelectedCountryLabel {
+                LabeledContent("Selected country", value: country).font(.aeCaption)
+            }
+            Text("Local preference only; this Mac is not added to published counts.")
+                .font(.aeCaption).foregroundStyle(.secondary)
+            globeContent
+        }
+    }
+
+    private var globeContent: some View {
         LiveGlobeWebContent(presence: model.liveGlobePresence,
                             state: model.liveGlobeState.rawValue,
                             dark: colorScheme == .dark, reduceMotion: reduceMotion,

@@ -26,7 +26,7 @@ def run(name, country_flags, choice=None, country=None):
     (data / "run").write_text('printf \'%s\\n\' run "$@" > "$ARGV_CAPTURE"\n')
     capture = data / "actual-argv.txt"
     marker = data / "unattended.plist"
-    base = ["run", "--data", str(data), "--rpc-port", "18545", "--port", "19101"]
+    base = ["run", "--data", str(data), "--rpc-port", "18545", "--port", "19101", "--presence-region=030"]
     payload = {"data": str(data), "binary": str(binary), "prove": "", "argv": base + country_flags}
     if choice is not None:
         payload["presence_country_choice"] = choice

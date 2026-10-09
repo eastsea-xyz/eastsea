@@ -17,23 +17,22 @@ from html.parser import HTMLParser
 
 ROOT = Path(__file__).resolve().parents[2]
 LANGUAGES = ("en", "ko", "ja", "zh-Hans", "es")
+NATIVE_LANGUAGES = ("en", "ko", "ja", "zh-Hans", "zh-Hant")
 PUBLIC_KEY = "Private keys stay on this device. Addresses, balances, transactions, rewards and registration records are public on chain indefinitely, even after you stop using the app."
 REGISTRAR_KEY = "Joining encrypts a DeviceCheck token to Pipln's registrar; only it can decrypt it and send it to Apple (USA), at registration and for daily checks. The registrar keeps the voting key, operator and beacon addresses, node ID and registration time without automatic expiry."
-SERVICES_KEY = "Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Ask privacy@eastsea.xyz to delete removable service data; public chain copies cannot be recalled."
+SERVICES_KEY = "Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Contact privacy support to delete removable service data; public chain copies cannot be recalled."
 COUNTRY_KEYS = (
     "Country sharing",
-    "EastSea can use the country in your Mac's Region setting to choose a broad region bucket. The country stays on this Mac. No country preference is sent until you answer here.",
-    "Country sharing is selected below. You can turn it off before continuing.",
-    "Choose whether to share a country. Declining keeps all wallet and node features available.",
-    "The choice contributes only to broad regional counts. Public observations hide groups smaller than three. This choice is not saved on chain. Stop future sharing anytime in Settings; already received aggregate copies may remain.",
-    "Country sharing is optional. Your selected country stays on this Mac and chooses a broad region bucket. Public observations show only counts for groups of at least three. Turning it off stops future use of the country preference. Your relay's region and connection IP address remain visible to peers.",
+    "Your Mac's Region setting chooses a UN M49 sub-region by default. Country sharing is off until you choose Share country.",
+    "Default sub-region",
     "Choose country sharing…",
-    "Continue",
-    "Don't share country",
-    "Share country",
-    "%lld node observations",
-    "All regions",
-    "Counts withheld for privacy",
+    "Choose whether to share a country. Declining keeps all wallet and node features available.",
+    "Your chosen country stays on this Mac and can select its M49 sub-region. Public presence publishes only thresholded regional observations, not country codes or individual Macs. Turning country sharing off restores the default sub-region; already received aggregates may remain.",
+    "The default UN M49 sub-region follows this Mac's Region setting independently of country sharing. Country sharing requires an explicit choice and can select a different sub-region. Public presence does not publish country codes. Turning it off keeps the default sub-region. Peers and relays still see connection IP addresses.",
+    "Don't share country", "Share country", "Share this Mac's country",
+    "This Mac's local sub-region", "Selected country",
+    "Local preference only; this Mac is not added to published counts.",
+    "%lld node observations", "All regions", "Counts withheld for privacy",
     "Unverified cohort observations, not a count of distinct Macs. Broad regions use a local country choice or relays; small groups are folded together.",
 )
 
@@ -134,9 +133,9 @@ class PrivacyTextTests(unittest.TestCase):
         for key in (PUBLIC_KEY, REGISTRAR_KEY, SERVICES_KEY, "Read the privacy policy", "Privacy", *COUNTRY_KEYS):
             with self.subTest(key=key):
                 localizations = self.catalog[key]["localizations"]
-                self.assertEqual(set(localizations), set(LANGUAGES))
+                self.assertEqual(set(localizations), set(NATIVE_LANGUAGES))
                 expected_formats = sorted(re.findall(r"%(?:@|lld|ld|d|f)", key))
-                for language in LANGUAGES:
+                for language in NATIVE_LANGUAGES:
                     unit = localizations[language]["stringUnit"]
                     self.assertEqual(unit["state"], "translated")
                     self.assertTrue(unit["value"].strip())
@@ -168,10 +167,13 @@ class PrivacyTextTests(unittest.TestCase):
             "등록 외 개인정보 수집 없음",
             "Apart from what Mac registration needs, it collects no personal data",
             "No IP address, city or coordinates are shared.",
+            "Your country is shown on the globe; you can turn it off in Settings",
+            "Country sharing is selected below. You can turn it off before continuing.",
+            "country sharing is on by default",
         )
         for text in obsolete:
             with self.subTest(text=text):
-                self.assertNotIn(text, surfaces)
+                self.assertFalse(text in surfaces, f"Obsolete privacy promise remains: {text}")
 
     def test_all_languages_explain_providers_contact_and_indefinite_public_records(self):
         lifetime = {"en": "indefinitely", "ko": "무기한", "ja": "無期限", "zh-Hans": "无限期", "es": "indefinidamente"}
@@ -180,7 +182,23 @@ class PrivacyTextTests(unittest.TestCase):
             with self.subTest(language=language):
                 for token in ("Apple", "DeviceCheck", "Cloudflare", "GitHub", "Sparkle", "Google", "Gmail", "privacy@eastsea.xyz", lifetime[language]):
                     self.assertIn(token, text)
-                self.assertIn("privacy@eastsea.xyz", self.catalog[SERVICES_KEY]["localizations"][language]["stringUnit"]["value"])
+        self.assertIn('privacyContactURL = URL(string: "mailto:privacy@eastsea.xyz")!', self.onboarding)
+        self.assertIn("Terms.privacyContactURL", self.settings)
+
+    def test_country_policy_asks_first_and_keeps_default_m49_region(self):
+        with (ROOT / "apps/wallet/Info-mac.plist").open("rb") as file:
+            info = plistlib.load(file)
+        self.assertEqual(info["PresenceCountrySharingMode"], "ask-before-sending")
+        presence = (ROOT / "apps/wallet/Sources/LivePresence.swift").read_text()
+        self.assertIn("guard let value else { return .askBeforeSending }", presence)
+        self.assertIn('"--presence-region=', presence)
+        self.assertIn('"presence_region": defaultRegion', presence)
+        self.assertIn('Button("Share country") { answer(sharing: true) }', self.onboarding)
+        self.assertNotIn("_sharing = State", self.onboarding)
+        globe = (ROOT / "apps/wallet/Sources/LiveGlobeView.swift").read_text()
+        self.assertIn("if let country = node.presenceSelectedCountryLabel", globe)
+        self.assertIn("Local preference only; this Mac is not added to published counts.", globe)
+        self.assertIn('static var legalLanguage: String { ["ko": "ko"][AppLanguage.identifier] ?? "en" }', self.onboarding)
 
     def test_sparkle_optional_profiling_is_disabled_before_first_check(self):
         with (ROOT / "apps/wallet/Info-mac.plist").open("rb") as file:

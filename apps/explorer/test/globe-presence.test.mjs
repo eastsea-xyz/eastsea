@@ -2,9 +2,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { CONTINENTS, normalizePresence, continentTotals, sessionJitter, requestPresence } from '../live-globe/data.js';
+import { CONTINENTS, normalizePresence, presenceRegions, continentTotals, sessionJitter, requestPresence } from '../live-globe/data.js';
 import { summarizeQuality, qualityMean, qualityScore } from '../live-globe/quality.js';
 import { COUNTRY_CENTROIDS } from '../live-globe/countries.js';
+import { SUBREGION_CODES, SUBREGION_NAMES, SUBREGION_CENTROIDS } from '../live-globe/subregions.js';
 
 const zeroQuality = count => ({ score_sum: 0, histogram: [count, ...Array(19).fill(0)] });
 const region = (continent, count, extra = {}) => ({ continent, count, quality: zeroQuality(count), ...extra });
@@ -20,6 +21,89 @@ function presence(regions = [], extras = {}) {
 const response = result => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result }) });
 const genericDataError = error => error.message === 'Invalid presence data.';
 const genericRequestError = error => error.message === 'Live presence is unavailable.';
+
+function cohort(by_region = { '030': 3 }, extras = {}) {
+  const total = Object.values(by_region).reduce((sum, count) => sum + count, 0);
+  return {
+    schema: 2, available: true, scope: 'unverified cohort observation',
+    observed_at: Math.floor(Date.now() / 600_000) * 600, ttl_seconds: 600, minimum_bucket_size: 3,
+    total, by_role: { unknown: total }, by_version: { unknown: total }, by_region, ...extras,
+  };
+}
+
+test('schema 2 preserves frozen cohort partitions without inventing measured metadata', () => {
+  const input = cohort({ '030': 3, unknown: 3, world: 3 }, { by_role: { validator: 3, unknown: 3, other: 3 } });
+  const model = normalizePresence(input);
+  assert.deepEqual(model, input);
+  assert.deepEqual(normalizePresence(model), model);
+  assert.deepEqual(presenceRegions(model), [
+    { continent: '030', count: 3, quality: null },
+    { continent: 'unknown', count: 3, quality: null },
+    { continent: 'world', count: 3, quality: null },
+  ]);
+  assert.deepEqual(continentTotals(model).find(region => region.continent === '021'),
+    { continent: '021', count: null, quality: null });
+  for (const field of ['quality_version', 'roles', 'reserve_keys', 'recent_blocks', 'nodes', 'country']) {
+    assert.ok(!Object.hasOwn(model, field), field);
+  }
+});
+
+test('schema 2 withholds small totals and rejects residual, identifying and expired data', () => {
+  const now = 1_791_440_123;
+  const observed_at = Math.floor(now / 600) * 600;
+  const input = cohort({ '030': 3 }, { observed_at });
+  const withheld = cohort({}, { total: null, by_role: {}, by_version: {}, observed_at });
+  assert.equal(normalizePresence(withheld, now).total, null);
+  assert.deepEqual(presenceRegions(withheld), []);
+  const invalid = [
+    ...[0, 1, 2, 4097, true, '3'].map(total => ({ ...input, total })),
+    { ...input, available: false }, { ...input, ttl_seconds: 180 },
+    { ...input, minimum_bucket_size: 2 }, { ...input, scope: 'node' },
+    { ...input, observed_at: observed_at + 1 }, { ...input, observed_at: observed_at - 600 },
+    { ...input, observed_at: observed_at + 600 },
+    { ...input, by_role: { unknown: 2, other: 1 } },
+    { ...input, by_version: { '0.7.4': 3 } }, { ...input, by_region: { KR: 3 } },
+    { ...withheld, by_region: { '030': 3 } },
+    ...['nodes', 'observer', 'country', 'by_country', 'quality_version', 'coordinates'].map(key => ({ ...input, [key]: 'private' })),
+  ];
+  for (const source of invalid) assert.throws(() => normalizePresence(source, now), genericDataError);
+  for (const clock of [NaN, Infinity, -1, now + .5]) assert.throws(() => normalizePresence(input, clock), genericDataError);
+  let reads = 0;
+  const getter = { ...input };
+  Object.defineProperty(getter, 'total', { enumerable: true, get() { reads++; return 3; } });
+  assert.throws(() => normalizePresence(getter, now), genericDataError);
+  assert.equal(reads, 0);
+  // A stale, previously accepted snapshot can still be listed as historical data.
+  assert.equal(continentTotals(input).find(region => region.continent === '030').count, 3);
+});
+
+test('UN M49 uses the 17 official subregions rather than intermediate groups', () => {
+  assert.equal(SUBREGION_CODES.length, 17);
+  assert.equal(new Set(SUBREGION_CODES).size, 17);
+  assert.equal(SUBREGION_NAMES['202'], 'Sub-Saharan Africa');
+  assert.equal(SUBREGION_NAMES['419'], 'Latin America and the Caribbean');
+  for (const code of SUBREGION_CODES) {
+    assert.equal(presenceRegions(normalizePresence(cohort({ [code]: 3 })))[0].continent, code);
+    const anchor = SUBREGION_CENTROIDS[code];
+    assert.ok(Object.isFrozen(anchor) && anchor.every(Number.isFinite));
+    assert.ok(Math.abs(anchor[0]) <= 180 && Math.abs(anchor[1]) <= 90);
+  }
+  for (const code of ['014', '017', '018', '011', '029', '013', '005', '999']) {
+    assert.throws(() => normalizePresence(cohort({ [code]: 3 })), genericDataError);
+  }
+  const legacy = normalizePresence(cohort({ asia: 3 }));
+  assert.deepEqual(presenceRegions(legacy), [{ continent: 'asia', count: 3, quality: null }]);
+  assert.ok(continentTotals(legacy).filter(region => SUBREGION_CODES.includes(region.continent))
+    .every(region => region.count === null));
+  assert.equal(normalizePresence(presence([region('030', 3)])).regions[0].continent, '030');
+});
+
+test('public presence requests accept safe schema-2 cohorts and valid withheld responses', async () => {
+  const input = cohort();
+  assert.deepEqual(await requestPresence('https://read.invalid/rpc', { fetch: async () => response(input) }), input);
+  const withheld = cohort({}, { total: null, by_role: {}, by_version: {} });
+  assert.equal((await requestPresence('https://read.invalid/rpc', { fetch: async () => response(withheld) })).total, null);
+});
 
 test('today snapshot has four Macs, separate validators, and scores from the supplied streaks', async () => {
   const fixture = JSON.parse(await readFile(new URL('../live-globe/fixture.json', import.meta.url), 'utf8'));

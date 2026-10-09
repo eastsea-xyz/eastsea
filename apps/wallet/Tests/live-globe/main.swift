@@ -222,6 +222,12 @@ check(!local.aggregateJSON.contains("quality") && !local.aggregateJSON.contains(
       && !local.aggregateJSON.contains("recent_blocks") && !local.aggregateJSON.contains("node_id"),
       "native placeholder metadata never enters cohort JavaScript JSON")
 check(LiveGlobePresence.parse(bridged, now: now) == local, "cohort bridge JSON remains a valid safe cohort")
+var m49Source = cohortSource
+m49Source["by_region"] = ["030": 3, "202": 3, "419": 3]
+let m49 = LiveGlobePresence.parse(m49Source, now: now)!
+check(Set(m49.regions.map(\.continent)) == Set(["030", "202", "419"])
+      && m49.regions.reduce(0, { $0 + $1.count }) == 9 && !m49.hasQualityEvidence,
+      "the M49 adapter preserves published groups without inventing quality")
 
 let invalidCohortFields: [(String, Any)] = [
     ("available", false), ("observed_at", observed - 600), ("observed_at", observed + 600),

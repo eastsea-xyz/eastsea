@@ -318,13 +318,13 @@
             "value" : "%@ %lld"
           }
         },
-        "ko" : {
+        "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ %lld"
           }
         },
-        "ja" : {
+        "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ %lld"
@@ -336,10 +336,45 @@
             "value" : "%@ %lld"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ %lld"
+          }
+        }
+      }
+    },
+    "%@ (legacy broad region)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ (legacy broad region)"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@（従来の広域区分）"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ (이전 방식의 넓은 지역)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@（旧版大范围地区）"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@（舊版大範圍地區）"
           }
         }
       }
@@ -1379,16 +1414,16 @@
             "value" : "%lld node observations"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld개 노드 관측값"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld件のノード観測"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld개 노드 관측값"
           }
         },
         "zh-Hans" : {
@@ -1397,10 +1432,10 @@
             "value" : "%lld 个节点观测"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%lld observaciones de nodos"
+            "value" : "%lld 個節點觀測"
           }
         }
       }
@@ -2737,10 +2772,34 @@
     "A required app file is missing. The app was not opened." : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A required app file is missing. The app was not opened."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "必要なアプリファイルがないため、アプリを開きませんでした。"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "필요한 파일이 없어 앱을 열지 않았습니다."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "缺少必需的应用文件，未打开应用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "缺少必需的應用文件，未打開應用。"
           }
         }
       }
@@ -3236,12 +3295,6 @@
             "value" : "Activity signal unavailable"
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Indicador de actividad no disponible"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -3258,6 +3311,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "活动指标不可用"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "活動指標不可用"
           }
         }
       }
@@ -3649,16 +3708,16 @@
             "value" : "Africa"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "아프리카"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "アフリカ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "아프리카"
           }
         },
         "zh-Hans" : {
@@ -3667,10 +3726,10 @@
             "value" : "非洲"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "África"
+            "value" : "非洲"
           }
         }
       }
@@ -3993,16 +4052,16 @@
             "value" : "All regions"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "모든 지역"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "すべての地域"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "모든 지역"
           }
         },
         "zh-Hans" : {
@@ -4011,10 +4070,10 @@
             "value" : "所有地区"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Todas las regiones"
+            "value" : "所有地區"
           }
         }
       }
@@ -4504,18 +4563,47 @@
         }
       }
     },
+    "Antarctica" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Antarctica"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "南極"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "남극"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "南极洲"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "南極洲"
+          }
+        }
+      }
+    },
     "App address" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "App address"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dirección de la app"
           }
         },
         "ja" : {
@@ -4534,6 +4622,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "应用地址"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "應用地址"
           }
         }
       }
@@ -4750,12 +4844,6 @@
             "value" : "Apps and names recorded on chain"
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Apps y nombres registrados en la cadena"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -4773,6 +4861,12 @@
             "state" : "translated",
             "value" : "链上记录的应用和名称"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "鏈上記錄的應用和名稱"
+          }
         }
       }
     },
@@ -4785,16 +4879,16 @@
             "value" : "Asia"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "아시아"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "アジア"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "아시아"
           }
         },
         "zh-Hans" : {
@@ -4803,10 +4897,10 @@
             "value" : "亚洲"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Asia"
+            "value" : "亞洲"
           }
         }
       }
@@ -4909,6 +5003,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "登入時"
+          }
+        }
+      }
+    },
+    "Australia and New Zealand" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Australia and New Zealand"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "オーストラリアとニュージーランド"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "오스트레일리아와 뉴질랜드"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "澳大利亚和新西兰"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "澳大利亞和新西蘭"
           }
         }
       }
@@ -5093,12 +5222,6 @@
             "value" : "Back to Explore"
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Volver a Explorar"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -5112,6 +5235,12 @@
           }
         },
         "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返回探索"
+          }
+        },
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "返回探索"
@@ -6391,12 +6520,6 @@
             "value" : "Category"
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Categoría"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -6413,6 +6536,47 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "类别"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "類別"
+          }
+        }
+      }
+    },
+    "Central Asia" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Central Asia"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中央アジア"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "중앙아시아"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中亚"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中亞"
           }
         }
       }
@@ -6906,16 +7070,16 @@
             "value" : "Choose a country"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "국가를 선택해 주세요"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "国を選択"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "국가를 선택해 주세요"
           }
         },
         "zh-Hans" : {
@@ -6924,10 +7088,10 @@
             "value" : "选择国家"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Elige un país"
+            "value" : "選擇國家"
           }
         }
       }
@@ -7046,16 +7210,16 @@
             "value" : "Choose country sharing…"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "국가 설정 공유 선택…"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "国設定の共有を選択…"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "국가 설정 공유 선택…"
           }
         },
         "zh-Hans" : {
@@ -7064,10 +7228,10 @@
             "value" : "选择国家设置共享…"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Elegir si compartir el país…"
+            "value" : "選擇國家設置共享…"
           }
         }
       }
@@ -7150,16 +7314,16 @@
             "value" : "Choose whether to share a country. Declining keeps all wallet and node features available."
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "국가 설정을 공유할지 선택하세요. 거절해도 지갑과 노드의 모든 기능을 이용할 수 있어요."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "国設定を共有するか選んでください。拒否してもウォレットとノードの全機能を利用できます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "국가 설정을 공유할지 선택하세요. 거절해도 지갑과 노드의 모든 기능을 이용할 수 있어요."
           }
         },
         "zh-Hans" : {
@@ -7168,10 +7332,10 @@
             "value" : "请选择是否共享国家设置。拒绝不会影响钱包和节点的任何功能。"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Elige si quieres compartir el país. Rechazarlo mantiene todas las funciones de la cartera y el nodo."
+            "value" : "請選擇是否共享國家設置。拒絕不會影響錢包和節點的任何功能。"
           }
         }
       }
@@ -7254,12 +7418,6 @@
             "value" : "Close"
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cerrar"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -7276,6 +7434,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "关闭"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "關閉"
           }
         }
       }
@@ -7896,6 +8060,41 @@
         }
       }
     },
+    "Contact privacy support" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Contact privacy support"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "プライバシーに関する問い合わせ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "개인정보 문의"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "联系隐私支持"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "聯繫隱私支持"
+          }
+        }
+      }
+    },
     "Contacts" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -7939,12 +8138,6 @@
             "value" : "Content hash not recorded"
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Hash de contenido sin registrar"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -7962,6 +8155,12 @@
             "state" : "translated",
             "value" : "未记录内容哈希"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未記錄內容哈希"
+          }
         }
       }
     },
@@ -7971,12 +8170,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Content hash present"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Hash de contenido registrado"
           }
         },
         "ja" : {
@@ -7996,6 +8189,12 @@
             "state" : "translated",
             "value" : "已记录内容哈希"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已記錄內容哈希"
+          }
         }
       }
     },
@@ -8008,16 +8207,16 @@
             "value" : "Continue"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "계속"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "続ける"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "계속"
           }
         },
         "zh-Hans" : {
@@ -8026,10 +8225,10 @@
             "value" : "继续"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Continuar"
+            "value" : "繼續"
           }
         }
       }
@@ -8764,16 +8963,16 @@
             "value" : "Country"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "국가"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "国"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "국가"
           }
         },
         "zh-Hans" : {
@@ -8782,45 +8981,10 @@
             "value" : "国家"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "País"
-          }
-        }
-      }
-    },
-    "Country comes from this Mac's region setting. Turning it off keeps this Mac in its continent. The globe receives no IP addresses, cities or coordinates." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Country comes from this Mac's region setting. Turning it off keeps this Mac in its continent. The globe receives no IP addresses, cities or coordinates."
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "국가는 이 Mac의 지역 설정을 기준으로 해요. 끄면 이 Mac은 대륙 수에만 포함돼요. 지구본에는 IP 주소, 도시, 좌표를 보내지 않아요."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "国はこのMacの地域設定に基づきます。オフにすると、このMacは大陸の集計にのみ含まれます。地球儀にはIPアドレス、都市、座標を送信しません。"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "国家取自此 Mac 的地区设置。关闭后，此 Mac 仍计入其所在大洲。地球仪不会接收 IP 地址、城市或坐标。"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "El país procede del ajuste de región de este Mac. Al desactivarlo, este Mac sigue en el recuento de su continente. El globo no recibe direcciones IP, ciudades ni coordenadas."
+            "value" : "國家"
           }
         }
       }
@@ -8834,16 +8998,16 @@
             "value" : "Country sharing"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "국가 설정 공유"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "国設定の共有"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "국가 설정 공유"
           }
         },
         "zh-Hans" : {
@@ -8852,80 +9016,10 @@
             "value" : "国家设置共享"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Compartir país"
-          }
-        }
-      }
-    },
-    "Country sharing is optional. Your selected country stays on this Mac and chooses a broad region bucket. Public observations show only counts for groups of at least three. Turning it off stops future use of the country preference. Your relay's region and connection IP address remain visible to peers." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Country sharing is optional. Your selected country stays on this Mac and chooses a broad region bucket. Public observations show only counts for groups of at least three. Turning it off stops future use of the country preference. Your relay's region and connection IP address remain visible to peers."
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "국가 설정 공유는 선택 사항이에요. 선택한 국가는 이 Mac에만 남고 넓은 지역 버킷을 정해요. 공개 관측값은 3개 이상 그룹의 수만 표시해요. 끄면 앞으로 국가 설정을 쓰지 않아요. 릴레이 지역과 연결 IP 주소는 피어에게 계속 보일 수 있어요."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "国設定の共有は任意です。選んだ国はこのMacに残り、広域地域の区分を選びます。公開観測値は3件以上の集団の数だけを表示します。オフにすると今後の国設定の使用が止まります。リレーの地域と接続IPアドレスは引き続きピアから見えます。"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "国家设置共享是可选的。所选国家留在此Mac，仅用于选择大范围地区分组。公开观测只显示至少3个的群体数量。关闭会停止今后使用国家偏好。对等节点仍可看到中继地区和连接IP地址。"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Compartir el país es opcional. El país elegido permanece en este Mac y selecciona una región amplia. Las observaciones públicas solo muestran recuentos de grupos de al menos tres. Desactivarlo detiene el uso futuro de la preferencia. Los pares siguen viendo la región del relé y la IP de conexión."
-          }
-        }
-      }
-    },
-    "Country sharing is selected below. You can turn it off before continuing." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Country sharing is selected below. You can turn it off before continuing."
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "아래에서 국가 설정 공유가 선택되어 있어요. 계속하기 전에 끌 수 있어요."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "下で国設定の共有が選択されています。続行前にオフにできます。"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "下方已选中国家设置共享。你可以在继续之前关闭。"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Compartir el país está seleccionado abajo. Puedes desactivarlo antes de continuar."
+            "value" : "國家設置共享"
           }
         }
       }
@@ -8939,16 +9033,16 @@
             "value" : "Counts withheld for privacy"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "개인정보 보호를 위해 수 비공개"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "プライバシー保護のため集計非公開"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "개인정보 보호를 위해 수 비공개"
           }
         },
         "zh-Hans" : {
@@ -8957,10 +9051,10 @@
             "value" : "出于隐私保护不显示数量"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Recuentos ocultos por privacidad"
+            "value" : "出於隱私保護不顯示數量"
           }
         }
       }
@@ -9235,6 +9329,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "預設（此 Mac 的內建磁碟）"
+          }
+        }
+      }
+    },
+    "Default sub-region" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Default sub-region"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "既定の地域区分"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "기본 세부 지역"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默认次区域"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默認次區域"
           }
         }
       }
@@ -9760,12 +9889,6 @@
             "value" : "Distinct callers in the last 7 days"
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Direcciones distintas que llamaron en los últimos 7 días"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -9783,6 +9906,12 @@
             "state" : "translated",
             "value" : "过去7天内调用的不同地址数"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "過去7天內調用的不同地址數"
+          }
         }
       }
     },
@@ -9795,16 +9924,16 @@
             "value" : "Don't share country"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "국가 설정 공유 안 함"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "国設定を共有しない"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "국가 설정 공유 안 함"
           }
         },
         "zh-Hans" : {
@@ -9813,10 +9942,10 @@
             "value" : "不共享国家设置"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No compartir el país"
+            "value" : "不共享國家設置"
           }
         }
       }
@@ -9851,12 +9980,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "完成"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Listo"
           }
         }
       }
@@ -10210,41 +10333,6 @@
         }
       }
     },
-    "EastSea can use the country in your Mac's Region setting to choose a broad region bucket. The country stays on this Mac. No country preference is sent until you answer here." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "EastSea can use the country in your Mac's Region setting to choose a broad region bucket. The country stays on this Mac. No country preference is sent until you answer here."
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "동해는 Mac의 지역 설정에 있는 국가로 넓은 지역 버킷을 정할 수 있어요. 국가는 이 Mac에만 남아요. 여기에서 응답하기 전에는 국가 설정을 보내지 않아요."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "EastSeaはMacの地域設定の国を使い、広域の地域区分を選べます。国はこのMacに残ります。ここで回答するまで国の設定は送信されません。"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "EastSea可使用Mac地区设置中的国家来选择大范围地区分组。国家留在本机。在你回答此页面之前，不会发送任何国家偏好。"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "EastSea puede usar el país de la configuración regional del Mac para elegir una región amplia. El país permanece en este Mac. No se envía ninguna preferencia de país hasta que respondas aquí."
-          }
-        }
-      }
-    },
     "EastSea diagnostics — no address, balance or node ID inside. Nothing was sent from this Mac." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -10381,6 +10469,76 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "EastSea 網站"
+          }
+        }
+      }
+    },
+    "Eastern Asia" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eastern Asia"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "東アジア"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "동아시아"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "东亚"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "東亞"
+          }
+        }
+      }
+    },
+    "Eastern Europe" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eastern Europe"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "東ヨーロッパ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "동유럽"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "东欧"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "東歐"
           }
         }
       }
@@ -10566,16 +10724,16 @@
             "value" : "Europe"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "유럽"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "ヨーロッパ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "유럽"
           }
         },
         "zh-Hans" : {
@@ -10584,10 +10742,10 @@
             "value" : "欧洲"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Europa"
+            "value" : "歐洲"
           }
         }
       }
@@ -11281,10 +11439,34 @@
     "Fetching and verifying app files…" : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fetching and verifying app files…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アプリファイルを取得して検証中…"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "앱 파일을 받아 검증하는 중…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在获取并验证应用文件…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在獲取並驗證應用文件…"
           }
         }
       }
@@ -11366,12 +11548,6 @@
             "value" : "Find apps and .sea names using your own node."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Encuentra apps y nombres .sea usando tu propio nodo."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -11388,6 +11564,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "通过自己的节点查找应用和 .sea 名称。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通過自己的節點查找應用和 .sea 名稱。"
           }
         }
       }
@@ -12190,12 +12372,6 @@
             "value" : "How results are ordered"
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cómo se ordenan los resultados"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -12212,6 +12388,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "结果如何排序"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "結果如何排序"
           }
         }
       }
@@ -12458,10 +12640,34 @@
     "In development · not verified" : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In development · not verified"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "開発中 · 未検証"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "개발 중 · 검증 안 됨"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开发中 · 未验证"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "開發中 · 未驗證"
           }
         }
       }
@@ -13099,16 +13305,16 @@
             "value" : "Joining encrypts a DeviceCheck token to Pipln's registrar; only it can decrypt it and send it to Apple (USA), at registration and for daily checks. The registrar keeps the voting key, operator and beacon addresses, node ID and registration time without automatic expiry."
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "참여하면 DeviceCheck 토큰을 Pipln 등록기의 키로 암호화해요. 등록기만 복호화할 수 있고, 등록 때와 일일 확인 때 Apple(미국)에 보내요. 등록기는 투표키, 운영자·비콘 주소, 노드 ID와 등록 시각을 자동 만료 없이 보관해요."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "参加時にDeviceCheckトークンをPiplnの登録サービスの鍵で暗号化します。登録サービスだけが復号し、登録時と日次確認時にApple（米国）に送ります。投票鍵、運営者・ビーコンのアドレス、ノードIDと登録時刻を自動期限なしで保持します。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "참여하면 DeviceCheck 토큰을 Pipln 등록기의 키로 암호화해요. 등록기만 복호화할 수 있고, 등록 때와 일일 확인 때 Apple(미국)에 보내요. 등록기는 투표키, 운영자·비콘 주소, 노드 ID와 등록 시각을 자동 만료 없이 보관해요."
           }
         },
         "zh-Hans" : {
@@ -13117,10 +13323,10 @@
             "value" : "加入时，DeviceCheck令牌使用Pipln注册服务的密钥加密。仅注册服务可解密，并在注册和每日检查时发送给Apple（美国）。注册服务保存投票密钥、运营者和信标地址、节点ID及注册时间，不设自动到期。"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Al unirte, el token de DeviceCheck se cifra con la clave del registrador de Pipln. Solo él puede descifrarlo y enviarlo a Apple (EE. UU.) al registrarte y en las verificaciones diarias. Conserva la clave de votación, direcciones del operador y la baliza, ID del nodo y hora de registro sin caducidad automática."
+            "value" : "加入時，DeviceCheck令牌使用Pipln註冊服務的密鑰加密。僅註冊服務可解密，並在註冊和每日檢查時發送給Apple（美國）。註冊服務保存投票密鑰、運營者和信標地址、節點ID及註冊時間，不設自動到期。"
           }
         }
       }
@@ -13579,16 +13785,16 @@
             "value" : "Last available count"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "마지막으로 확인한 수"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "最後に取得した台数"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "마지막으로 확인한 수"
           }
         },
         "zh-Hans" : {
@@ -13597,10 +13803,10 @@
             "value" : "上次获取的数量"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Último recuento disponible"
+            "value" : "上次獲取的數量"
           }
         }
       }
@@ -13811,6 +14017,41 @@
         }
       }
     },
+    "Latin America and the Caribbean" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Latin America and the Caribbean"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ラテンアメリカとカリブ海地域"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "라틴 아메리카와 카리브해"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拉丁美洲和加勒比地区"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拉丁美洲和加勒比地區"
+          }
+        }
+      }
+    },
     "Launch a token" : {
       "localizations" : {
         "en" : {
@@ -13990,12 +14231,6 @@
             "value" : "Legacy .aeth names are only available on testnet 7780."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Los nombres .aeth antiguos solo están disponibles en la red de prueba 7780."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -14012,6 +14247,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "旧 .aeth 名称仅可用于测试网 7780。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "舊 .aeth 名稱僅可用於測試網 7780。"
           }
         }
       }
@@ -14056,31 +14297,31 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Live count: what this node can see. Regions come from relays, not a Mac's location."
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "실시간 수는 이 노드에서 보이는 Mac 수예요. 지역은 Mac의 위치가 아니라 릴레이를 기준으로 해요."
+            "value" : "Unverified cohort observations. Known sub-regions follow UN M49; older relay groups remain broad."
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "このノードから見えるMacの数です。地域はMacの所在地ではなく、リレーに基づきます。"
+            "value" : "未検証の集団観測です。既知の地域区分は国連標準に従い、従来のリレー情報は広域区分として表示します。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증되지 않은 그룹 관측값이에요. 알려진 세부 지역은 유엔 표준 분류를 따르며 이전 릴레이 정보는 넓은 지역으로 표시해요."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "实时数量仅反映此节点可见的 Mac。地区来自中继，而非 Mac 的位置。"
+            "value" : "这是未经验证的群体观测，已知次区域遵循联合国标准，旧版中继信息保留为大范围地区。"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "El recuento muestra lo que este nodo puede ver. Las regiones proceden de los relés, no de la ubicación del Mac."
+            "value" : "這是未經驗證的群體觀測，已知次區域遵循聯合國標準，舊版中繼信息保留為大範圍地區。"
           }
         }
       }
@@ -14094,16 +14335,16 @@
             "value" : "Live network privacy"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "실시간 네트워크 개인정보"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "ライブネットワークのプライバシー"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "실시간 네트워크 개인정보"
           }
         },
         "zh-Hans" : {
@@ -14112,10 +14353,10 @@
             "value" : "实时网络隐私"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Privacidad de la red en vivo"
+            "value" : "實時網絡隱私"
           }
         }
       }
@@ -14129,16 +14370,16 @@
             "value" : "Live network unavailable"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "실시간 네트워크 정보를 가져올 수 없어요"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "ライブネットワークを利用できません"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "실시간 네트워크 정보를 가져올 수 없어요"
           }
         },
         "zh-Hans" : {
@@ -14147,10 +14388,10 @@
             "value" : "实时网络不可用"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Red en directo no disponible"
+            "value" : "實時網絡不可用"
           }
         }
       }
@@ -14325,18 +14566,47 @@
         }
       }
     },
+    "Local preference only; this Mac is not added to published counts." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local preference only; this Mac is not added to published counts."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ローカル設定の表示です。このMacを公開数に追加しません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "로컬 설정 안내이며 이 Mac을 공개 수치에 더하지 않아요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅显示本地偏好，不将此Mac加入公开数量。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "僅顯示本地偏好，不將此Mac加入公開數量。"
+          }
+        }
+      }
+    },
     "Lookalike warning" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lookalike warning"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aviso de nombre similar"
           }
         },
         "ja" : {
@@ -14355,6 +14625,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "相似名称警告"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相似名稱警告"
           }
         }
       }
@@ -14504,16 +14780,16 @@
             "value" : "Mac region"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mac 지역"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Macの地域"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac 지역"
           }
         },
         "zh-Hans" : {
@@ -14522,10 +14798,10 @@
             "value" : "Mac 地区"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Región del Mac"
+            "value" : "Mac 地區"
           }
         }
       }
@@ -14536,31 +14812,31 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Macs this node can see"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "이 노드에서 보이는 Mac"
+            "value" : "Cohort observations"
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "このノードから見えるMac"
+            "value" : "観測集団"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "관측 그룹"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "此节点可见的 Mac"
+            "value" : "观测群体"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Macs visibles para este nodo"
+            "value" : "觀測群體"
           }
         }
       }
@@ -14737,6 +15013,41 @@
         }
       }
     },
+    "Melanesia" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Melanesia"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "メラネシア"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "멜라네시아"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "美拉尼西亚"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "美拉尼西亞"
+          }
+        }
+      }
+    },
     "Memory limit" : {
       "localizations" : {
         "en" : {
@@ -14801,6 +15112,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "目前記憶體：%@，共 %@"
+          }
+        }
+      }
+    },
+    "Micronesia" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Micronesia"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ミクロネシア"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "미크로네시아"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "密克罗尼西亚"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "密克羅尼西亞"
           }
         }
       }
@@ -15195,12 +15541,6 @@
             "value" : "Name registry is not available on this network."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "El registro de nombres no está disponible en esta red."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -15217,6 +15557,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此网络尚无名称注册表。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此網絡尚無名稱註冊表。"
           }
         }
       }
@@ -15251,12 +15597,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "網路"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Red"
           }
         }
       }
@@ -15717,12 +16057,6 @@
             "value" : "No app is linked to this name."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "No hay ninguna aplicación vinculada a este nombre."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -15739,6 +16073,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此名称未关联应用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此名稱未關聯應用。"
           }
         }
       }
@@ -15958,12 +16298,6 @@
             "value" : "No matching apps or names."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "No hay apps ni nombres que coincidan."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -15980,6 +16314,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "没有匹配的应用或名称。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "沒有匹配的應用或名稱。"
           }
         }
       }
@@ -16648,16 +16988,16 @@
             "value" : "North America"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "북아메리카"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "北アメリカ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "북아메리카"
           }
         },
         "zh-Hans" : {
@@ -16666,10 +17006,115 @@
             "value" : "北美洲"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Norteamérica"
+            "value" : "北美洲"
+          }
+        }
+      }
+    },
+    "Northern Africa" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Northern Africa"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "北アフリカ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "북부 아프리카"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "北非"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "北非"
+          }
+        }
+      }
+    },
+    "Northern America" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Northern America"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "北部アメリカ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "북부 아메리카"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "北美地区"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "北美地區"
+          }
+        }
+      }
+    },
+    "Northern Europe" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Northern Europe"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "北ヨーロッパ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "북유럽"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "北欧"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "北歐"
           }
         }
       }
@@ -17233,16 +17678,16 @@
             "value" : "Oceania"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "오세아니아"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "オセアニア"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "오세아니아"
           }
         },
         "zh-Hans" : {
@@ -17251,10 +17696,10 @@
             "value" : "大洋洲"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Oceanía"
+            "value" : "大洋洲"
           }
         }
       }
@@ -18192,16 +18637,16 @@
             "value" : "Open Network"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "네트워크 열기"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "ネットワークを開く"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "네트워크 열기"
           }
         },
         "zh-Hans" : {
@@ -18210,10 +18655,10 @@
             "value" : "打开网络"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Abrir Red"
+            "value" : "打開網絡"
           }
         }
       }
@@ -18323,10 +18768,34 @@
     "Open a local app folder" : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open a local app folder"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ローカルのアプリフォルダを開く"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "로컬 앱 폴더 열기"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开本地应用文件夹"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打開本地應用文件夾"
           }
         }
       }
@@ -19287,37 +19756,37 @@
         }
       }
     },
-    "Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Ask privacy@eastsea.xyz to delete removable service data; public chain copies cannot be recalled." : {
+    "Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Contact privacy support to delete removable service data; public chain copies cannot be recalled." : {
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Ask privacy@eastsea.xyz to delete removable service data; public chain copies cannot be recalled."
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "피어와 릴레이는 연결 IP 주소를 보고, RPC 노드는 조회한 주소를 봐요. Cloudflare는 사이트와 게이트웨이를 호스팅하고, GitHub는 Sparkle 업데이트 요청의 IP 주소와 앱 버전을 받아요. 삭제 가능한 서비스 데이터는 privacy@eastsea.xyz로 요청하세요. 공개 체인 사본은 회수할 수 없어요."
+            "value" : "Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Contact privacy support to delete removable service data; public chain copies cannot be recalled."
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "ピアとリレーは接続IPアドレスを、RPCノードは照会したアドレスを確認できます。Cloudflareはサイトとゲートウェイをホストし、GitHubはIPアドレスとアプリのバージョンを含むSparkleの更新リクエストを受け取ります。削除可能なサービスデータはprivacy@eastsea.xyzに請求してください。公開チェーンのコピーは回収できません。"
+            "value" : "ピアとリレーは接続IPアドレスを、RPCノードは照会したアドレスを確認できます。Cloudflareはサイトとゲートウェイをホストし、GitHubはIPアドレスとアプリのバージョンを含むSparkleの更新リクエストを受け取ります。削除可能なサービスデータはプライバシー窓口に請求してください。公開チェーンのコピーは回収できません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "피어와 릴레이는 연결 IP 주소를 보고, RPC 노드는 조회한 주소를 봐요. Cloudflare는 사이트와 게이트웨이를 호스팅하고, GitHub는 Sparkle 업데이트 요청의 IP 주소와 앱 버전을 받아요. 삭제 가능한 서비스 데이터는 개인정보 문의로 요청하세요. 공개 체인 사본은 회수할 수 없어요."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "对等节点和中继可看到连接IP地址，RPC节点可看到查询地址。Cloudflare托管网站和网关；GitHub收到Sparkle发出的更新请求，包括IP地址和应用版本。请向privacy@eastsea.xyz请求删除可移除的服务数据，公共链副本无法收回。"
+            "value" : "对等节点和中继可看到连接IP地址，RPC节点可看到查询地址。Cloudflare托管网站和网关；GitHub收到Sparkle发出的更新请求，包括IP地址和应用版本。请联系隐私支持请求删除可移除的服务数据，公共链副本无法收回。"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Los pares y relés ven las IP de conexión; los nodos RPC ven las direcciones consultadas. Cloudflare aloja el sitio y la pasarela; GitHub recibe solicitudes de actualización de Sparkle con tu IP y versión de la app. Solicita borrar datos eliminables del servicio a privacy@eastsea.xyz; las copias públicas de la cadena no se pueden recuperar."
+            "value" : "對等節點和中繼可看到連接IP地址，RPC節點可看到查詢地址。Cloudflare托管網站和網關；GitHub收到Sparkle發出的更新請求，包括IP地址和應用版本。請聯繫隱私支持請求刪除可移除的服務數據，公共鏈副本無法收回。"
           }
         }
       }
@@ -19562,6 +20031,41 @@
         }
       }
     },
+    "Polynesia" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Polynesia"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ポリネシア"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "폴리네시아"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "波利尼西亚"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "波利尼西亞"
+          }
+        }
+      }
+    },
     "Power settings cannot be read. Turn this Mac on by hand after a power cut." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -19675,16 +20179,16 @@
             "value" : "Privacy"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "개인정보"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "プライバシー"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "개인정보"
           }
         },
         "zh-Hans" : {
@@ -19693,10 +20197,10 @@
             "value" : "隐私"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Privacidad"
+            "value" : "隱私"
           }
         }
       }
@@ -19745,16 +20249,16 @@
             "value" : "Private keys stay on this device. Addresses, balances, transactions, rewards and registration records are public on chain indefinitely, even after you stop using the app."
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "개인키는 이 기기에 남아요. 주소, 잔액, 거래, 보상과 등록 기록은 앱 사용을 중단한 뒤에도 체인에서 무기한 공개돼요."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "秘密鍵はこの端末に残ります。アドレス、残高、取引、報酬と登録記録は、アプリの使用をやめた後もチェーン上で無期限に公開されます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "개인키는 이 기기에 남아요. 주소, 잔액, 거래, 보상과 등록 기록은 앱 사용을 중단한 뒤에도 체인에서 무기한 공개돼요."
           }
         },
         "zh-Hans" : {
@@ -19763,10 +20267,10 @@
             "value" : "私钥保留在此设备上。地址、余额、交易、奖励和注册记录在链上无限期公开，即使你停止使用应用也是如此。"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Las claves privadas permanecen en este dispositivo. Las direcciones, saldos, transacciones, recompensas y registros de inscripción son públicos en la cadena indefinidamente, incluso si dejas de usar la app."
+            "value" : "私鑰保留在此設備上。地址、餘額、交易、獎勵和註冊記錄在鏈上無限期公開，即使你停止使用應用也是如此。"
           }
         }
       }
@@ -20568,12 +21072,6 @@
             "value" : "Publisher"
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Publicador"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -20590,6 +21088,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "发布者"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "發佈者"
           }
         }
       }
@@ -21015,16 +21519,16 @@
             "value" : "Read the privacy policy"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "개인정보 처리방침 읽기"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "プライバシーポリシーを読む"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "개인정보 처리방침 읽기"
           }
         },
         "zh-Hans" : {
@@ -21033,10 +21537,10 @@
             "value" : "阅读隐私政策"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Leer la política de privacidad"
+            "value" : "閱讀隱私政策"
           }
         }
       }
@@ -22044,16 +22548,16 @@
             "value" : "Region unavailable"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "지역을 확인할 수 없어요"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "地域を取得できません"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "지역을 확인할 수 없어요"
           }
         },
         "zh-Hans" : {
@@ -22062,10 +22566,10 @@
             "value" : "地区不可用"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Región no disponible"
+            "value" : "地區不可用"
           }
         }
       }
@@ -22076,12 +22580,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Registered"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Fecha de registro"
           }
         },
         "ja" : {
@@ -22100,6 +22598,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "注册日期"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "註冊日期"
           }
         }
       }
@@ -23186,12 +23690,6 @@
             "value" : "Results for %@"
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Resultados de %@"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -23208,6 +23706,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ 的搜索结果"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 的搜索結果"
           }
         }
       }
@@ -23875,12 +24379,6 @@
             "value" : "Search"
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Buscar"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -23898,6 +24396,12 @@
             "state" : "translated",
             "value" : "搜索"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索"
+          }
         }
       }
     },
@@ -23907,12 +24411,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Search apps and names, or enter an https address"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Busca apps y nombres, o escribe una dirección https"
           }
         },
         "ja" : {
@@ -23932,6 +24430,12 @@
             "state" : "translated",
             "value" : "搜索应用和名称，或输入 https 地址"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索應用和名稱，或輸入 https 地址"
+          }
         }
       }
     },
@@ -23941,12 +24445,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Search by app name, .sea name or description."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Busca por nombre de app, nombre .sea o descripción."
           }
         },
         "ja" : {
@@ -23966,6 +24464,12 @@
             "state" : "translated",
             "value" : "按应用名称、.sea 名称或描述搜索。"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按應用名稱、.sea 名稱或描述搜索。"
+          }
         }
       }
     },
@@ -23975,12 +24479,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Search could not be read from your node. Try again when the node is running."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "No se pudo leer la búsqueda de tu nodo. Inténtalo cuando el nodo esté funcionando."
           }
         },
         "ja" : {
@@ -23999,6 +24497,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法从自己的节点读取搜索结果。请在节点运行时重试。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法從自己的節點讀取搜索結果。請在節點運行時重試。"
           }
         }
       }
@@ -24081,12 +24585,6 @@
             "value" : "Search index status unavailable. Results may be incomplete."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "No se conoce el estado del índice de búsqueda. Los resultados podrían estar incompletos."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -24103,6 +24601,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法获取搜索索引状态，结果可能不完整。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法獲取搜索索引狀態，結果可能不完整。"
           }
         }
       }
@@ -24150,12 +24654,6 @@
             "value" : "Search reads your own node. Exact names come first, then prefixes and title or description tokens, then distinct contract callers in the last 7 days, then older records. There are no paid placements, publisher boosts or hidden blocklists."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La búsqueda lee tu propio nodo. Primero aparecen los nombres exactos, luego los prefijos y las palabras del título o la descripción, después las direcciones distintas que llamaron a los contratos en los últimos 7 días y, por último, los registros más antiguos. No hay posiciones pagadas, ventajas para publicadores ni listas de bloqueo ocultas."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -24173,6 +24671,12 @@
             "state" : "translated",
             "value" : "搜索读取自己的节点。先按名称完全匹配、前缀匹配、标题或描述中的词匹配排序，再按过去7天内调用合约的不同地址数及记录从旧到新的顺序排序。没有付费排名、发布者优待或隐藏的屏蔽列表。"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索讀取自己的節點。先按名稱完全匹配、前綴匹配、標題或描述中的詞匹配排序，再按過去7天內調用合約的不同地址數及記錄從舊到新的順序排序。沒有付費排名、發佈者優待或隱藏的屏蔽列表。"
+          }
         }
       }
     },
@@ -24182,12 +24686,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Search record"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Registro de búsqueda"
           }
         },
         "ja" : {
@@ -24207,6 +24705,12 @@
             "state" : "translated",
             "value" : "搜索记录详情"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索記錄詳情"
+          }
         }
       }
     },
@@ -24216,12 +24720,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Searching the chain…"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Buscando en la cadena…"
           }
         },
         "ja" : {
@@ -24240,6 +24738,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在搜索链上记录…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在搜索鏈上記錄…"
           }
         }
       }
@@ -24343,6 +24847,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已選帳戶"
+          }
+        }
+      }
+    },
+    "Selected country" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Selected country"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "選択した国"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "선택한 국가"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所选国家"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所選國家"
           }
         }
       }
@@ -24834,16 +25373,16 @@
             "value" : "Share country"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "국가 설정 공유"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "国設定を共有"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "국가 설정 공유"
           }
         },
         "zh-Hans" : {
@@ -24852,10 +25391,10 @@
             "value" : "共享国家设置"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Compartir el país"
+            "value" : "共享國家設置"
           }
         }
       }
@@ -24869,16 +25408,16 @@
             "value" : "Share this Mac's country"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "이 Mac의 국가 공유"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "このMacの国を共有"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Mac의 국가 공유"
           }
         },
         "zh-Hans" : {
@@ -24887,10 +25426,10 @@
             "value" : "共享此 Mac 的国家"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Compartir el país de este Mac"
+            "value" : "共享此 Mac 的國家"
           }
         }
       }
@@ -25349,16 +25888,16 @@
             "value" : "South America"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "남아메리카"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "南アメリカ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "남아메리카"
           }
         },
         "zh-Hans" : {
@@ -25367,10 +25906,115 @@
             "value" : "南美洲"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sudamérica"
+            "value" : "南美洲"
+          }
+        }
+      }
+    },
+    "South-eastern Asia" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "South-eastern Asia"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "東南アジア"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "동남아시아"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "东南亚"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "東南亞"
+          }
+        }
+      }
+    },
+    "Southern Asia" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Southern Asia"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "南アジア"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "남아시아"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "南亚"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "南亞"
+          }
+        }
+      }
+    },
+    "Southern Europe" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Southern Europe"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "南ヨーロッパ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "남유럽"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "南欧"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "南歐"
           }
         }
       }
@@ -26028,6 +26672,41 @@
         }
       }
     },
+    "Sub-Saharan Africa" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sub-Saharan Africa"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "サハラ以南のアフリカ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "사하라 이남 아프리카"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "撒哈拉以南非洲"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "撒哈拉以南非洲"
+          }
+        }
+      }
+    },
     "Swap %@ for tokens" : {
       "localizations" : {
         "en" : {
@@ -26347,12 +27026,6 @@
             "value" : "That is not a valid .sea name."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "No es un nombre .sea válido."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -26369,6 +27042,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "这不是有效的 .sea 名称。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "這不是有效的 .sea 名稱。"
           }
         }
       }
@@ -26450,12 +27129,6 @@
             "value" : "That search is too long. Use a shorter name or phrase."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La búsqueda es demasiado larga. Usa un nombre o una frase más corta."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -26472,6 +27145,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "搜索内容过长，请使用较短的名称或短语。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索內容過長，請使用較短的名稱或短語。"
           }
         }
       }
@@ -26618,10 +27297,34 @@
     "The app could not be fetched from the node. Check that this Mac's node is running and connected." : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The app could not be fetched from the node. Check that this Mac's node is running and connected."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ノードからアプリを取得できません。このMacのノードが実行中で接続されているか確認してください。"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "노드에서 앱을 받지 못했습니다. 이 Mac의 노드가 실행 중이고 연결되어 있는지 확인해 주세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法从节点获取应用，请确认此Mac的节点正在运行并已连接。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法從節點獲取應用，請確認此Mac的節點正在運行並已連接。"
           }
         }
       }
@@ -26973,41 +27676,6 @@
         }
       }
     },
-    "The choice contributes only to broad regional counts. Public observations hide groups smaller than three. This choice is not saved on chain. Stop future sharing anytime in Settings; already received aggregate copies may remain." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The choice contributes only to broad regional counts. Public observations hide groups smaller than three. This choice is not saved on chain. Stop future sharing anytime in Settings; already received aggregate copies may remain."
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "이 선택은 넓은 지역별 수에만 반영돼요. 공개 관측값은 3개 미만 그룹을 숨겨요. 선택은 체인에 저장하지 않아요. 설정에서 언제든 앞으로의 공유를 중단할 수 있지만, 이미 받은 집계 사본은 남을 수 있어요."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "選択は広域地域の集計にだけ反映されます。公開観測値は3件未満の集団を非表示にします。選択はチェーンに保存されません。設定でいつでも今後の共有を停止できますが、受信済みの集計コピーは残る場合があります。"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "此选择仅用于宽泛地区的计数。公开观测会隐藏不足3个的群体。选择不保存到链上。你可随时在设置中停止今后的共享，但已收到的汇总副本可能保留。"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La elección solo contribuye a recuentos de regiones amplias. Las observaciones públicas ocultan grupos de menos de tres. No se guarda en la cadena. Puedes detener el uso compartido futuro en Ajustes; las copias agregadas ya recibidas pueden permanecer."
-          }
-        }
-      }
-    },
     "The confirmation terminal could not be opened: %@" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -27120,12 +27788,6 @@
             "value" : "The content hash label only reports that a hash is recorded on chain. It does not establish the publisher's identity or the app's safety."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La etiqueta de hash de contenido solo indica que hay un hash registrado en la cadena. No acredita la identidad del publicador ni la seguridad de la app."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -27142,6 +27804,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "内容哈希标签仅表示链上记录了哈希，不证明发布者身份或应用安全性。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "內容哈希標籤僅表示鏈上記錄了哈希，不證明發佈者身份或應用安全性。"
           }
         }
       }
@@ -27177,6 +27845,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "無法完成移動資料，沒有刪除任何內容，下次啟動會重試。"
+          }
+        }
+      }
+    },
+    "The default UN M49 sub-region follows this Mac's Region setting independently of country sharing. Country sharing requires an explicit choice and can select a different sub-region. Public presence does not publish country codes. Turning it off keeps the default sub-region. Peers and relays still see connection IP addresses." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The default UN M49 sub-region follows this Mac's Region setting independently of country sharing. Country sharing requires an explicit choice and can select a different sub-region. Public presence does not publish country codes. Turning it off keeps the default sub-region. Peers and relays still see connection IP addresses."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "既定の国連標準地域区分は国の共有とは別に、このMacの地域設定に従います。国の共有には明示的な選択が必要で、別の地域区分を選べます。公開接続情報に国コードは含めません。共有をオフにしても既定の区分は維持され、ピアとリレーには接続IPアドレスが見えます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "기본 유엔 표준 세부 지역은 국가 공유와 관계없이 이 Mac의 지역 설정을 따라요. 국가 공유는 직접 선택해야 하며 다른 세부 지역을 정할 수 있어요. 공개 접속 정보에는 국가 코드를 담지 않아요. 공유를 꺼도 기본 세부 지역은 유지하며 피어와 릴레이는 연결 IP 주소를 볼 수 있어요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默认联合国标准次区域独立于国家共享，按此Mac的地区设置确定。国家共享需要明确选择，并可选定不同的次区域。公开接入信息不发布国家代码。关闭后仍保留默认次区域，对等节点和中继仍可看到连接IP地址。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默認聯合國標準次區域獨立於國家共享，按此Mac的地區設置確定。國家共享需要明確選擇，並可選定不同的次區域。公開接入信息不發佈國家代碼。關閉後仍保留默認次區域，對等節點和中繼仍可看到連接IP地址。"
           }
         }
       }
@@ -27399,16 +28102,16 @@
             "value" : "The globe shows this Mac’s node view. Counts can differ between nodes."
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "지구본은 이 Mac의 노드에서 보이는 네트워크를 표시해요. 노드마다 수가 다를 수 있어요."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "地球儀はこのMacのノードから見えるネットワークを表示します。台数はノードごとに異なる場合があります。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "지구본은 이 Mac의 노드에서 보이는 네트워크를 표시해요. 노드마다 수가 다를 수 있어요."
           }
         },
         "zh-Hans" : {
@@ -27417,10 +28120,10 @@
             "value" : "地球仪显示此 Mac 节点所见的网络。不同节点的数量可能不同。"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "El globo muestra la red que ve el nodo de este Mac. Los recuentos pueden variar entre nodos."
+            "value" : "地球儀顯示此 Mac 節點所見的網絡。不同節點的數量可能不同。"
           }
         }
       }
@@ -27572,12 +28275,6 @@
             "value" : "The name registry could not be read."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "No se pudo leer el registro de nombres."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -27594,6 +28291,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法读取名称注册表。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法讀取名稱註冊表。"
           }
         }
       }
@@ -28987,10 +29690,34 @@
     "The node returned an invalid app bundle. The app was not opened." : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The node returned an invalid app bundle. The app was not opened."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ノードが無効なアプリ一式を返したため、アプリを開きませんでした。"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "노드에서 받은 앱 번들이 올바르지 않아 열지 않았습니다."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "节点返回了无效的应用包，未打开应用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "節點返回了無效的應用包，未打開應用。"
           }
         }
       }
@@ -29001,12 +29728,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "The node returned an unreadable search response."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "El nodo devolvió una respuesta de búsqueda ilegible."
           }
         },
         "ja" : {
@@ -29025,6 +29746,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "节点返回了无法读取的搜索响应。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "節點返回了無法讀取的搜索響應。"
           }
         }
       }
@@ -29590,10 +30317,34 @@
     "The received files differ from the registered app. The app was not opened." : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The received files differ from the registered app. The app was not opened."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "受信したファイルが登録済みのアプリと異なるため、アプリを開きませんでした。"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "받은 파일이 등록된 앱과 달라 열지 않았습니다."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "收到的文件与已注册应用不一致，未打开应用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "收到的文件與已註冊應用不一致，未打開應用。"
           }
         }
       }
@@ -29944,10 +30695,34 @@
     "The wallet context changed. Open the app again." : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The wallet context changed. Open the app again."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ウォレットの利用状況が変わりました。アプリを開き直してください。"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "지갑 상태가 바뀌었습니다. 앱을 다시 열어 주세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "钱包使用环境已改变，请重新打开应用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "錢包使用環境已改變，請重新打開應用。"
           }
         }
       }
@@ -30674,6 +31449,41 @@
         }
       }
     },
+    "This Mac's local sub-region" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Mac's local sub-region"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このMacのローカル地域区分"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 Mac의 로컬 세부 지역"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此Mac的本地次区域"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此Mac的本地次區域"
+          }
+        }
+      }
+    },
     "This Mac's node identity from the old Aether app has not moved over yet. Open the app once more to finish the move. Starting now would make a second node." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -31058,10 +31868,34 @@
     "This app contains an unsupported file or an unsafe path. The app was not opened." : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This app contains an unsupported file or an unsafe path. The app was not opened."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未対応のファイルまたは安全でないパスが含まれるため、アプリを開きませんでした。"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "지원하지 않는 파일이나 안전하지 않은 경로가 있어 앱을 열지 않았습니다."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此应用包含不支持的文件或不安全的路径，未打开应用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此應用包含不支持的文件或不安全的路徑，未打開應用。"
           }
         }
       }
@@ -31069,10 +31903,34 @@
     "This app exceeds the bundle size limit. The app was not opened." : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This app exceeds the bundle size limit. The app was not opened."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アプリ一式がサイズ上限を超えているため、アプリを開きませんでした。"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "번들 크기 상한을 초과해 앱을 열지 않았습니다."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此应用超过应用包大小限制，未打开应用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此應用超過應用包大小限制，未打開應用。"
           }
         }
       }
@@ -31080,10 +31938,34 @@
     "This app has not been verified. Open its sea:// name first." : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This app has not been verified. Open its sea:// name first."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このアプリは未検証です。先にsea://の名前から開いてください。"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "이 앱은 검증되지 않았습니다. 먼저 sea:// 이름으로 열어 주세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此应用尚未验证，请先打开其sea://名称。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此應用尚未驗證，請先打開其sea://名稱。"
           }
         }
       }
@@ -31091,10 +31973,34 @@
     "This app has not been verified. The app was not opened." : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This app has not been verified. The app was not opened."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このアプリは未検証のため、開きませんでした。"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "앱이 검증되지 않아 열지 않았습니다."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此应用尚未验证，未打开应用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此應用尚未驗證，未打開應用。"
           }
         }
       }
@@ -31106,12 +32012,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "This app is no longer listed."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Esta aplicación ya no está registrada."
           }
         },
         "ja" : {
@@ -31130,6 +32030,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此应用已取消登记。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此應用已取消登記。"
           }
         }
       }
@@ -31171,10 +32077,34 @@
     "This app's bundle index is invalid. The app was not opened." : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This app's bundle index is invalid. The app was not opened."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "アプリ一式の索引が無効なため、アプリを開きませんでした。"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "앱의 번들 목록이 올바르지 않아 열지 않았습니다."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此应用的包索引无效，未打开应用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此應用的包索引無效，未打開應用。"
           }
         }
       }
@@ -31704,12 +32634,6 @@
             "value" : "This name has expired."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Este nombre ha caducado."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -31727,6 +32651,12 @@
             "state" : "translated",
             "value" : "此名称已过期。"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此名稱已過期。"
+          }
         }
       }
     },
@@ -31737,12 +32667,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "This name is not registered."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Este nombre no está registrado."
           }
         },
         "ja" : {
@@ -31762,6 +32686,12 @@
             "state" : "translated",
             "value" : "此名称尚未注册。"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此名稱尚未註冊。"
+          }
         }
       }
     },
@@ -31772,12 +32702,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "This name is reserved for a wallet action."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Este nombre está reservado para una acción de la cartera."
           }
         },
         "ja" : {
@@ -31797,6 +32721,12 @@
             "state" : "translated",
             "value" : "此名称已保留供钱包操作使用。"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此名稱已保留供錢包操作使用。"
+          }
         }
       }
     },
@@ -31806,12 +32736,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "This name resembles %@. It may be a phishing attempt. Check the name and publisher."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Este nombre se parece a %@. Podría ser un intento de phishing. Comprueba el nombre y el publicador."
           }
         },
         "ja" : {
@@ -31830,6 +32754,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此名称与 %@ 相似，可能存在钓鱼风险。请核对名称和发布者。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此名稱與 %@ 相似，可能存在釣魚風險。請核對名稱和發佈者。"
           }
         }
       }
@@ -31876,12 +32806,6 @@
             "value" : "This node does not support app search yet. Update the node."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Este nodo aún no admite la búsqueda de apps. Actualiza el nodo."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -31899,6 +32823,12 @@
             "state" : "translated",
             "value" : "此节点尚不支持应用搜索，请更新节点。"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此節點尚不支持應用搜索，請更新節點。"
+          }
         }
       }
     },
@@ -31908,12 +32838,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "This node has no app or name registry sources configured."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Este nodo no tiene configuradas fuentes del registro de apps o nombres."
           }
         },
         "ja" : {
@@ -31932,6 +32856,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此节点尚未配置应用或名称注册表来源。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此節點尚未配置應用或名稱註冊表來源。"
           }
         }
       }
@@ -32082,12 +33012,6 @@
             "value" : "This node's search index is incomplete. Some chain records may be missing from these results."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "El índice de búsqueda de este nodo está incompleto. Algunos registros de la cadena podrían faltar en estos resultados."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
@@ -32104,6 +33028,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此节点的搜索索引不完整，结果中可能缺少部分链上记录。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此節點的搜索索引不完整，結果中可能缺少部分鏈上記錄。"
           }
         }
       }
@@ -33474,12 +34404,6 @@
             "state" : "translated",
             "value" : "再試一次"
           }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Intentar de nuevo"
-          }
         }
       }
     },
@@ -33726,10 +34650,34 @@
     "Turn on developer mode to open a local app folder." : {
       "extractionState" : "manual",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Turn on developer mode to open a local app folder."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ローカルのアプリフォルダを開くには、開発者モードを有効にしてください。"
+          }
+        },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "로컬 앱 폴더를 열려면 개발자 모드를 켜 주세요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请开启开发者模式以打开本地应用文件夹。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請開啓開發者模式以打開本地應用文件夾。"
           }
         }
       }
@@ -33882,16 +34830,16 @@
             "value" : "Unknown region"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "지역 미상"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "地域不明"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "지역 미상"
           }
         },
         "zh-Hans" : {
@@ -33900,10 +34848,10 @@
             "value" : "地区未知"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Región desconocida"
+            "value" : "地區未知"
           }
         }
       }
@@ -34155,31 +35103,31 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Unverified cohort observations, not a count of distinct Macs. Broad regions use a local country choice or relays; small groups are folded together."
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "서로 다른 Mac 수가 아닌 검증되지 않은 그룹 관측값이에요. 넓은 지역은 로컬 국가 설정이나 릴레이를 기준으로 하고, 작은 그룹은 합쳐요."
+            "value" : "Unverified cohort observations, not a count of distinct Macs. UN M49 sub-regions use local settings; older broad regions remain labeled separately. Small groups are folded or withheld."
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "異なるMacの台数ではなく、未検証の集団観測値です。広域地域はローカルの国設定またはリレーに基づき、小さな集団はまとめます。"
+            "value" : "異なるMacの数ではなく、未検証の集団観測です。国連標準の地域区分はローカル設定に従い、従来の広域区分は別に表示します。小集団は統合または非表示にします。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "서로 다른 Mac 수가 아닌 검증되지 않은 그룹 관측값이에요. 유엔 표준 세부 지역은 로컬 설정을 따르고 이전의 넓은 지역은 별도로 표시해요. 작은 그룹은 합치거나 숨겨요."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这是未经验证的群体观测，并非不同Mac的数量。宽泛地区由本地国家设置或中继确定；小群体会合并。"
+            "value" : "这是未经验证的群体观测，并非不同Mac的数量。联合国标准次区域使用本地设置，旧版大范围地区单独标注，小群体会合并或隐藏。"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Son observaciones de grupos sin verificar, no un recuento de Macs distintos. Las regiones amplias usan una elección local de país o relés; los grupos pequeños se agrupan."
+            "value" : "這是未經驗證的群體觀測，並非不同Mac的數量。聯合國標準次區域使用本地設置，舊版大範圍地區單獨標注，小群體會合併或隱藏。"
           }
         }
       }
@@ -34663,6 +35611,7 @@
       }
     },
     "Validator candidate: eligible in about %@ h" : {
+      "comment" : "Local node eligibility verdict; presentation only.",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -34670,16 +35619,16 @@
             "value" : "Validator candidate: eligible in about %@ h"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "검증자 후보: 자격까지 약 %@시간"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "バリデーター候補：資格まであと約%@時間"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증자 후보: 자격까지 약 %@시간"
           }
         },
         "zh-Hans" : {
@@ -34694,10 +35643,10 @@
             "value" : "驗證者候選：約 %@ 小時後符合資格"
           }
         }
-      },
-      "comment" : "Local node eligibility verdict; presentation only."
+      }
     },
     "Validator candidate: eligible, waiting for the next draw" : {
+      "comment" : "Local node eligibility verdict; presentation only.",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -34705,16 +35654,16 @@
             "value" : "Validator candidate: eligible, waiting for the next draw"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "검증자 후보: 자격을 갖췄어요. 다음 추첨을 기다려요"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "バリデーター候補：資格があります。次の抽選を待っています"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증자 후보: 자격을 갖췄어요. 다음 추첨을 기다려요"
           }
         },
         "zh-Hans" : {
@@ -34729,10 +35678,10 @@
             "value" : "驗證者候選：已符合資格，正在等待下一次抽選"
           }
         }
-      },
-      "comment" : "Local node eligibility verdict; presentation only."
+      }
     },
     "Validator candidate: needs more time online" : {
+      "comment" : "Local node eligibility verdict; presentation only.",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -34740,16 +35689,16 @@
             "value" : "Validator candidate: needs more time online"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "검증자 후보: 온라인 상태를 더 오래 유지해야 해요"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "バリデーター候補：もう少し長くオンラインでいる必要があります"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증자 후보: 온라인 상태를 더 오래 유지해야 해요"
           }
         },
         "zh-Hans" : {
@@ -34764,10 +35713,10 @@
             "value" : "驗證者候選：需要保持上線更長時間"
           }
         }
-      },
-      "comment" : "Local node eligibility verdict; presentation only."
+      }
     },
     "Validator candidate: needs more time online after missed check-ins" : {
+      "comment" : "Local node eligibility verdict; presentation only.",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -34775,16 +35724,16 @@
             "value" : "Validator candidate: needs more time online after missed check-ins"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "검증자 후보: 놓친 온라인 확인을 만회할 시간이 필요해요"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "バリデーター候補：確認を逃した分、もう少しオンラインでいる必要があります"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증자 후보: 놓친 온라인 확인을 만회할 시간이 필요해요"
           }
         },
         "zh-Hans" : {
@@ -34799,10 +35748,10 @@
             "value" : "驗證者候選：錯過了上線確認，需要更多上線時間來彌補"
           }
         }
-      },
-      "comment" : "Local node eligibility verdict; presentation only."
+      }
     },
     "Validator candidate: needs more time to show stable online activity" : {
+      "comment" : "Local node eligibility verdict; presentation only.",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -34810,16 +35759,16 @@
             "value" : "Validator candidate: needs more time to show stable online activity"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "검증자 후보: 안정적인 온라인 활동을 더 확인해야 해요"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "バリデーター候補：安定したオンライン状態をもう少し確認する必要があります"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증자 후보: 안정적인 온라인 활동을 더 확인해야 해요"
           }
         },
         "zh-Hans" : {
@@ -34834,10 +35783,10 @@
             "value" : "驗證者候選：需要更多時間確認穩定的上線狀態"
           }
         }
-      },
-      "comment" : "Local node eligibility verdict; presentation only."
+      }
     },
     "Validator candidate: waiting for the latest online check-in" : {
+      "comment" : "Local node eligibility verdict; presentation only.",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -34845,16 +35794,16 @@
             "value" : "Validator candidate: waiting for the latest online check-in"
           }
         },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "검증자 후보: 최근 온라인 확인을 기다리고 있어요"
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "バリデーター候補：最新のオンライン確認を待っています"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "검증자 후보: 최근 온라인 확인을 기다리고 있어요"
           }
         },
         "zh-Hans" : {
@@ -34869,8 +35818,7 @@
             "value" : "驗證者候選：正在等待最新的上線確認"
           }
         }
-      },
-      "comment" : "Local node eligibility verdict; presentation only."
+      }
     },
     "Verified" : {
       "localizations" : {
@@ -35497,28 +36445,98 @@
             "value" : "Web addresses (.com, etc.) aren't EastSea names. Open them with https://."
           }
         },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Las direcciones web (.com, etc.) no son nombres de EastSea. Ábrelas con https://."
-          }
-        },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "ウェブアドレス（.com など）は EastSea の名前ではありません。https:// で開いてください。"
+            "value" : "通常のウェブアドレスはEastSeaの名前ではありません。https://で開いてください。"
           }
         },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "웹 주소(.com 등)는 동해 이름이 아니에요. https://로 여세요."
+            "value" : "일반 웹 주소는 동해 이름이 아니에요. https://로 여세요."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "网页地址（.com 等）不是 EastSea 名称。请使用 https:// 打开。"
+            "value" : "普通网页地址不是EastSea名称，请使用https://打开。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "普通網頁地址不是EastSea名稱，請使用https://打開。"
+          }
+        }
+      }
+    },
+    "Western Asia" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Western Asia"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "西アジア"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "서아시아"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "西亚"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "西亞"
+          }
+        }
+      }
+    },
+    "Western Europe" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Western Europe"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "西ヨーロッパ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "서유럽"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "西欧"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "西歐"
           }
         }
       }
@@ -36205,6 +37223,41 @@
         }
       }
     },
+    "Your Mac's Region setting chooses a UN M49 sub-region by default. Country sharing is off until you choose Share country." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your Mac's Region setting chooses a UN M49 sub-region by default. Country sharing is off until you choose Share country."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Macの地域設定から国連の標準地域区分を既定で選びます。「国を共有」を選ぶまで国は共有しません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac의 지역 설정에 따라 유엔 표준 세부 지역이 기본으로 정해져요. 국가 공유를 선택하기 전에는 국가를 공유하지 않아요."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默认根据Mac地区设置选择联合国标准次区域。在选择共享国家之前，不会共享国家。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默認根據Mac地區設置選擇聯合國標準次區域。在選擇共享國家之前，不會共享國家。"
+          }
+        }
+      }
+    },
     "Your balance history appears here as it changes." : {
       "localizations" : {
         "en" : {
@@ -36239,72 +37292,37 @@
         }
       }
     },
-    "Your country is shown on the globe; you can turn it off in Settings" : {
+    "Your chosen country stays on this Mac and can select its M49 sub-region. Public presence publishes only thresholded regional observations, not country codes or individual Macs. Turning country sharing off restores the default sub-region; already received aggregates may remain." : {
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Your country is shown on the globe; you can turn it off in Settings"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "지구본에 내 나라를 표시해요. 설정에서 끌 수 있어요."
+            "value" : "Your chosen country stays on this Mac and can select its M49 sub-region. Public presence publishes only thresholded regional observations, not country codes or individual Macs. Turning country sharing off restores the default sub-region; already received aggregates may remain."
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "あなたの国が地球儀に表示されます。設定でオフにできます"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "你的国家会显示在地球仪上；可在设置中关闭"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tu país se muestra en el globo; puedes desactivarlo en Ajustes"
-          }
-        }
-      }
-    },
-    "Your country on the globe" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Your country on the globe"
+            "value" : "選んだ国はこのMacに残り、その国の国連標準地域区分を選べます。公開接続情報は一定規模以上の地域別観測値のみで、国コードや個別のMacは公開しません。国の共有をオフにすると既定の区分に戻りますが、受信済みの集計コピーは残る場合があります。"
           }
         },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "지구본에 표시되는 내 나라"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "地球儀に表示されるあなたの国"
+            "value" : "선택한 국가는 이 Mac에만 남고 해당 국가의 유엔 표준 세부 지역을 정할 수 있어요. 공개 접속 정보에는 일정 규모 이상의 지역별 관측값만 담고 국가 코드나 개별 Mac은 공개하지 않아요. 국가 공유를 끄면 기본 세부 지역으로 돌아가지만 이미 받은 집계 사본은 남을 수 있어요."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "地球仪上的你的国家"
+            "value" : "所选国家保留在此Mac，可用于选择其联合国标准次区域。公开接入信息只发布达到阈值的区域观测，不发布国家代码或单个Mac。关闭国家共享会恢复默认次区域，但已收到的汇总副本可能保留。"
           }
         },
-        "es" : {
+        "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tu país en el globo"
+            "value" : "所選國家保留在此Mac，可用於選擇其聯合國標準次區域。公開接入信息只發佈達到閾值的區域觀測，不發佈國家代碼或單個Mac。關閉國家共享會恢復默認次區域，但已收到的匯總副本可能保留。"
           }
         }
       }

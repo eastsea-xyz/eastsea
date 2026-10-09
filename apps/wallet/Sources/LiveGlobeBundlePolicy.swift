@@ -10,7 +10,7 @@ enum LiveGlobeBundlePolicy {
 
     private static let assets: Set<String> = [
         "index.html", "wallet-host.js", "wallet.css",
-        "live-globe/countries.js", "live-globe/data.js", "live-globe/globe.js",
+        "live-globe/countries.js", "live-globe/data.js", "live-globe/globe.js", "live-globe/subregions.js",
         "live-globe/land.js", "live-globe/live-globe.js", "live-globe/quality.js",
         "live-globe/globe.css", "live-globe/tokens.css",
     ]

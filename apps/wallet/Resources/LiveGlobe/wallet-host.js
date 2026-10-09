@@ -1,6 +1,6 @@
 import { mountLiveGlobe } from './live-globe/live-globe.js';
 
-const TITLES = { en: 'Network', ko: '네트워크', ja: 'ネットワーク', 'zh-Hans': '网络', es: 'Red' };
+const TITLES = { en: 'Network', ko: '네트워크', ja: 'ネットワーク', 'zh-Hans': '网络', 'zh-Hant': '網路', es: 'Red' };
 
 // Inbound-only interface: the wallet calls these functions in WKWebView.
 // This document has no network access or JavaScript-to-native message handlers.

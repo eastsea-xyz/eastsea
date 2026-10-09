@@ -39,7 +39,7 @@ one coarse `unknown` cohort, rather than a rare build histogram.
 
 Every published count is at least **k=3**, including `total`. Role and region
 maps are disjoint partitions whose sums equal the published total. Small role
-buckets fold into `other`; small continent buckets fold into `world`. If their
+buckets fold into `other`; small regional buckets fold into `world`. If their
 combined remainder is only one or two, a whole larger sibling is also folded.
 For example, `validator:3,follower:1,total:4` becomes `other:4,total:4` instead of
 publishing `validator:3` with a total that reveals the hidden singleton. Zero
@@ -106,25 +106,38 @@ stay unknown because identifying presence metadata is no longer transmitted.
 `path` is `direct`, `relay` or `unknown`; exact times remain local diagnostics.
 No peer addresses or relay URLs enter these rows.
 
-An optional ISO country choice stays in local process memory. It supplies only
-this endpoint's broad continent input; ambiguous or unlisted mappings use
-`unknown`. Without a country choice, the endpoint's home relay provides that
-input using known iroh relay domains and region prefixes. A custom, absent or
-unrecognized relay stays `unknown`. This does not locate the Mac.
+The Mac's Region setting maps locally to one of the **17 official UN M49
+sub-regions**, independently of country consent. The bundled mapping covers the
+247 countries/areas in the UN table; unlisted ISO/CLDR areas remain unknown.
+It uses the actual Sub-region column: `202` is Sub-Saharan Africa and `419` is
+Latin America and the Caribbean. Finer intermediate codes such as `014` and
+`029` are not this contract. No location service or IP geolocation is used.
+
+`--presence-region=030` carries only the independent default group. The shipped
+country screen and missing-setting fallback ask before sending: only the
+explicit **Share country** action permits `--presence-country=KR`. A selected
+country stays in local process memory and uses its canonical M49 parent;
+an explicitly selected unlisted country stays unknown. Declining or removing
+country sharing retains the default Mac sub-region. With no known default or
+country, the endpoint may retain its legacy broad home-relay region. These
+legacy continent fields remain labeled broad; they are never expanded into
+invented sub-regions. Region settings do not establish physical location.
 
 Raw country codes never enter RPC snapshots or gossip. Other direct peers'
 regions are unknown because they no longer advertise individual locations.
-Consequently this endpoint's single country-derived continent contribution
+Consequently this endpoint's single locally selected region contribution
 normally folds into a broader safe group. A country choice does not guarantee
-that a named continent will appear on the public globe.
+that a named public sub-region or country will appear on the globe. Current
+production cannot derive a useful geography census from these observations.
 
-The app's first-launch country screen must be answered before its country value
-is passed to the local node. The configured policy can be default-on with that
-notice or ask-before-sending. Refusal does not block wallet/node use.
-Command-line operators may set `--presence-country=KR`; native loopback HTTP
-can update the local input with `aether_setPresenceCountry` and `["KR"]` or
-`[null]`. Browser-origin, iroh, public gateway and non-loopback HTTP requests
-cannot change it. A setting change leaves the current public release frozen.
+Native loopback HTTP updates the default with `aether_setPresenceRegion` and
+`["030"]` or `[null]`, and the optional country with `aether_setPresenceCountry`
+and `["KR"]` or `[null]`. The wallet serializes both updates, persists the
+default region and consent-aware country marker, and refreshes supervisor
+arguments so restarts cannot restore an opted-out country. Legacy country
+arguments require the new affirmative marker choice. Browser-origin, iroh,
+public gateway and non-loopback HTTP requests cannot change either setting.
+An update leaves the current public release frozen.
 
 The Mac wallet reads presence only from its own local node, independently of
 balance reads. Its bundled globe receives the validated schema-2 JSON without
@@ -134,6 +147,9 @@ withheld; a failed read can retain the earlier aggregate with an explicit stale
 state. Cohort responses have no operation-quality evidence. The embedded page
 cannot connect to an RPC or external asset; native code owns the read lifecycle.
 Schema-3 aggregates remain supported for explicit screenshot fixtures.
+The native globe labels this Mac's effective local sub-region and shows its
+selected country only after an affirmative choice. These local labels are
+separate from, and never added to, the published cohort counts.
 
 ## Verification
 

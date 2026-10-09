@@ -59,9 +59,11 @@ Registration token hashes used to prevent simultaneous requests are removed when
 
 **Optional country and aggregate presence**
 
-The first-launch country screen must be answered before any country preference is sent to the local node. A distribution can preselect sharing with a notice or ask for a choice first; either mode lets you decline without losing wallet or node features. The country chosen from your Mac's Region setting or by you stays on this Mac and only selects a broad region bucket. It is not GPS, IP geolocation or an on-chain record.
+The Mac's Region setting selects a default UN M49 sub-region using a bundled mapping. This is independent of country sharing: only the sub-region code is passed to the local node before a country choice. First launch asks you to choose Share country or decline; no raw country preference is passed to the node before an affirmative choice. Declining or turning sharing off preserves the default sub-region and all wallet and node features. A chosen country stays on this Mac and selects its canonical M49 parent; unlisted areas remain unknown. No GPS or IP geolocation is used, and the choice is not stored on chain.
 
-Public presence RPC and gossip carry only unverified cohort counts by role, broad region and coarse version. They expose no per-node list, observer identity, exact country or exact observation time. Times use 10-minute buckets; groups smaller than three are folded into broader groups or withheld, including rare quality data. These are observations, not a census of distinct Macs, and aggregation does not guarantee anonymity. Turning off sharing stops future use of the country preference; already received aggregate copies cannot be recalled.
+Public presence RPC and gossip carry only unverified cohort counts by role and region, with versions reported as unknown. They expose no per-node list, observer identity, country code or exact observation time. Times use fixed 10-minute windows; groups smaller than three are folded into broader groups or withheld, including complementary suppression of small remainders. Missing counts are withheld or unreported, not zero. These are observations, not a census of distinct Macs, and aggregation does not guarantee anonymity. Operation quality is unavailable in this public protocol. Already received aggregate copies cannot be recalled.
+
+The current producer normally knows only its own endpoint's region and treats other peers' regions as unknown. Its single local contribution can therefore be folded or withheld; selecting a country does not guarantee a named public sub-region or country. The wallet labels this Mac's region and an affirmatively selected country as local preferences, separately from public counts. Legacy relay-based observations remain broad regions and are not expanded into invented sub-regions.
 
 **Website, gateway and updates**
 
@@ -173,9 +175,11 @@ Apple은 개발자의 앱에 연결된 기기별 등록 비트를 보관하며, 
 
 **선택적인 국가 설정과 접속 집계**
 
-첫 실행 국가 화면에 응답하기 전에는 어떤 국가 설정도 로컬 노드로 보내지 않습니다. 배포 설정에 따라 안내와 함께 공유가 미리 선택되어 있거나 먼저 선택을 요청할 수 있습니다. 두 방식 모두 거절해도 지갑·노드 기능을 그대로 이용합니다. Mac의 지역 설정 또는 직접 선택한 국가는 이 Mac에만 남고 넓은 지역 버킷만 정합니다. GPS나 IP 기반 위치 추적이 아니며 체인에도 기록하지 않습니다.
+Mac의 지역 설정은 앱에 포함된 매핑으로 기본 UN M49 세부 지역을 정합니다. 국가 공유와 별개이며 국가를 선택하기 전에는 세부 지역 코드만 로컬 노드로 전달합니다. 첫 실행에서 국가 공유 또는 거절을 선택하며, 명시적으로 공유를 선택하기 전에는 원래 국가 설정을 노드에 전달하지 않습니다. 거절하거나 공유를 꺼도 기본 세부 지역과 지갑·노드 기능은 유지됩니다. 선택한 국가는 이 Mac에만 남고 표준 M49 상위 지역을 정하며, 목록에 없는 지역은 미상으로 둡니다. GPS나 IP 기반 위치 추적을 쓰지 않고 선택을 체인에 저장하지 않습니다.
 
-공개 presence RPC와 가십에는 검증되지 않은 관측 그룹의 역할별·넓은 지역별·대략적인 버전별 수만 담습니다. 개별 노드 목록, 관찰자 신원, 정확한 국가나 정확한 관측 시각은 공개하지 않습니다. 시각은 10분 단위이며, 3개 미만 그룹과 희소 품질 정보는 더 넓은 그룹으로 합치거나 숨깁니다. 서로 다른 Mac의 총조사가 아닌 관측값이며 집계만으로 익명성을 보장하지 않습니다. 공유를 끄면 앞으로 국가 설정을 쓰지 않지만, 이미 받은 집계 사본을 회수할 수는 없습니다.
+공개 presence RPC와 가십에는 검증되지 않은 관측 그룹의 역할별·지역별 수만 담으며 버전은 미상으로 표시합니다. 개별 노드 목록, 관찰자 신원, 국가 코드나 정확한 관측 시각은 공개하지 않습니다. 시각은 고정된 10분 구간을 쓰며 3개 미만 그룹과 작은 잔여 그룹은 보완적 숨김을 포함해 넓은 그룹으로 합치거나 숨깁니다. 빠진 수치는 비공개 또는 미보고이며 0이 아닙니다. 서로 다른 Mac의 총조사가 아닌 관측값이고 집계만으로 익명성을 보장하지 않습니다. 이 공개 프로토콜은 운영 품질을 제공하지 않습니다. 이미 받은 집계 사본은 회수할 수 없습니다.
+
+현재 집계기는 보통 자신의 엔드포인트 지역만 알고 다른 피어의 지역은 미상으로 취급합니다. 자기 지역의 단일 기여도 합치거나 숨길 수 있으므로 국가를 선택해도 공개 수치에 이름이 붙은 세부 지역이나 국가가 나타난다고 보장하지 않습니다. 지갑은 이 Mac의 지역과 명시적으로 선택한 국가를 공개 수치와 구분해 로컬 설정으로 표시합니다. 이전 릴레이 관측은 넓은 지역으로 유지하며 없는 세부 지역을 만들어 내지 않습니다.
 
 **웹사이트, 게이트웨이와 업데이트**
 
@@ -248,9 +252,11 @@ Appleは開発者のアプリに関連する端末ごとの登録ビットを保
 
 ### 4. 任意の国設定と接続集計
 
-初回起動の国設定画面に回答するまで、国の設定をローカルノードに送りません。配布設定により、説明とともに共有が選択済みの場合と、先に選択を求める場合があります。どちらも拒否してウォレットとノードの全機能を利用できます。Macの地域設定または自分で選んだ国はこのMacに残り、広域の地域区分だけを選びます。GPSやIPによる位置測定ではなく、チェーンにも記録されません。
+Macの地域設定から、アプリに含まれる対応表で既定のUN M49地域区分を選びます。国の共有とは独立しており、国を選ぶ前は地域区分のコードのみをローカルノードに渡します。初回起動時に国の共有か拒否を選び、明示的に共有を選ぶまで元の国設定をノードに渡しません。拒否または共有の停止後も既定の区分とウォレット・ノードの機能は維持します。選んだ国はこのMacに残り、正規のM49上位区分を選びます。未掲載の地域は不明とし、GPSやIPによる位置測定は行わず、選択をチェーンに保存しません。
 
-公開presence RPCとゴシップには、未検証の観測集団の役割別、広域地域別、おおまかなバージョン別の数だけを含めます。個別ノード一覧、観測者の身元、正確な国や観測時刻は公開しません。時刻は10分単位で、3件未満の集団と希少な品質情報はより広い集団にまとめるか非表示にします。異なるMacの全数調査ではなく観測値であり、集計だけで匿名性を保証しません。共有をオフにすると今後の国設定の使用は止まりますが、受信済みの集計コピーは回収できません。
+公開presence RPCとゴシップには、未検証の観測集団の役割別・地域別の数のみを含め、バージョンは不明とします。個別ノード一覧、観察者の身元、国コードや正確な観測時刻は公開しません。時刻は固定の10分区間を使い、3件未満の集団と小さな残余は補完的な秘匿を含めて広い集団に統合または非表示にします。欠けた数値は非公開または未報告であり、ゼロではありません。異なるMacの全数調査ではなく観測値であり、集計だけで匿名性を保証しません。この公開プロトコルでは運用品質は利用できません。受信済みの集計コピーは回収できません。
+
+現在の生成側は通常、自分のエンドポイントの地域のみを知り、他のピアの地域は不明とします。自分の単独の寄与も統合または非表示になり得るため、国の選択によって名前付きの地域区分や国が公開数に現れるとは保証しません。ウォレットはこのMacの地域と明示的に選んだ国を、公開数とは別のローカル設定として表示します。従来のリレーに基づく観測は広域区分のままとし、存在しない詳細区分を作りません。
 
 ### 5. ウェブサイト、ゲートウェイと更新
 
@@ -296,9 +302,11 @@ Apple保存与开发者应用关联的设备注册位，重新安装应用后仍
 
 ### 4. 可选国家设置与在线汇总
 
-在你回答首次启动的国家设置页面之前，不会将任何国家偏好发送给本地节点。发行设置可在告知后预先选中共享，或先要求你选择；两种模式均可拒绝，且不影响钱包和节点功能。Mac的地区设置或你选择的国家留在本机，仅用于选定大范围地区分组，不使用GPS或IP定位，也不记录在链上。
+Mac地区设置通过应用内置的对应表选择默认UN M49次区域。这独立于国家共享：选择国家之前，仅将次区域代码传给本地节点。首次启动会要求选择共享国家或拒绝，在明确同意之前不会将原始国家偏好传给节点。拒绝或关闭共享仍保留默认次区域及全部钱包和节点功能。所选国家保留在此Mac，并选择其标准M49上级次区域；未列出的地区保持未知。不使用GPS或IP定位，也不将选择存储到链上。
 
-公开presence RPC和gossip仅包含未经验证的观测群体按角色、宽泛地区和粗略版本划分的数量，不公开单个节点列表、观测者身份、确切国家或精确观测时间。时间按10分钟分组；不足3个的群体及稀少质量数据会合并到更大分组或隐藏。这些是观测值，并非不同Mac的普查，汇总本身不保证匿名。关闭共享会停止今后使用国家偏好，但已收到的汇总副本无法收回。
+公开presence RPC和gossip只包含未经验证的观测群体按角色和地区划分的数量，版本报告为未知。不公开单个节点列表、观测者身份、国家代码或精确观测时间。时间使用固定的10分钟窗口；不足3个的群体及小规模余数会通过互补抑制等方式合并到更大群体或隐藏。缺失数量表示隐藏或未报告，而非零。这是观测值，并非不同Mac的普查，汇总本身不保证匿名。此公开协议不提供运行质量，已收到的汇总副本无法收回。
+
+当前生成方通常只知道自身端点的地区，将其他对等节点的地区视为未知。因此自身的单条贡献也可能被合并或隐藏，选择国家并不保证公开数量中会显示具名次区域或国家。钱包将此Mac的地区及明确选择的国家作为本地偏好显示，与公开数量分开。旧版中继观测保留为大范围地区，不据此编造更细的次区域。
 
 ### 5. 网站、网关与更新
 
@@ -344,9 +352,11 @@ Los hashes de tokens para impedir solicitudes de registro simultáneas se elimin
 
 ### 4. País opcional y presencia agregada
 
-Debes responder la pantalla de país del primer inicio antes de que se envíe cualquier preferencia de país al nodo local. Una distribución puede preseleccionar el uso compartido con un aviso o pedir primero tu elección; ambos modos permiten rechazarlo sin perder funciones de la cartera o el nodo. El país de la configuración regional del Mac o el que elijas permanece en este Mac y solo selecciona una región amplia. No usa GPS ni geolocalización por IP y no se registra en la cadena.
+La región del Mac selecciona una subregión UN M49 predeterminada mediante una tabla incluida en la app. Es independiente del país compartido: antes de elegir un país solo se pasa el código de subregión al nodo local. El primer inicio pide compartir el país o rechazarlo; no se pasa la preferencia de país original al nodo antes de una elección afirmativa. Rechazar o desactivar conserva la subregión predeterminada y todas las funciones. El país elegido permanece en este Mac y selecciona su grupo M49 canónico; las áreas no incluidas quedan desconocidas. No se utiliza GPS ni geolocalización por IP y la elección no se guarda en la cadena.
 
-La RPC pública de presencia y el gossip solo contienen recuentos de grupos observados sin verificar, por función, región amplia y versión aproximada. No exponen listas de nodos individuales, identidad del observador, país exacto ni hora exacta de observación. Los tiempos se agrupan en intervalos de 10 minutos; los grupos de menos de tres y los datos de calidad poco frecuentes se agrupan de forma más amplia o se ocultan. Son observaciones, no un censo de Macs distintos, y la agregación no garantiza anonimato. Desactivar el uso compartido detiene el uso futuro de la preferencia de país, pero no recupera copias agregadas ya recibidas.
+La RPC pública de presencia y el gossip solo contienen recuentos de grupos observados sin verificar por función y región; la versión se indica como desconocida. No exponen listas individuales, identidad del observador, códigos de país ni horas exactas. Los tiempos usan ventanas fijas de 10 minutos; los grupos menores de tres y los restos pequeños se combinan u ocultan, incluida la supresión complementaria. Los recuentos ausentes están ocultos o no comunicados, no son cero. Son observaciones, no un censo de Macs distintos, y la agregación no garantiza anonimato. Este protocolo público no proporciona calidad de funcionamiento. Las copias agregadas ya recibidas no se pueden recuperar.
+
+El productor actual normalmente solo conoce la región de su propio endpoint y considera desconocidas las regiones de otros pares. Su contribución individual puede agruparse u ocultarse; elegir un país no garantiza que aparezca una subregión o un país con nombre en los recuentos públicos. La cartera indica la región de este Mac y el país elegido afirmativamente como preferencias locales, separadas de los recuentos públicos. Las observaciones anteriores basadas en relés siguen siendo regiones amplias y no se convierten en subregiones inventadas.
 
 ### 5. Sitio web, pasarela y actualizaciones
 

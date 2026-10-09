@@ -1668,16 +1668,16 @@ mod tests {
             .relay_mode(iroh::RelayMode::Disabled).bind().await.unwrap();
         let client = RpcClient::with_endpoint(endpoint.clone(), vec![]);
         let old = endpoint.connect(addr.clone(), ALPN_RPC).await.unwrap();
-        client.pool.lock().unwrap().insert(0, old.clone());
+        client.index_pool.lock().unwrap().insert(0, old.clone());
         client.drop_failed_connection(0, &old); // First failed call removes A.
         let replacement = endpoint.connect(addr, ALPN_RPC).await.unwrap();
         assert_ne!(old.stable_id(), replacement.stable_id());
-        client.pool.lock().unwrap().insert(0, replacement.clone());
+        client.index_pool.lock().unwrap().insert(0, replacement.clone());
         client.drop_failed_connection(0, &old); // A second A failure arrives late.
-        assert_eq!(client.pool.lock().unwrap()[&0].stable_id(), replacement.stable_id());
+        assert_eq!(client.index_pool.lock().unwrap()[&0].stable_id(), replacement.stable_id());
         assert_eq!(rpc_call(&replacement, "ping", serde_json::json!([])).await.unwrap(), "pong");
         client.drop_failed_connection(0, &replacement);
-        assert!(client.pool.lock().unwrap().is_empty(), "its own failure still removes it");
+        assert!(client.index_pool.lock().unwrap().is_empty(), "its own failure still removes it");
         endpoint.close().await;
         let _ = router.shutdown().await;
     }

@@ -41,7 +41,7 @@ if [ "$what" = all ] || [ "$what" = apps ]; then
   # Pure Swift tests (the table of sources per test lives in the script).
   step swift-pure scripts/test-swift-pure.sh
   # Every Tests/<dir> must be in that table.
-  step swift-pure-coverage bash -c 'for d in apps/wallet/Tests/*/; do n=$(basename $d); grep -q "^run $n " scripts/test-swift-pure.sh || { echo "missing in scripts/test-swift-pure.sh: $n"; exit 1; }; done'
+  step swift-pure-coverage bash -c 'for d in apps/wallet/Tests/*/; do [ -f "$d/main.swift" ] || continue; n=$(basename "$d"); grep -q "^run $n " scripts/test-swift-pure.sh || { echo "missing in scripts/test-swift-pure.sh: $n"; exit 1; }; done'
 fi
 
 if [ "$what" = all ] || [ "$what" = rehearsal ]; then

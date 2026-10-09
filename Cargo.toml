@@ -45,6 +45,67 @@ codegen-units = 1
 inherits = "release"
 debug = true
 
+# Development-only: keep backtrace locations without full type/variable DWARF.
+# test inherits dev, including the dependency overrides below.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+codegen-units = 64
+
+[profile.test]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+codegen-units = 64
+
+# Optimize expensive primitives once in the shared cache, not application code.
+# Inline tables keep this explicit allowlist separate from release/guest builds.
+[profile.dev.package]
+blake3 = { opt-level = 1 }
+blst = { opt-level = 1 }
+c-kzg = { opt-level = 1 }
+crypto-bigint = { opt-level = 1 }
+curve25519-dalek = { opt-level = 1 }
+ed25519-dalek = { opt-level = 1 }
+elliptic-curve = { opt-level = 1 }
+k256 = { opt-level = 1 }
+p256 = { opt-level = 1 }
+sha2 = { opt-level = 1 }
+p3-dft = { opt-level = 1 }
+p3-field = { opt-level = 1 }
+p3-koala-bear = { opt-level = 1 }
+p3-matrix = { opt-level = 1 }
+p3-mds = { opt-level = 1 }
+p3-monty-31 = { opt-level = 1 }
+p3-poseidon1 = { opt-level = 1 }
+p3-poseidon2 = { opt-level = 1 }
+p3-symmetric = { opt-level = 1 }
+revm = { opt-level = 1 }
+revm-bytecode = { opt-level = 1 }
+revm-context = { opt-level = 1 }
+revm-context-interface = { opt-level = 1 }
+revm-database = { opt-level = 1 }
+revm-database-interface = { opt-level = 1 }
+revm-handler = { opt-level = 1 }
+revm-inspector = { opt-level = 1 }
+revm-interpreter = { opt-level = 1 }
+revm-precompile = { opt-level = 1 }
+revm-primitives = { opt-level = 1 }
+revm-state = { opt-level = 1 }
+commonware-actor = { opt-level = 1 }
+commonware-broadcast = { opt-level = 1 }
+commonware-codec = { opt-level = 1 }
+commonware-coding = { opt-level = 1 }
+commonware-consensus = { opt-level = 1 }
+commonware-cryptography = { opt-level = 1 }
+commonware-math = { opt-level = 1 }
+commonware-p2p = { opt-level = 1 }
+commonware-parallel = { opt-level = 1 }
+commonware-resolver = { opt-level = 1 }
+commonware-runtime = { opt-level = 1 }
+commonware-storage = { opt-level = 1 }
+commonware-stream = { opt-level = 1 }
+commonware-utils = { opt-level = 1 }
+
 # n0-mainline 0.6.0: get_mutable_most_recent kept the first record instead of the
 # highest seq, so stale DHT records could shadow a moved node. Patched copy.
 [patch.crates-io]

@@ -4,38 +4,46 @@
 # The Aether 0.6.7 bridge (apps/bridge) has its own Sources/Tests: the `bridge` lines at the end.
 set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$root"
+cd "$root" || exit 1
 mkdir -p "$root/tmp/swift-module-cache"
 export TMPDIR="$root/tmp"
 localizations="$root/tmp/wallet-languages/WalletLocalizations.bundle"
 /usr/bin/python3 scripts/wallet-l10n.py prepare-tests --out "$localizations" || exit 1
-W=apps/wallet/Sources; T=apps/wallet/Tests; bad=0
+# Optional positional test names select a subset; no arguments still runs every test.
+selected="$*"
+manifest=$(mktemp "$root/tmp/swift-tests.XXXXXX")
+trap 'rm -f "$manifest"' EXIT
+W=apps/wallet/Sources; T=apps/wallet/Tests; known=""
 run() {
-  n=$1; shift
-  files=()
+  local n=$1; shift
+  known="$known $n"
+  if [ "$n" = update-daemon ] || [ "$n" = update-daemon-tree ]; then
+    local fixture=update-daemon main=apps/wallet/Tests/update-daemon/main.swift
+    if [ "$n" = update-daemon-tree ]; then
+      fixture=update-listener; main=apps/wallet/Tests/update-daemon-tree/main.swift
+      known="$known $fixture"
+    fi
+    if [ -n "$selected" ] && [[ " $selected " != *" $n "* ]] && [[ " $selected " != *" $fixture "* ]]; then return; fi
+    printf '%s\t' "$fixture" apps/wallet/Sources/NodeReleaseIdentity.swift "$main" --command bash "scripts/test-$fixture.sh" >> "$manifest"
+    printf '\n' >> "$manifest"
+    return
+  fi
+  if [ -n "$selected" ] && [[ " $selected " != *" $n "* ]]; then return; fi
+  local files=() compiler_flags=(-Onone)
   for f in "$@"; do files+=("$W/$f"); done
   if [ "$W" = apps/wallet/Sources ]; then
-    # AppLanguage/Brand stay Foundation-only. The helper never reaches the
-    # agent or bridge test modules, which keep their existing behavior.
+    # AppLanguage/Brand stay Foundation-only; agent/bridge keep existing behavior.
     if [[ " $* " != *" AppLanguage.swift "* ]]; then files+=("$W/AppLanguage.swift"); fi
     files+=(apps/wallet/Tests/LocalizationTestSupport.swift)
   fi
-  : > "tmp/sw-$n.err"
-  : > "tmp/sw-$n.out"
-  compiler_flags=(-Onone)
   if [ "$n" = rename-migration ]; then
-    # Large migration fixtures hash hundreds of MB with the release code.
-    # Optimize that code while keeping Swift assertions and preconditions on.
+    # Keep assertions/preconditions enabled for the optimized large migration fixtures.
     compiler_flags=(-O -assert-config Debug)
   fi
-  if swiftc "${compiler_flags[@]}" -module-cache-path "$root/tmp/swift-module-cache" -o "tmp/sw-$n" "${files[@]}" "$T/$n/main.swift" 2>"tmp/sw-$n.err" \
-      && AETHER_AGENT_TEST_TMP="$root/tmp" WALLET_TEST_BUNDLE="$localizations" "./tmp/sw-$n" >"tmp/sw-$n.out" 2>&1; then
-    echo "OK   $n"
-  else
-    echo "FAIL $n :: $(head -c 160 "tmp/sw-$n.err" | tr '\n' ' ') $(tail -2 "tmp/sw-$n.out" | tr '\n' ' ')"
-    bad=$((bad+1))
-  fi
+  printf '%s\t' "$n" "${compiler_flags[@]}" -module-cache-path "$root/tmp/swift-module-cache" "${files[@]}" "$T/$n/main.swift" >> "$manifest"
+  printf '\n' >> "$manifest"
 }
+
 run multi-account AccountStore.swift
 run account-selection AccountStore.swift AccountDataStore.swift AccountControls.swift
 run account-isolation AccountStore.swift AccountDataStore.swift AccountControls.swift
@@ -90,15 +98,14 @@ run history History.swift AgentPolicy.swift
 # The Aether -> EastSea bridge app.
 W=apps/bridge/Sources; T=apps/bridge/Tests
 run bridge-plan BridgePlan.swift
-# Native identity fixtures need signed task-owned executables and arguments.
+# Native identity fixtures are compiled in the same bounded batch. Their scripts
+# still create fresh signed executable identities and own their process cleanup.
 if [ "$(uname -s)" = Darwin ]; then
-  for fixture in update-daemon update-listener; do
-    if bash "scripts/test-$fixture.sh" > "tmp/sw-$fixture.out" 2> "tmp/sw-$fixture.err"; then
-      echo "OK   $fixture"
-    else
-      echo "FAIL $fixture :: $(tail -2 "tmp/sw-$fixture.err") $(tail -2 "tmp/sw-$fixture.out")"
-      bad=$((bad+1))
-    fi
-  done
+run update-daemon NodeReleaseIdentity.swift
+run update-daemon-tree NodeReleaseIdentity.swift
 fi
-exit $bad
+for requested in $selected; do
+  if [[ " $known " != *" $requested "* ]]; then echo "unknown Swift test: $requested" >&2; exit 2; fi
+done
+python3 scripts/swift-test-cache.py --manifest "$manifest"
+exit $?

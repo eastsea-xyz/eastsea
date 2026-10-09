@@ -1178,7 +1178,7 @@ fn background_reshare_survives_mid_epoch_validator_restarts() {
         }
         logs
     };
-    let end = Instant::now() + Duration::from_secs(90);
+    let end = Instant::now() + Duration::from_secs(330);
     loop {
         let logs = check_reshare();
         if logs[..4].iter().all(|log| log.contains("reshare: started")) {
@@ -1187,8 +1187,9 @@ fn background_reshare_survives_mid_epoch_validator_restarts() {
         assert!(Instant::now() < end, "not all restarted voters started their background reshare: {logs:?}");
         std::thread::sleep(Duration::from_millis(200));
     }
-    let end = Instant::now() + Duration::from_secs(300);
-    let mut last_height = restart_height;
+    let end = Instant::now() + aether_node::supervisor::default_reshare_timeout(4) + Duration::from_secs(30);
+    let reshare_height = net.height(0);
+    let mut last_height = reshare_height;
     let mut progressed = Instant::now();
     let handoff = loop {
         check_reshare();
@@ -1199,7 +1200,7 @@ fn background_reshare_survives_mid_epoch_validator_restarts() {
         }
         assert!(progressed.elapsed() < Duration::from_secs(30), "old committee stopped during DKG at {height}{}", net.log_tail(0));
         if let Some(handoff) = net.rpc(0, "aether_handoff", json!([])).filter(|v| !v.is_null()) {
-            assert!(height >= restart_height + 3, "the old committee must advance during background DKG");
+            assert!(height >= reshare_height + 3, "the old committee must advance during background DKG");
             break handoff;
         }
         assert!(Instant::now() < end, "no handoff after restarted background reshares{}", net.log_tail(0));
@@ -1222,7 +1223,7 @@ fn background_reshare_survives_mid_epoch_validator_restarts() {
                     && network["identity"] == identity && threshold["identity"] == identity
             });
             if installed && !net.data(i).join("no-vote").exists()
-                && net.rpc(i, "aether_network", json!([])).is_some_and(|network| network["round"] == handoff["round"])
+                && net.rpc(i, "aether_network", json!([true])).is_some_and(|network| network["round"] == handoff["round"])
             {
                 let key: aether_node::dkg::KeyFile = serde_json::from_value(threshold.unwrap()).unwrap();
                 let (output, share) = key.decode(4).expect("installed share decodes");
@@ -1240,6 +1241,13 @@ fn background_reshare_survives_mid_epoch_validator_restarts() {
     check_reshare();
     let balance = net.cli(&["balance", aa, "--rpc", &net.url(4), "--identity", &identity]);
     assert!(balance.contains("balance   11 wei") && balance.contains("verified  ✓"), "{balance}");
+    // Two retained voters need the newly seated candidate for quorum.
+    net.kill(0);
+    let quorum_height = [1, 2, 4, 3].into_iter().map(|i| net.height(i)).max().unwrap() + 3;
+    for i in [1, 2, 4] {
+        net.wait_height(i, quorum_height, 60);
+    }
+    assert_agree(&net, &[1, 2, 4, 3], quorum_height);
     eprintln!("restarted background reshare: height={restart_height} round={expected_round} switch={switch} identity unchanged");
 }
 

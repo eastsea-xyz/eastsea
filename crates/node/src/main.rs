@@ -151,6 +151,10 @@ enum Cmd {
         ceremony: Option<String>,
         #[arg(long)]
         port: u16,
+        /// Dedicated background reshare listener forwarded over iroh.
+        /// Default: --port + 10000. Use the same port for a staged reshare child.
+        #[arg(long)]
+        reshare_port: Option<u16>,
         #[arg(long)]
         rpc_port: u16,
         #[arg(long)]
@@ -447,8 +451,8 @@ enum Cmd {
         port: u16,
         #[arg(long, default_value_t = 8545)]
         rpc_port: u16,
-        /// Background reshare port (default: --port + 1, where a running
-        /// validator's node forwards reshare links).
+        /// Dedicated background reshare port (default: --port + 10000).
+        /// The running validator forwards reshare links to this listener.
         #[arg(long)]
         reshare_port: Option<u16>,
         /// Extra argument for `aether node` (repeatable), e.g. --node-arg=--faucet-key=…
@@ -838,6 +842,7 @@ fn main() {
             network,
             ceremony,
             port,
+            reshare_port,
             rpc_port,
             data,
             peers,
@@ -925,9 +930,10 @@ fn main() {
                     let new_genesis = args.4.node_rewards || args.4.history >= 2;
                     let effective_ms = if new_genesis { block_time_ms.max(aether_node::application::MIN_BLOCK_INTERVAL_MS) } else { block_time_ms };
                     let mode = history.mode(args.4.history >= 2, effective_ms)?;
-                    Ok((args, mode))
+                    let reshare_port = aether_node::supervisor::resolve_reshare_port(port, rpc_port, reshare_port)?;
+                    Ok((args, mode, reshare_port))
                 })
-                .map(|((p2p, chain_id, epochs, key_round, mut genesis), history)| {
+                .map(|((p2p, chain_id, epochs, key_round, mut genesis), history, reshare_port)| {
                     if let Some(e) = dev_epoch_blocks {
                         genesis.epoch_blocks = e;
                     }
@@ -939,6 +945,7 @@ fn main() {
                         epochs,
                         key_round,
                         rpc_port,
+                        reshare_port,
                         data,
                         block_time_ms,
                         dev_censor,
@@ -1056,6 +1063,7 @@ fn main() {
                 .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into()))
                 .init();
             (|| {
+                let reshare_port = aether_node::supervisor::resolve_reshare_port(port, rpc_port, reshare_port)?;
                 let dir = std::path::PathBuf::from(&data);
                 // A chain-data disk that is not connected: stop before any
                 // write at all (never create its /Volumes path — that would
@@ -1152,7 +1160,7 @@ fn main() {
                     data: dir,
                     port,
                     rpc_port,
-                    reshare_port: reshare_port.unwrap_or(port + 1),
+                    reshare_port,
                     node_args,
                     follow_args,
                     dev_peer_dir: dev_peer_dir.map(Into::into),
@@ -1997,6 +2005,7 @@ struct NodeArgs {
     /// Key round the network file expects (from its identity), if any.
     key_round: Option<u64>,
     rpc_port: u16,
+    reshare_port: u16,
     data: String,
     block_time_ms: u64,
     dev_censor: Option<Address>,
@@ -2123,6 +2132,7 @@ fn run_node(a: NodeArgs) {
         epochs,
         key_round,
         rpc_port,
+        reshare_port,
         block_time_ms,
         dev_censor,
         dev_deprioritize,
@@ -2359,6 +2369,7 @@ fn run_node(a: NodeArgs) {
                     async move { rpc::handle_value(&st, req).await }
                 },
                 p2p_target,
+                links.then(|| loopback(reshare_port)),
                 Some(registry),
             )
         });
@@ -4218,6 +4229,20 @@ mod tests {
         assert_eq!(rules[21].name, "release pin");
         assert!(!rules[21].ok, "a new genesis without a release pin fails the launch check");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn node_and_supervisor_parse_the_same_reshare_listener() {
+        let node = Cli::try_parse_from([
+            "aether", "node", "--port", "60000", "--rpc-port", "8545", "--data", "d", "--reshare-port", "19000",
+        ]).expect("node reshare target parses");
+        let Cmd::Node { reshare_port, .. } = node.cmd else { panic!("node") };
+        assert_eq!(reshare_port, Some(19000));
+        let run = Cli::try_parse_from([
+            "aether", "run", "--port", "60000", "--data", "d", "--reshare-port", "19000",
+        ]).expect("supervisor reshare target parses");
+        let Cmd::Run { reshare_port, .. } = run.cmd else { panic!("run") };
+        assert_eq!(reshare_port, Some(19000));
     }
 
     #[test]

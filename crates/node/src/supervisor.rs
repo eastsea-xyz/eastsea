@@ -504,6 +504,20 @@ pub fn expected_parent_is_current(expected: u32) -> bool {
     expected > 0 && std::os::unix::process::parent_id() == expected
 }
 
+/// Resolve one listener for the background child and the node's iroh forwarder.
+/// Keep consecutive local validators out of each other's consensus ports.
+pub fn resolve_reshare_port(port: u16, rpc_port: u16, configured: Option<u16>) -> Result<u16, String> {
+    let reshare = match configured {
+        Some(port) => port,
+        None => port.checked_add(10_000)
+            .ok_or("--port + 10000 exceeds 65535; set --reshare-port explicitly")?,
+    };
+    if reshare == 0 || reshare == port || reshare == rpc_port {
+        return Err("--reshare-port must be nonzero and different from --port and --rpc-port".into());
+    }
+    Ok(reshare)
+}
+
 pub struct Supervisor {
     /// The `aether` binary to run children with.
     pub exe: PathBuf,
@@ -512,8 +526,8 @@ pub struct Supervisor {
     pub data: PathBuf,
     /// Validator p2p port.
     pub port: u16,
-    /// Background reshare port (a running validator's node forwards reshare
-    /// links over iroh to `port + 1`, so keep that default on public networks).
+    /// Dedicated background reshare listener. The validator child forwards
+    /// incoming iroh reshare links to this same configured port.
     pub reshare_port: u16,
     pub rpc_port: u16,
     /// Extra args for `aether node` (faucet, DeviceCheck, block time, …).
@@ -1016,6 +1030,8 @@ impl Supervisor {
                     &self.port.to_string(),
                     "--rpc-port",
                     &self.rpc_port.to_string(),
+                    "--reshare-port",
+                    &self.reshare_port.to_string(),
                 ]);
                 if let Some(rec) = &self.ceremony {
                     cmd.args(["--ceremony", &path_str(rec)]);
@@ -2993,6 +3009,21 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
         std::fs::write(dir.join("network.json"), serde_json::to_vec(&file(7_780, "aa")).unwrap()).unwrap();
         assert!(sup(&dir).check_joining_share(me, &handoff).is_ok(), "chain 7780 keeps its existing install path");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reshare_ports_keep_consecutive_validators_separate() {
+        for port in 9101..=9104 {
+            assert_eq!(resolve_reshare_port(port, 8600, None).unwrap(), port + 10_000);
+        }
+        assert_eq!(resolve_reshare_port(9000, 8545, None).unwrap(), 19000);
+        assert_eq!(resolve_reshare_port(60000, 8545, Some(19000)).unwrap(), 19000,
+            "explicit overrides must bypass default overflow");
+        assert!(resolve_reshare_port(60000, 8545, None).unwrap_err().contains("set --reshare-port explicitly"));
+        for invalid in [0, 9000, 8545] {
+            assert!(resolve_reshare_port(9000, 8545, Some(invalid)).is_err());
+        }
+        assert!(resolve_reshare_port(9000, 19000, None).is_err(), "the default must not collide with RPC");
     }
 
     #[test]

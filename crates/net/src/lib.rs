@@ -510,13 +510,16 @@ impl ProtocolHandler for RpcProtocol {
 
 /// Serve JSON-RPC over `aether/rpc/1` on `endpoint`; with `p2p_target`, also
 /// accept validator tunnels (`aether/p2p/1`) and forward them to that local
-/// Commonware p2p listener. `registered` is the finalized-registry check
+/// Commonware p2p listener. `reshare_target` independently forwards
+/// `aether/reshare/1` to the configured background DKG listener.
+/// `registered` is the finalized-registry check
 /// wallet-server announcements are listed under (validators pass one;
 /// `None` refuses announcements).
 pub fn serve<F, Fut>(
     endpoint: Endpoint,
     handler: F,
     p2p_target: Option<std::net::SocketAddr>,
+    reshare_target: Option<std::net::SocketAddr>,
     registered: Option<RegisteredCandidate>,
 ) -> Router
 where
@@ -535,9 +538,9 @@ where
     );
     if let Some(target) = p2p_target {
         r = r.accept(ALPN_P2P, tunnel::Inbound { target });
-        // The background reshare listens on the next port.
-        let reshare = std::net::SocketAddr::new(target.ip(), target.port() + 1);
-        r = r.accept(ALPN_RESHARE, tunnel::Inbound { target: reshare });
+    }
+    if let Some(target) = reshare_target {
+        r = r.accept(ALPN_RESHARE, tunnel::Inbound { target });
     }
     r.spawn()
 }
@@ -558,7 +561,7 @@ where
     F: Fn(Value) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Value> + Send + 'static,
 {
-    serve(endpoint, handler, None, None)
+    serve(endpoint, handler, None, None, None)
 }
 
 /// How one JSON-RPC roundtrip failed.
@@ -1010,7 +1013,7 @@ mod tests {
         let addr = EndpointAddr::from_parts(server.id(), [TransportAddr::Ip(SocketAddr::new(
             IpAddr::V4(Ipv4Addr::LOCALHOST), port,
         ))]);
-        let router = serve(server, |_req| async move { unreachable!() }, Some(consensus_addr), None);
+        let router = serve(server, |_req| async move { unreachable!() }, Some(consensus_addr), Some(reshare_addr), None);
         let client = Endpoint::builder(presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled).bind().await.unwrap();
         for (alpn, expected) in [(ALPN_P2P, b"consensus".as_slice()), (ALPN_RESHARE, b"reshare".as_slice())] {
@@ -1326,7 +1329,7 @@ mod tests {
         let addr = EndpointAddr::from_parts(server.id(), [TransportAddr::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))]);
         let router = serve(server, |req| async move {
             serde_json::json!({ "jsonrpc": "2.0", "id": req["id"], "result": "pong" })
-        }, None, None);
+        }, None, None, None);
         let endpoint = Endpoint::builder(presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled).bind().await.unwrap();
         let client = RpcClient::with_endpoint(endpoint.clone(), vec![]);
@@ -1376,6 +1379,7 @@ mod tests {
         let router = serve(
             server,
             |_req| async move { unreachable!("discovery is answered by the transport") },
+            None,
             None,
             Some(registered),
         );

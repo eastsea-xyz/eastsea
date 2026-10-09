@@ -1244,7 +1244,7 @@ final class NodeController: ObservableObject {
                 state = .failed(NodeWatchdog.Failure.other.sentence)
             }
         case .none:
-            state = .failed(String(localized: "The node stopped. Copy Diagnostics on Home shows why."))
+            state = .failed(String(localized: "The node stopped. Copy Diagnostics in Help shows why."))
         }
     }
 

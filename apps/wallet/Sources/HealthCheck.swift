@@ -177,6 +177,15 @@ struct HealthCheck {
         let issue: Issue
         let sentence: String
         let action: Action?
+        /// The condition still holds now; a banner may remain for the quiet
+        /// period after recovery, but diagnostics disappear as soon as it clears.
+        let diagnosticsVisible: Bool
+        /// Includes .fixNode when the stop reason's own action copies diagnostics.
+        let primaryActionCopiesDiagnostics: Bool
+
+        var showsSeparateDiagnostics: Bool {
+            diagnosticsVisible && !primaryActionCopiesDiagnostics
+        }
     }
 
     /// Hold times (design §4.2).
@@ -421,7 +430,13 @@ struct HealthCheck {
     /// The banner for the most urgent active issue, nil when all is well.
     func alert(locale: Locale = .current, bundle: Bundle = .main) -> Alert? {
         guard let top = Issue.allCases.first(where: { active.contains($0) }) else { return nil }
-        return Alert(issue: top, sentence: sentence(top, locale: locale, bundle: bundle), action: action(top))
+        let diagnosticsVisible = lastObserved.map { holds(top, last, at: $0) } ?? false
+        let primary = action(top)
+        let copiesDiagnostics = primary == .copyDiagnostics
+            || (primary == .fixNode && last.nodeStop?.copy().action == .copyDiagnostics)
+        return Alert(issue: top, sentence: sentence(top, locale: locale, bundle: bundle),
+                     action: !diagnosticsVisible && (copiesDiagnostics || primary == .fixNode) ? nil : primary,
+                     diagnosticsVisible: diagnosticsVisible, primaryActionCopiesDiagnostics: copiesDiagnostics)
     }
 
     /// The failure kinds raised over the last 24 hours, with their counts

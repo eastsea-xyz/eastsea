@@ -86,6 +86,12 @@ enum NodeStopReason: Equatable {
         default: return true
         }
     }
+
+    /// A retained row cannot offer diagnostics for a fault that has ended or
+    /// after the person turned the node off.
+    func showsDiagnostics(currentReason: NodeStopReason?, nodeEnabled: Bool) -> Bool {
+        nodeEnabled && isIncident && currentReason == self
+    }
 }
 
 /// The one button a stop reason carries.

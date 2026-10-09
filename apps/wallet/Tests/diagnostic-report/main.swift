@@ -7,6 +7,24 @@ func check(_ c: Bool, _ m: String) { if !c { print("FAIL", m); exit(1) } }
 let enLocale = walletTestLocale("en"), enBundle = walletTestBundle("en")
 let koLocale = walletTestLocale("ko"), koBundle = walletTestBundle("ko")
 
+// The Help entry remains available without an incident. Its ellipsis and the
+// shorter incident action both come from the five-language app catalog.
+let diagnosticLabels: [(String, String)] = [
+    ("en", "Copy Diagnostics"), ("ko", "진단 정보 복사"), ("ja", "診断情報をコピー"),
+    ("zh-Hans", "复制诊断信息"), ("zh-Hant", "複製診斷資訊"),
+]
+for (language, expected) in diagnosticLabels {
+    let locale = walletTestLocale(language), bundle = walletTestBundle(language)
+    check(DiagnosticReport.copyLabel(locale: locale, bundle: bundle) == expected,
+          "\(language): incident diagnostics label stays translated")
+    check(DiagnosticReport.copyLabel(helpMenu: true, locale: locale, bundle: bundle) == expected + "…",
+          "\(language): the permanent Help command keeps its localized ellipsis")
+    let stoppedKey = "The node stopped. Copy Diagnostics in Help shows why."
+    let stopped = walletExpectedTranslation(stoppedKey, language: language)
+    check(!stopped.isEmpty && (language == "en" || stopped != stoppedKey),
+          "\(language): the stopped-node instruction points to the permanent Help entry")
+}
+
 // MARK: the fields, by example (design §2.3)
 
 var s = DiagnosticReport.Snapshot()

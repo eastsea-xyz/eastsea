@@ -19,7 +19,8 @@ struct NodeStopRow: View {
             Text(c.paragraph)
                 .font(compact ? .aeCaption : .aeFootnote).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if let action = c.action, let label = c.actionLabel {
+            if let action = c.action, let label = c.actionLabel,
+               action != .copyDiagnostics || reason.showsDiagnostics(currentReason: node.stopReason, nodeEnabled: node.enabled) {
                 Button(label) { node.perform(action) }
                     .controlSize(compact ? .small : .regular)
                     .disabled(node.keyRebindInProgress)

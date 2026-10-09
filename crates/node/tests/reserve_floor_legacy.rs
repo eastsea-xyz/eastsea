@@ -12,7 +12,7 @@ use commonware_consensus::types::{Round, View};
 use commonware_cryptography::Digestible;
 
 const NETWORK: &[u8] = include_bytes!("fixtures/legacy-7780-network.json");
-// Pin the reported hash while running against the pre-change implementation.
+// Captured against released production rules at e900960; this fixture is synthetic.
 const EXPECTED_TRANSCRIPT: &str = "ba2adc97c77ab73f2865bf23bd8f3eb706a8225184f9eb6522a07abc43ba2ce7";
 
 fn config(file: &NetworkFile) -> ChainConfig {

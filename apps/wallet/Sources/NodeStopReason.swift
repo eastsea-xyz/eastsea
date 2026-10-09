@@ -251,6 +251,16 @@ extension NodeStopReason {
 /// The node reports an unavailable read while staying alive. These markers
 /// are state transitions, not exit reasons; unrelated output retains the
 /// previous state until a successful retry confirms this Mac.
+/// Where to start reading the last `wanted` bytes of a file of `size` bytes.
+/// UInt64 subtraction traps below zero, so a log shorter than the window
+/// (every fresh install) starts at 0 instead of crashing the app (0.7.3.1).
+enum NodeLogTail {
+    static func offset(size: UInt64, wanted: Int) -> UInt64 {
+        let want = UInt64(max(0, wanted))
+        return size > want ? size - want : 0
+    }
+}
+
 enum NodeMacConfirmation {
     static func waiting(in log: String, previously: Bool = false) -> Bool {
         var waiting = previously

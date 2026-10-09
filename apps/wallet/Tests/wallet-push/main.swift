@@ -11,6 +11,8 @@ let filter = WalletPushFilter(address: addr, transactions: [hash, hash.uppercase
 check(filter.address == addr && filter.transactions.count == 32, "bounded, deduplicated wallet filters")
 check(WalletPushFilter(address: "bad", transactions: ["bad", hash]).address == nil, "invalid account never becomes a subscription address")
 check(WalletPushFilter(address: addr, transactions: ["bad", hash]).transactions == [hash], "invalid transaction hashes are excluded")
+check(WalletPushFilter(address: addr, transactions: [hash, hash.uppercased(), hash]).transactions == [hash],
+      "duplicate-heavy filters are deterministic across collection count and iteration")
 let request = WalletPushWire.request(id: 1, filter: filter, after: 123)
 let json = try! JSONSerialization.jsonObject(with: request) as! [String: Any]
 let params = json["params"] as! [Any]

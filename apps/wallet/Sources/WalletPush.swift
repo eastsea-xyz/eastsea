@@ -20,7 +20,7 @@ struct WalletPushFilter: Equatable {
         let canonical = address.lowercased()
         self.address = Self.hex(canonical, bytes: 20) ? canonical : nil
         var seen = Set<String>()
-        self.transactions = Array(transactions.lazy.map { $0.lowercased() }.filter {
+        self.transactions = Array(transactions.map { $0.lowercased() }.filter {
             Self.hex($0, bytes: 32) && seen.insert($0).inserted
         }.prefix(32))
     }

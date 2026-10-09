@@ -4919,7 +4919,9 @@ mod pool_tests {
         assert!(charged >= states, "state versions must be charged to the history budget");
         assert!(versions <= 65, "compact rescue inputs must not pin additional full states");
         let prover = Address::repeat_byte(0xf0);
-        let (height, _, input) = crate::prover::next_job(&chain, prover).unwrap().expect("a grace rescue still has a usable compact input");
+        let assignment = crate::prover_assignment::Config { window, ..Default::default() };
+        let now_ms = last.timestamp + assignment.grace.as_millis() as u64 + 1;
+        let (height, _, input) = chain.proving_input_for(prover, &assignment, now_ms).unwrap().expect("a grace rescue still has a usable compact input");
         assert_eq!(height, 1, "the oldest unpaid statement survives quiet blocks and budget trimming");
         assert_eq!(aether_proving::block::execute(&input).unwrap().commitment(), first_commitment);
         assert_eq!(aether_proving::block::output(&input).unwrap(), aether_proving::block::claim(first_commitment, prover));

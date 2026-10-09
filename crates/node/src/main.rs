@@ -887,6 +887,14 @@ enum Cmd {
         #[arg(long)]
         identity: Option<String>,
     },
+    /// Measure or compact an existing offline redb database. Work on a copy
+    /// of a cleanly stopped node; a live writer's exclusive lock is refused.
+    DbMaintenance {
+        #[arg(long)]
+        db: std::path::PathBuf,
+        #[arg(long)]
+        compact: bool,
+    },
     /// Transaction receipt.
     Receipt {
         hash: TxHash,
@@ -1614,6 +1622,7 @@ fn main() {
         })(),
         Cmd::Balance { address, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_balance(&rpc, address, &set)),
         Cmd::Storage { address, slot, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_storage(&rpc, address, slot, &set)),
+        Cmd::DbMaintenance { db, compact } => db_maintenance(&db, compact),
         Cmd::Dkg { index, validators, network, port, data, peers, link_base, offline, round } => {
             let _run_lock = aether_node::supervisor::lock_or_inherit_data_dir(std::path::Path::new(&data), _writer_lease.as_ref()).unwrap_or_else(|e| {
                 eprintln!("{e}"); std::process::exit(aether_node::supervisor::EXIT_LOCKED);
@@ -3097,6 +3106,41 @@ fn exit_with_parent_process(expected_parent: Option<u32>) {
     });
 }
 
+/// Changing the target never lowers the two-source certificate requirement.
+fn follower_min_peers() -> Result<usize, String> {
+    let n = match std::env::var("AETHER_FOLLOW_MIN_PEERS") {
+        Ok(raw) => raw.parse::<usize>().map_err(|_| "AETHER_FOLLOW_MIN_PEERS must be 2..=8".to_string())?,
+        Err(std::env::VarError::NotPresent) => aether_node::follow::DEFAULT_MIN_PEERS,
+        Err(e) => return Err(e.to_string()),
+    };
+    if !(2..=8).contains(&n) { return Err("AETHER_FOLLOW_MIN_PEERS must be 2..=8".into()) }
+    Ok(n)
+}
+
+fn db_maintenance(path: &std::path::Path, compact: bool) -> Result<(), String> {
+    let mut store = aether_node::store::Store::open_for_maintenance(path).map_err(|e| e.to_string())?;
+    // Validate authoritative state, not every archival row materialized as a
+    // history cache. Redb holds the exclusive writer lock throughout.
+    let checkpoint = |store: &aether_node::store::Store| {
+        store.load_with_cache_budget(0).map(|cp| cp.map(|cp| (cp.height, cp.digest, cp.state.root())))
+    };
+    let head = checkpoint(&store).map_err(|e| e.to_string())?;
+    let before = store.stats().map_err(|e| e.to_string())?;
+    let compacted = compact && store.compact().map_err(|e| e.to_string())?;
+    let after = if compact {
+        let after = store.stats().map_err(|e| e.to_string())?;
+        let after_head = checkpoint(&store).map_err(|e| e.to_string())?;
+        let rows = |stats: &aether_node::store::StoreStats| stats.tables.iter()
+            .map(|t| (t.name, t.entries, t.stored)).collect::<Vec<_>>();
+        if head != after_head || rows(&before) != rows(&after) {
+            return Err("database integrity changed during compaction; preserve this copy for inspection".into());
+        }
+        Some(after)
+    } else { None };
+    println!("{}", serde_json::to_string_pretty(&json!({"before":before, "after":after, "compacted":compacted})).map_err(|e| e.to_string())?);
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_follow(
     network: Option<String>,
@@ -3245,10 +3289,10 @@ fn run_follow(
             }.map_err(|e| e.to_string())?)
         } else { None };
         let upstream = Arc::new(if from_rpc.is_empty() {
-            Upstream::Iroh(aether_net::RpcClient::with_endpoint(wallet_ep.as_ref().expect("iroh follower endpoint").clone(), nodes.clone()), Default::default())
+            Upstream::Iroh(aether_net::RpcClient::with_endpoint(wallet_ep.as_ref().expect("iroh follower endpoint").clone(), nodes.clone()).with_relay_diversity().await.map_err(|e| e.to_string())?, Default::default())
         } else {
             Upstream::Http(from_rpc)
-        });
+        }.guarded(follower_min_peers()?)?);
         let app_bundles = app_bundle_service(&data, wallet_ep.clone(), nodes.clone());
         let role = if announce_keys.is_some() { aether_node::presence::Role::Candidate } else { aether_node::presence::Role::Follower };
         let identity = announce_keys.as_ref().map(|keys| keys.keys.node_secret.clone()).or_else(|| {
@@ -3389,7 +3433,7 @@ fn run_follow(
                     tracing::debug!("no candidate keys: serving wallets, but not announced (aether run --candidate)");
                 }
                 loop {
-                    if let (Upstream::Iroh(c, _), Some(keys)) = (announcer.as_ref(), keys.as_ref()) {
+                    if let (Some(c), Some(keys)) = (announcer.iroh_client(), keys.as_ref()) {
                         let params = aether_node::announce::signed(keys, &endpoint_id);
                         if let Err(e) = c.call("aether_announceWalletServer", serde_json::json!(params)).await {
                             tracing::debug!(%e, "wallet-server announce failed; retrying in a minute");

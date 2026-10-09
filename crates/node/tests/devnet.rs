@@ -1477,6 +1477,126 @@ fn a_follower_verifies_everything_and_serves_a_wallet() {
     assert_eq!(b2.height, 2);
 }
 
+/// A valid certificate proves a block, not that a single path's replay is
+/// today's head. Replay one stale certified head while only one source has
+/// the current head; a follower must wait for a second current witness.
+#[test]
+fn rel24_follower_rejects_a_stale_path_and_waits_for_two_current_sources() {
+    let _serial = serial();
+    let mut net = Net::start_with("rel24", vec![vec![]; 4]);
+    for i in 0..4 { net.wait_height(i, 8, 90); }
+    // A real finalized large-read fixture: valid one-byte runtime, with padded
+    // init code. Its canonical finalized RPC includes the actual transaction.
+    let init = format!("6001600c60003960016000f300{}", "00".repeat(16_000));
+    let deployed = net.cli(&["deploy", "--rpc", &net.url(0), "--from-dev", "2", "--code", &init]);
+    assert!(deployed.contains("contract: "), "{deployed}");
+    let target = net.height(0) + 2;
+    for i in 0..4 { net.wait_height(i, target, 60); }
+    for i in 0..4 { net.kill(i); }
+    // Restore one validator for reads only: the other three remain stopped,
+    // so certificates and the DB fixture cannot change during this test.
+    net.spawn(0);
+    net.wait_height(0, 8, 60);
+    let head = net.height(0);
+    let mut proofs = std::collections::BTreeMap::new();
+    for h in 1..=head {
+        proofs.insert(h, net.rpc(0, "aether_getFinalized", json!([h])).unwrap());
+    }
+    net.kill(0);
+    let proofs = std::sync::Arc::new(proofs);
+
+    struct Source {
+        url: String,
+        enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        stop: Option<tokio::sync::oneshot::Sender<()>>,
+        task: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for Source {
+        fn drop(&mut self) {
+            if let Some(stop) = self.stop.take() { let _ = stop.send(()); }
+            if let Some(task) = self.task.take() { let _ = task.join(); }
+        }
+    }
+    let source = |height: u64, enabled: bool| {
+        let enabled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(enabled));
+        let flag = enabled.clone();
+        let proofs = proofs.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let task = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                started_tx.send(format!("http://{}", listener.local_addr().unwrap())).unwrap();
+                let app = axum::Router::new().route("/", axum::routing::post(move |axum::Json(req): axum::Json<Value>| {
+                    let proofs = proofs.clone();
+                    let flag = flag.clone();
+                    async move {
+                        let result = if !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                            Value::Null
+                        } else if req["method"] == "aether_status" {
+                            json!({"height":height})
+                        } else if req["method"] == "aether_getFinalized" {
+                            req["params"][0].as_u64().filter(|h| *h <= height)
+                                .and_then(|h| proofs.get(&h).cloned()).unwrap_or(Value::Null)
+                        } else { Value::Null };
+                        axum::Json(json!({"jsonrpc":"2.0", "id":req["id"], "result":result}))
+                    }
+                }));
+                axum::serve(listener, app).with_graceful_shutdown(async { let _ = stopped.await; }).await.unwrap();
+            });
+        });
+        Source {url:started_rx.recv().unwrap(), enabled, stop:Some(stop), task:Some(task)}
+    };
+    let stale = source(3, true);
+    let fresh = source(head, true);
+    let corroborator = source(head, false);
+    let port = free_port();
+    let data = net.dir.join("follower");
+    let log = std::fs::File::create(net.dir.join("rel24-follower.log")).unwrap();
+    let from = format!("{},{},{}", stale.url, fresh.url, corroborator.url);
+    let child = spawn_logged(log, &["follow".into(), "--from-rpc".into(), from,
+        "--data".into(), data.to_str().unwrap().into(), "--rpc-port".into(), port.to_string()]);
+    net.rpc.push(port);
+    net.procs.push(Some(child));
+    net.logs.push(net.dir.join("rel24-follower.log"));
+    let f = net.rpc.len() - 1;
+    let deadline = Instant::now() + Duration::from_secs(45);
+    while net.rpc(f, "aether_status", json!([])).is_none() {
+        assert!(Instant::now() < deadline, "follower did not start{}", net.log_tail(f));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Wait long enough for several polling rounds. Old code accepts the stale
+    // path's three valid blocks, then the sole current source's head.
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(net.height(f), 0, "a stale certificate and one current witness must not establish the head{}", net.log_tail(f));
+    let status = net.rpc(f, "aether_status", json!([])).unwrap();
+    assert_eq!(status["follower_network"]["alert"], true, "HTTP-only devnet paths are explicitly degraded");
+    corroborator.enabled.store(true, std::sync::atomic::Ordering::SeqCst);
+    net.wait_height(f, head, 60);
+    let fin = net.rpc(f, "aether_getFinalized", json!([head])).unwrap();
+    assert_eq!(fin["block"], proofs[&head]["block"], "the accepted head is the corroborated certified block");
+    fresh.enabled.store(false, std::sync::atomic::Ordering::SeqCst);
+    corroborator.enabled.store(false, std::sync::atomic::Ordering::SeqCst);
+    std::thread::sleep(Duration::from_secs(2));
+    let status = net.rpc(f, "aether_status", json!([])).unwrap();
+    assert_eq!(status["follower_network"]["head_confirmed"], false, "cached agreement cannot survive lost sources");
+    assert_eq!(net.height(f), head, "a later stale head never rolls state back");
+    if let Ok(copy) = std::env::var("AETHER_REL_DB_FIXTURE") {
+        let copy = std::path::Path::new(&copy);
+        std::fs::create_dir_all(copy).unwrap();
+        std::fs::copy(net.data(0).join("state.redb"), copy.join("state.redb")).unwrap();
+        let store = aether_node::store::Store::open_for_maintenance(&copy.join("state.redb")).unwrap();
+        for (h, proof) in proofs.iter() {
+            store.put_proof(*h, proof.to_string().as_bytes()).unwrap();
+        }
+        drop(store);
+        let measurement_height = proofs.iter().max_by_key(|(_, p)| p["block"].as_str().map(str::len).unwrap_or(0)).unwrap().0;
+        std::fs::write(copy.join("certificates.json"), serde_json::to_vec(&*proofs).unwrap()).unwrap();
+        std::fs::write(copy.join("fixture.json"), json!({"head":head, "measurement_height":measurement_height, "validators":4, "origin":"isolated loopback devnet"}).to_string()).unwrap();
+    }
+}
+
 /// Open voting nodes, part 2: a follower Mac becomes a candidate. Its owner
 /// registers it once (registrar attestation → registry); from then on the node
 /// sends a liveness beacon every epoch by itself and its streak grows.
@@ -1496,7 +1616,7 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     let args: Vec<String> = vec![
         "follow".into(),
         "--from-rpc".into(),
-        net.url(1),
+        format!("{},{}", net.url(1), net.url(2)),
         "--data".into(),
         data.to_str().unwrap().into(),
         "--rpc-port".into(),

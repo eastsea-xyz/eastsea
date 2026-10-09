@@ -48,8 +48,8 @@ enum NodeStopReason: Equatable {
     case keyElsewhere
     /// The process could not even be launched (an OS error).
     case launchFailed(String)
-    /// The block data is moving to another disk (0…100).
-    case movingStorage(percent: Int)
+    /// An expected fresh sync at a newly selected block-data location.
+    case startingStorage(height: UInt64, target: UInt64)
 
     /// A stable code for the status log and diagnostics (never shown).
     var code: String {
@@ -72,7 +72,7 @@ enum NodeStopReason: Equatable {
         case .waitingForMacConfirmation: return "waiting_for_mac_confirmation"
         case .keyElsewhere: return "key_elsewhere"
         case .launchFailed: return "launch_failed"
-        case .movingStorage: return "moving_storage"
+        case .startingStorage: return "starting_storage"
         }
     }
 
@@ -82,7 +82,7 @@ enum NodeStopReason: Equatable {
     /// not raised as incidents.
     var isIncident: Bool {
         switch self {
-        case .switchedOff, .onBattery, .migrating, .restarting, .movingStorage, .waitingForMacConfirmation: return false
+        case .switchedOff, .onBattery, .migrating, .restarting, .startingStorage, .waitingForMacConfirmation: return false
         default: return true
         }
     }
@@ -229,10 +229,10 @@ extension NodeStopReason {
                                 detail: String(localized: "macOS refused to launch the node.", bundle: bundle, locale: locale),
                                 resume: String(localized: "Tried again every 30 s.", bundle: bundle, locale: locale),
                                 action: .retryNow, actionLabel: String(localized: "Try Now", bundle: bundle, locale: locale))
-        case .movingStorage(let p):
-            return NodeStopCopy(title: String(localized: "Moving block data · \(String(p))%", bundle: bundle, locale: locale),
-                                detail: String(localized: "The block data is being copied and checked at its new place. The wallet keeps working.", bundle: bundle, locale: locale),
-                                resume: String(localized: "The node starts after the block data move.", defaultValue: "The node starts by itself when it is done.", bundle: bundle, locale: locale),
+        case .startingStorage(let height, let target):
+            return NodeStopCopy(title: String(localized: "Starting fresh at the new place · syncing (height \(String(height)) / \(String(target)))", bundle: bundle, locale: locale),
+                                detail: String(localized: "Block data starts fresh here. Your keys and node identity stay on this Mac. The wallet keeps working while the node syncs.", bundle: bundle, locale: locale),
+                                resume: String(localized: "The old block data is deleted after the new node answers and follows a certified block.", bundle: bundle, locale: locale),
                                 action: nil, actionLabel: nil)
         }
     }
@@ -258,6 +258,20 @@ enum NodeLogTail {
     static func offset(size: UInt64, wanted: Int) -> UInt64 {
         let want = UInt64(max(0, wanted))
         return size > want ? size - want : 0
+    }
+
+    /// Read only the snapshot's tail window, even if a writer grows the log.
+    /// Failed seeks/reads throw instead of falling back to the whole file.
+    static func read(_ url: URL, wanted: Int) throws -> Data {
+        guard wanted > 0 else { return Data() }
+        return try autoreleasepool {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            let size = try handle.seekToEnd()
+            let start = offset(size: size, wanted: wanted)
+            try handle.seek(toOffset: start)
+            return try handle.read(upToCount: Int(size - start)) ?? Data()
+        }
     }
 }
 
@@ -374,7 +388,7 @@ struct NodeResumeFacts: Equatable {
     var hasBinary = true
     var migrating = false
     var migrationGate: String?
-    var movingStoragePercent: Int?
+    var preparingStorage = false
     /// Our own child process is alive.
     var processRunning = false
     /// The alive node has paused signing while it retries Mac verification.
@@ -444,7 +458,7 @@ enum NodeResume {
         if f.attached { return f.lockHeldByOther ? .keepRunning : .start(detach: true) }
         if f.processRunning { return .keepRunning }
         guard f.hasBinary else { return .wait(.noHelper) }
-        if let p = f.movingStoragePercent { return .wait(.movingStorage(percent: p)) }
+        if f.preparingStorage { return .wait(.startingStorage(height: 0, target: 0)) }
         if f.migrating { return .wait(.migrating) }
         if let why = f.migrationGate { return .wait(.migrationBlocked(why)) }
         if case .chosen(let volume, let mounted, let writable) = f.storage {
@@ -532,8 +546,12 @@ enum NodeStatusLog {
     static func append(_ line: String, in dir: URL, fileName: String = NodeStatusLog.fileName) {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { return }
+        var space = statfs()
+        if statfs(dir.path, &space) == 0, space.f_bavail == 0 { return }
         let url = dir.appendingPathComponent(fileName)
-        let existing = (try? Data(contentsOf: url)) ?? Data()
+        // The extra byte preserves half-on-overflow trimming for a log that
+        // was already oversized, including an empty appended line.
+        let existing = (try? NodeLogTail.read(url, wanted: cap + 1)) ?? Data()
         try? appending(existing, line: line).write(to: url, options: .atomic)
     }
 }

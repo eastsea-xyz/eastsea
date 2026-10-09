@@ -41,7 +41,8 @@ check(ProviderRouter.route(method: "eth_getCode", params: [TO, "latest"]) == .re
 check(ProviderRouter.route(method: "aether_getAccount", params: [TO]) == .read(verified: false), "aether_getAccount node (shape parity)")
 // Refused (4200): the signing methods methods.js does not list.
 check(ProviderRouter.route(method: "personal_sign", params: []) == .refused, "personal_sign refused")
-check(ProviderRouter.route(method: "eth_signTypedData_v4", params: []) == .refused, "signTypedData refused")
+check(ProviderMethod.supported.contains("eth_signTypedData_v4"), "typed signing reaches an owner approval")
+check(ProviderRouter.route(method: "eth_signTypedData_v4", params: []) != .refused, "typed signing has its own route")
 check(ProviderRouter.route(method: "wallet_switchEthereumChain", params: []) == .refused, "switchChain refused")
 check(ProviderRouter.route(method: "eth_getTransactionReceipt", params: ["0xdead"]) == .refused, "getTransactionReceipt refused (aether_getReceipt is the one the chain answers)")
 

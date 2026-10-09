@@ -853,6 +853,72 @@ public func FfiConverterTypeChainStatus_lower(_ value: ChainStatus) -> RustBuffe
 }
 
 
+public struct DappTransactionSimulation: Equatable, Hashable {
+    /**
+     * The exact gas limit used by every read and later transaction preparation.
+     */
+    public var gasLimit: UInt64
+    /**
+     * The bounded node result, consumed by the native readable-field parser.
+     */
+    public var resultJson: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The exact gas limit used by every read and later transaction preparation.
+         */gasLimit: UInt64,
+        /**
+         * The bounded node result, consumed by the native readable-field parser.
+         */resultJson: String) {
+        self.gasLimit = gasLimit
+        self.resultJson = resultJson
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension DappTransactionSimulation: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDappTransactionSimulation: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DappTransactionSimulation {
+        return
+            try DappTransactionSimulation(
+                gasLimit: FfiConverterUInt64.read(from: &buf),
+                resultJson: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DappTransactionSimulation, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.gasLimit, into: &buf)
+        FfiConverterString.write(value.resultJson, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDappTransactionSimulation_lift(_ buf: RustBuffer) throws -> DappTransactionSimulation {
+    return try FfiConverterTypeDappTransactionSimulation.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDappTransactionSimulation_lower(_ value: DappTransactionSimulation) -> RustBuffer {
+    return FfiConverterTypeDappTransactionSimulation.lower(value)
+}
+
+
 /**
  * One recipient of a batch.
  */
@@ -1038,6 +1104,90 @@ public func FfiConverterTypePreparedTx_lift(_ buf: RustBuffer) throws -> Prepare
 #endif
 public func FfiConverterTypePreparedTx_lower(_ value: PreparedTx) -> RustBuffer {
     return FfiConverterTypePreparedTx.lower(value)
+}
+
+
+public struct PreparedTypedMessage: Equatable, Hashable {
+    public var chainId: UInt64
+    public var account: String
+    /**
+     * The 66-byte account/chain Contents message; CryptoKit hashes it with SHA-256.
+     */
+    public var signingMessage: Data
+    /**
+     * The original dApp's EIP-712 digest for ERC-1271 verification.
+     */
+    public var digestHex: String
+    /**
+     * Canonical validated JSON: this is the field view the owner confirms.
+     */
+    public var typedDataJson: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(chainId: UInt64, account: String,
+        /**
+         * The 66-byte account/chain Contents message; CryptoKit hashes it with SHA-256.
+         */signingMessage: Data,
+        /**
+         * The original dApp's EIP-712 digest for ERC-1271 verification.
+         */digestHex: String,
+        /**
+         * Canonical validated JSON: this is the field view the owner confirms.
+         */typedDataJson: String) {
+        self.chainId = chainId
+        self.account = account
+        self.signingMessage = signingMessage
+        self.digestHex = digestHex
+        self.typedDataJson = typedDataJson
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PreparedTypedMessage: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePreparedTypedMessage: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PreparedTypedMessage {
+        return
+            try PreparedTypedMessage(
+                chainId: FfiConverterUInt64.read(from: &buf),
+                account: FfiConverterString.read(from: &buf),
+                signingMessage: FfiConverterData.read(from: &buf),
+                digestHex: FfiConverterString.read(from: &buf),
+                typedDataJson: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PreparedTypedMessage, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.chainId, into: &buf)
+        FfiConverterString.write(value.account, into: &buf)
+        FfiConverterData.write(value.signingMessage, into: &buf)
+        FfiConverterString.write(value.digestHex, into: &buf)
+        FfiConverterString.write(value.typedDataJson, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePreparedTypedMessage_lift(_ buf: RustBuffer) throws -> PreparedTypedMessage {
+    return try FfiConverterTypePreparedTypedMessage.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePreparedTypedMessage_lower(_ value: PreparedTypedMessage) -> RustBuffer {
+    return FfiConverterTypePreparedTypedMessage.lower(value)
 }
 
 
@@ -3447,6 +3597,102 @@ public func txStatusFor(txHash: String, sender: String, nonce: UInt64)throws  ->
     )
 })
 }
+/**
+ * True only for an account actually delegated to the canonical, deployed
+ * EastSeaAccount v2 runtime. Merely running a new-genesis node is insufficient.
+ */
+public func accountSigningSupport(address: String)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_account_signing_support(
+        FfiConverterString.lower(address),uniffiCallStatus
+    )
+})
+}
+/**
+ * Verify the exact approved contents again and return r || low-s || x || y
+ * for EastSeaAccount.isValidSignature. No transaction or network write occurs.
+ */
+public func attachTypedSignature(typedDataJson: String, expectedChain: UInt64, account: String, signature: Data, p256PublicKey: Data)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_attach_typed_signature(
+        FfiConverterString.lower(typedDataJson),
+        FfiConverterUInt64.lower(expectedChain),
+        FfiConverterString.lower(account),
+        FfiConverterData.lower(signature),
+        FfiConverterData.lower(p256PublicKey),uniffiCallStatus
+    )
+})
+}
+/**
+ * The fee cap for precisely the transaction the dApp simulation describes.
+ */
+public func dappTransactionQuote(to: String, valueWei: String, dataHex: String, gasLimit: UInt64)throws  -> TransferQuote  {
+    return try  FfiConverterTypeTransferQuote_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_dapp_transaction_quote(
+        FfiConverterString.lower(to),
+        FfiConverterString.lower(valueWei),
+        FfiConverterString.lower(dataHex),
+        FfiConverterUInt64.lower(gasLimit),uniffiCallStatus
+    )
+})
+}
+/**
+ * Re-delegate this same account to the fixed canonical v2 implementation.
+ * The recipient, implementation, and calldata cannot be supplied by a dApp.
+ */
+public func prepareAccountRedelegation(p256PublicKey: Data)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_account_redelegation(
+        FfiConverterData.lower(p256PublicKey),uniffiCallStatus
+    )
+})
+}
+/**
+ * Sign the same gas limit that was simulated, after rechecking any displayed
+ * maximum fee. Excessive requested gas is refused rather than clamped.
+ */
+public func prepareDappTransaction(p256PublicKey: Data, to: String, valueWei: String, dataHex: String, gasLimit: UInt64, shownFeeWei: String?)throws  -> PreparedTx  {
+    return try  FfiConverterTypePreparedTx_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_dapp_transaction(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterString.lower(to),
+        FfiConverterString.lower(valueWei),
+        FfiConverterString.lower(dataHex),
+        FfiConverterUInt64.lower(gasLimit),
+        FfiConverterOptionString.lower(shownFeeWei),uniffiCallStatus
+    )
+})
+}
+public func prepareTypedMessage(p256PublicKey: Data, typedDataJson: String)throws  -> PreparedTypedMessage  {
+    return try  FfiConverterTypePreparedTypedMessage_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_prepare_typed_message(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterString.lower(typedDataJson),uniffiCallStatus
+    )
+})
+}
+/**
+ * Read-only dApp simulation through the wallet's existing local/peer transport.
+ * Network or invalid-response errors can never become an overridable revert.
+ */
+public func simulateDappTransaction(p256PublicKey: Data, to: String, valueWei: String, dataHex: String, gasLimit: UInt64)throws  -> DappTransactionSimulation  {
+    return try  FfiConverterTypeDappTransactionSimulation_lift(try rustCallWithError(FfiConverterTypeWalletError_lift) {
+        uniffiCallStatus in
+    uniffi_aether_ffi_fn_func_simulate_dapp_transaction(
+        FfiConverterData.lower(p256PublicKey),
+        FfiConverterString.lower(to),
+        FfiConverterString.lower(valueWei),
+        FfiConverterString.lower(dataHex),
+        FfiConverterUInt64.lower(gasLimit),uniffiCallStatus
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -3638,6 +3884,27 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_aether_ffi_checksum_func_tx_status_for() != 2727) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_account_signing_support() != 44021) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_attach_typed_signature() != 19818) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_dapp_transaction_quote() != 50973) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_account_redelegation() != 18655) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_dapp_transaction() != 40275) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_prepare_typed_message() != 1214) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_aether_ffi_checksum_func_simulate_dapp_transaction() != 19484) {
         return InitializationResult.apiChecksumMismatch
     }
 

@@ -227,11 +227,37 @@ final class Renderer {
                                  browser: s.browser)
             }
             stagePage("sheet-site-send", dark, width: 480, pad: false) { s in
-                ProviderAskSheet(ask: .init(id: "2", kind: .send(origin: "https://eastsea.xyz", host: "eastsea.xyz",
-                                                                 tx: PageTransaction(to: "0x12ab00000000000000000000000000000000090ab",
-                                                                                     valueWei: "1500000000000000000", data: "0x", gas: 0),
+                let tx = PageTransaction(to: "0x12ab00000000000000000000000000000000090ab",
+                                         valueWei: "1500000000000000000", data: "0x", gas: 21_000)
+                let context = DappRequestContext(account: s.model.address, chainId: 7781, port: 18545, generation: 0)
+                return ProviderAskSheet(ask: .init(id: "2", kind: .send(origin: "https://eastsea.xyz", host: "eastsea.xyz",
+                                                                 tx: tx,
                                                                  feeWei: "21000000000000"), reply: { _ in }),
-                                 browser: s.browser)
+                                 browser: s.browser, previewSimulation: .init(transaction: tx, context: context,
+                                     result: .init(success: true, gasUsed: 21_000, failureReason: nil,
+                                                   nativeDeltaWei: "-1500000000000000000", changes: [], approvals: [], output: "0x", balancesMeasured: true)))
+            }
+            stagePage("sheet-site-revert", dark, width: 480, pad: false) { s in
+                let tx = PageTransaction(to: "0x12ab00000000000000000000000000000000090ab", valueWei: "0", data: "0x095ea7b3", gas: 100_000)
+                let context = DappRequestContext(account: s.model.address, chainId: 7781, port: 18545, generation: 0)
+                return ProviderAskSheet(ask: .init(id: "3", kind: .send(origin: "https://eastsea.xyz", host: "eastsea.xyz", tx: tx,
+                                                               feeWei: "21000000000000"), reply: { _ in }), browser: s.browser,
+                                 previewSimulation: .init(transaction: tx, context: context,
+                                     result: .init(success: false, gasUsed: 40_000, failureReason: String(localized: "The contract refused this transaction."),
+                                                   nativeDeltaWei: "0", changes: [], approvals: [], output: "0x", balancesMeasured: true)))
+            }
+            stagePage("sheet-site-typed", dark, width: 480, pad: false) { s in
+                let fields = TypedMessageFields(primaryType: "Permit", domain: [
+                    .init(path: "name", value: "EastSea", detail: nil), .init(path: "chainId", value: "7781", detail: nil),
+                    .init(path: "verifyingContract", value: "0x0000000000000000000000000000000000007702", detail: nil)], message: [
+                        .init(path: "amount", value: "1000000000000000000", detail: nil),
+                        .init(path: "spender", value: "0x12ab00000000000000000000000000000000090ab", detail: nil)])
+                let prepared = PreparedTypedMessage(chainId: 7781, account: s.model.address, signingMessage: Data(), digestHex: "", typedDataJson: "{}")
+                return ProviderAskSheet(ask: .init(id: "4", kind: .typed(origin: "https://eastsea.xyz", host: "eastsea.xyz", prepared: prepared, fields: fields),
+                                           reply: { _ in }), browser: s.browser)
+            }
+            stagePage("account-upgrade", dark, width: 760, prepare: { s in s.model.status?.chainId = 7781 }) { _ in
+                AccountMigrationPanel()
             }
             page("overlay-migration", dark, width: 640, prepare: { _ in MigrationStatus.shared.loadPreview(moving: true, problem: nil) }) {
                 MigrationOverlay(status: MigrationStatus.shared).frame(height: 360)

@@ -23,6 +23,11 @@ final class BrowserController: NSObject, ObservableObject {
     @Published var warning: SiteWarning?
     /// The confirmation sheet a page's request opened (one at a time).
     @Published var ask: PendingAsk?
+    @Published private(set) var simulation: SimulatedPageTransaction?
+    @Published private(set) var approvalNotice: String?
+    @Published private(set) var approvalBusy = false
+    @Published private(set) var submissionInFlight = false
+    @Published private(set) var simulationLoading = false
     /// Whether the last read this tab answered was certificate-verified.
     @Published private(set) var lastReadVerified = true
     /// Bumped whenever the WebView had to be rebuilt (a store switch).
@@ -116,6 +121,7 @@ final class BrowserController: NSObject, ObservableObject {
             /// eth_sendTransaction: origin, the parsed transaction, and the
             /// fee snapshot the sheet displays (nil: the status maximum).
             case send(origin: String, host: String, tx: PageTransaction, feeWei: String?)
+            case typed(origin: String, host: String, prepared: PreparedTypedMessage, fields: TypedMessageFields)
         }
         let id: String
         let kind: Kind
@@ -124,22 +130,30 @@ final class BrowserController: NSObject, ObservableObject {
         let accountID: Int?
         let accountAddress: String
         let documentGeneration: UInt64
+        let privatePermissionGeneration: UInt64
+        let context: DappRequestContext?
+        let lifecycle: DappApprovalLifecycle
 
         init(id: String, kind: Kind, reply: @escaping (Result<Any?, ProviderError>) -> Void,
              accountID: Int? = nil, accountAddress: String = "", documentGeneration: UInt64 = 0,
-             chainID: UInt64 = 0) {
+             chainID: UInt64 = 0, privatePermissionGeneration: UInt64 = 0,
+             context: DappRequestContext? = nil) {
             self.id = id
             self.kind = kind
-            self.reply = reply
             self.accountID = accountID
             self.accountAddress = accountAddress
             self.documentGeneration = documentGeneration
+            self.privatePermissionGeneration = privatePermissionGeneration
             self.chainID = chainID
+            self.context = context
+            let lifecycle = DappApprovalLifecycle(reply: reply)
+            self.lifecycle = lifecycle
+            self.reply = { result in lifecycle.finish(result) }
         }
 
         var origin: String {
             switch kind {
-            case .connect(let origin, _), .send(let origin, _, _, _): return origin
+            case .connect(let origin, _), .send(let origin, _, _, _), .typed(let origin, _, _, _): return origin
             }
         }
     }
@@ -150,6 +164,8 @@ final class BrowserController: NSObject, ObservableObject {
     /// The external host the current non-persistent WebView belongs to.
     private var externalHost: String?
     private var askQueue: [PendingAsk] = []
+    private var preparingAsks: [String: Int] = [:]
+    private var busyAskId: String?
     /// The URL a just-acknowledged warning may load (one shot, so the same
     /// warning cannot loop).
     private var approvedURL: URL?
@@ -175,6 +191,7 @@ final class BrowserController: NSObject, ObservableObject {
     private var findRequest = UUID()
     private var privateAcknowledged: Set<String> = []
     private var privatePermissions: [String: String] = [:]
+    private var privatePermissionGeneration: UInt64 = 0
     private var privateZoom: [String: Double] = [:]
     private var allowances: [String: Set<SiteAllowance>] = [:]
     private var requestedTokenAllowances: [String: [BrowserTokenAllowance]] = [:]
@@ -1257,7 +1274,10 @@ final class BrowserController: NSObject, ObservableObject {
 
     private func disconnect(origin: String) {
         cancelPendingAsks()
-        if isPrivate { privatePermissions.removeValue(forKey: origin) }
+        if isPrivate {
+            privatePermissionGeneration &+= 1
+            privatePermissions.removeValue(forKey: origin)
+        }
         else { model?.revokeSitePermission(origin: origin) }
         refreshSitePermissions()
     }
@@ -1265,57 +1285,140 @@ final class BrowserController: NSObject, ObservableObject {
     // MARK: - Sheet answers
 
     /// The user approved the sheet: the site may see this address, or the
-    /// transaction goes to the send flow. The next queued request, if any,
-    /// opens its sheet right after.
-    func approveAsk(id: String? = nil) {
-        guard let pending = ask, id == nil || id == pending.id else { return }
-        ask = nil
+    /// reviewed transaction/message enters the owner signing flow.
+    func approveAsk(id: String? = nil, extraConfirmation: Bool = false) {
+        guard let pending = ask, id == nil || id == pending.id, let model, !approvalBusy else { return }
         guard approvalIsCurrent(pending) else {
-            pending.reply(.failure(staleRequestError()))
-            drainAskQueue()
+            finish(pending, .failure(staleRequestError()))
             return
         }
         switch pending.kind {
         case .connect(let origin, let displayOrigin):
-            if let model = model, !model.address.isEmpty {
-                if isPrivate { privatePermissions[origin] = pending.accountAddress }
-                else { model.grantSitePermission(origin: origin, address: pending.accountAddress, displayOrigin: displayOrigin) }
-                pending.reply(.success([pending.accountAddress]))
-                refreshSitePermissions()
+            if isPrivate {
+                privatePermissionGeneration &+= 1
+                privatePermissions[origin] = pending.accountAddress
             } else {
-                pending.reply(.failure(ProviderError(code: ProviderErrorCode.internalError,
-                                                      message: "The wallet is not ready.")))
+                model.grantSitePermission(origin: origin, address: pending.accountAddress, displayOrigin: displayOrigin)
             }
+            refreshSitePermissions()
+            finish(pending, .success([pending.accountAddress]))
         case .send(let origin, let host, let tx, let feeWei):
-            guard appIdentity?.permitsSigning(developerMode: developerModeEnabled) != false else {
-                pending.reply(.failure(ProviderError(code: ProviderErrorCode.denied,
-                                                     message: "Local app files can sign only on the development network.")))
-                drainAskQueue()
+            guard signingApprovalIsCurrent(pending) else {
+                finish(pending, .failure(staleRequestError()))
                 return
             }
-            if let model, connectedAddress(origin: origin)?.lowercased() == pending.accountAddress {
-                let shown = tx.isPlainTransfer ? feeWei ?? model.status?.transferFeeWei : nil
-                Task { [weak self] in
-                    guard let self, self.approvalIsCurrent(pending),
-                          self.appIdentity?.permitsSigning(developerMode: self.developerModeEnabled) != false,
-                          self.connectedAddress(origin: origin)?.lowercased() == pending.accountAddress else {
-                        pending.reply(.failure(Self.changedPageError()))
+            guard let reviewed = simulation, reviewed.context == pending.context,
+                  reviewed.transaction.to == tx.to, reviewed.transaction.valueWei == tx.valueWei,
+                  reviewed.transaction.data == tx.data, tx.gas == 0 || reviewed.transaction.gas == tx.gas,
+                  reviewed.result.canSign(extraConfirmation: extraConfirmation), !model.busy else { return }
+            approvalBusy = true
+            busyAskId = pending.id
+            Task {
+                defer { endApproval(pending) }
+                do {
+                    let latest = try await model.simulatePageTransaction(reviewed.transaction, context: reviewed.context)
+                    guard ask?.id == pending.id else { return }
+                    guard signingApprovalIsCurrent(pending) else {
+                        finish(pending, .failure(staleRequestError()))
                         return
                     }
-                    let (hash, refusal) = await model.sendPageTransaction(tx, origin: origin,
-                                                                          title: host, shownFeeWei: shown)
-                    if let hash {
-                        pending.reply(.success(hash))
-                    } else {
-                        pending.reply(.failure(ProviderError(code: ProviderErrorCode.internalError,
-                                                              message: refusal ?? "The send failed.")))
+                    guard latest == reviewed else {
+                        simulation = latest
+                        approvalNotice = String(localized: "The simulation changed. Review the new result before signing.")
+                        return
                     }
+                    let (hash, refusal) = await model.sendPageTransaction(latest.transaction, origin: origin, title: host,
+                                                                        shownFeeWei: feeWei, simulation: latest,
+                                                                        extraConfirmation: extraConfirmation,
+                                                                        stillApproved: {
+                                                                            self.ask?.id == pending.id && self.signingApprovalIsCurrent(pending)
+                                                                        }, beginSubmission: {
+                                                                            guard pending.lifecycle.beginSubmission(stillApproved:
+                                                                                self.ask?.id == pending.id && self.signingApprovalIsCurrent(pending)) else { return false }
+                                                                            self.submissionInFlight = true
+                                                                            return true
+                                                                        })
+                    finish(pending, hash.map { .success($0) } ?? .failure(ProviderError(code: ProviderErrorCode.internalError,
+                                                                                    message: refusal ?? String(localized: "The send failed."))))
+                } catch {
+                    guard ask?.id == pending.id else { return }
+                    guard signingApprovalIsCurrent(pending) else {
+                        finish(pending, .failure(staleRequestError()))
+                        return
+                    }
+                    if let error = error as? ProviderError, error.code == 4901 {
+                        finish(pending, .failure(error))
+                        return
+                    }
+                    simulation = nil
+                    approvalNotice = String(localized: "The node could not simulate this transaction.")
                 }
-            } else {
-                pending.reply(.failure(ProviderError(code: ProviderErrorCode.internalError,
-                                                      message: "The wallet is not ready.")))
+            }
+        case .typed(let origin, _, let prepared, _):
+            guard signingApprovalIsCurrent(pending), let context = pending.context, !model.busy else {
+                finish(pending, .failure(staleRequestError()))
+                return
+            }
+            approvalBusy = true
+            busyAskId = pending.id
+            Task {
+                defer { endApproval(pending) }
+                do {
+                    let signature = try await model.signPageTypedMessage(prepared, origin: origin, context: context,
+                                                                         stillApproved: {
+                                                                             self.ask?.id == pending.id && self.signingApprovalIsCurrent(pending)
+                                                                         })
+                    finish(pending, .success(signature))
+                } catch let error as ProviderError { finish(pending, .failure(error)) }
+                catch { finish(pending, .failure(ProviderError(code: ProviderErrorCode.params, message: WalletModel.ffiMessage(error)))) }
             }
         }
+    }
+
+    func simulateAsk(_ pending: PendingAsk) async {
+        guard let model, case .send(_, _, let tx, _) = pending.kind, ask?.id == pending.id,
+              let context = pending.context else { return }
+        guard signingApprovalIsCurrent(pending) else {
+            finish(pending, .failure(staleRequestError()))
+            return
+        }
+        simulation = nil
+        approvalNotice = nil
+        simulationLoading = true
+        defer { if ask?.id == pending.id { simulationLoading = false } }
+        do {
+            let result = try await model.simulatePageTransaction(tx, context: context)
+            guard ask?.id == pending.id else { return }
+            guard signingApprovalIsCurrent(pending) else {
+                finish(pending, .failure(staleRequestError()))
+                return
+            }
+            simulation = result
+        } catch {
+            guard ask?.id == pending.id else { return }
+            guard signingApprovalIsCurrent(pending) else {
+                finish(pending, .failure(staleRequestError()))
+                return
+            }
+            if let error = error as? ProviderError, error.code == 4901 {
+                finish(pending, .failure(error))
+                return
+            }
+            approvalNotice = String(localized: "The node could not simulate this transaction.")
+        }
+    }
+
+    private func finish(_ pending: PendingAsk, _ result: Result<Any?, ProviderError>) {
+        guard ask?.id == pending.id else {
+            pending.reply(result)
+            return
+        }
+        endApproval(pending)
+        ask = nil
+        simulation = nil
+        approvalNotice = nil
+        simulationLoading = false
+        pending.reply(result)
         drainAskQueue()
     }
 
@@ -1326,10 +1429,20 @@ final class BrowserController: NSObject, ObservableObject {
               model.address.lowercased() == pending.accountAddress,
               model.networkChainId == pending.chainID,
               documentGeneration == pending.documentGeneration,
+              !isPrivate || privatePermissionGeneration == pending.privatePermissionGeneration,
+              let context = pending.context, model.isCurrentDappContext(context),
               committedOrigin == pending.origin,
               let url = webView?.url,
               browserOrigin(for: url) == pending.origin else { return false }
         return true
+    }
+
+    /// This controller owns private grants and the current document; the model
+    /// rechecks this closure after every asynchronous preparation before signing.
+    private func signingApprovalIsCurrent(_ pending: PendingAsk) -> Bool {
+        approvalIsCurrent(pending)
+            && appIdentity?.permitsSigning(developerMode: developerModeEnabled) != false
+            && connectedAddress(origin: pending.origin)?.lowercased() == pending.accountAddress
     }
 
     private static func changedPageError() -> ProviderError {
@@ -1344,15 +1457,40 @@ final class BrowserController: NSObject, ObservableObject {
         ask = nil
         let queued = askQueue
         askQueue.removeAll()
-        for request in pending + queued { request.reply(.failure(staleRequestError())) }
+        busyAskId = nil
+        approvalBusy = false
+        submissionInFlight = false
+        simulation = nil
+        approvalNotice = nil
+        simulationLoading = false
+        for request in pending + queued { request.lifecycle.cancel(staleRequestError()) }
     }
 
-    /// The user refused the sheet (or dismissed it): 4001, nothing signed.
+    private func endApproval(_ pending: PendingAsk) {
+        guard busyAskId == pending.id else { return }
+        busyAskId = nil
+        approvalBusy = false
+        submissionInFlight = false
+    }
+
+    /// Refusal before submission: 4001, nothing broadcast.
     func refuseAsk(id: String? = nil) {
-        guard let pending = ask, id == nil || id == pending.id else { return }
-        ask = nil
-        pending.reply(.failure(ProviderError(code: ProviderErrorCode.denied, message: "The user rejected the request.")))
-        drainAskQueue()
+        guard let pending = ask, id == nil || id == pending.id, pending.lifecycle.canCancel else { return }
+        finish(pending, .failure(ProviderError(code: ProviderErrorCode.denied, message: "The user rejected the request.")))
+    }
+
+    func dismissAsk(_ pending: PendingAsk) {
+        if ask?.id == pending.id { refuseAsk(id: pending.id) }
+        else {
+            if ask == nil {
+                endApproval(pending)
+                simulation = nil
+                approvalNotice = nil
+                simulationLoading = false
+            }
+            pending.lifecycle.cancel(ProviderError(code: ProviderErrorCode.denied, message: "The user rejected the request."))
+            drainAskQueue()
+        }
     }
 
     /// One sheet at a time: whatever queued while one was open comes next.
@@ -1421,10 +1559,11 @@ final class BrowserController: NSObject, ObservableObject {
             switch a.kind {
             case .connect(let o, _): return o
             case .send(let o, _, _, _): return o
+            case .typed(let o, _, _, _): return o
             }
         }
         let pendingForOrigin = askQueue.filter { originOf($0) == key }.count
-            + (ask.flatMap(originOf) == key ? 1 : 0)
+            + (ask.flatMap(originOf) == key ? 1 : 0) + preparingAsks[key, default: 0]
         if pendingForOrigin >= ProviderRouter.maxPendingPerOrigin {
             reply(.failure(ProviderError(code: ProviderErrorCode.timeout,
                                          message: "Too many requests from this site are already waiting.")))
@@ -1473,16 +1612,68 @@ final class BrowserController: NSObject, ObservableObject {
                         refreshSitePermissions()
                     }
                 }
-                let feeWei: String?
-                if tx.isPlainTransfer {
-                    feeWei = (try? transferQuote(recipient: tx.to, validators: model.validators))?.feeWei
-                        ?? model.status?.transferFeeWei
-                } else {
-                    feeWei = nil
+                guard let dappContext = model.dappContext else {
+                    reply(.failure(ProviderError(code: ProviderErrorCode.locked, message: String(localized: "This approval is no longer valid. Ask the site to try again."))))
+                    return
                 }
-                enqueue(.send(origin: key, host: context.displayOrigin, tx: tx, feeWei: feeWei), id: body["id"], reply: reply)
+                let gas = tx.gas == 0 ? (tx.isPlainTransfer ? UInt64(100_000) : UInt64(3_000_000)) : tx.gas
+                let host = context.displayOrigin
+                let accountID = model.accountStore.activeAccount?.id
+                let chainID = model.networkChainId
+                let transferFeeWei = tx.isPlainTransfer ? model.status?.transferFeeWei : nil
+                let pageGeneration = documentGeneration
+                let permissionGeneration = privatePermissionGeneration
+                preparingAsks[key, default: 0] += 1
+                Task {
+                    defer { preparingAsks[key, default: 0] -= 1 }
+                    let quotedFeeWei = await Task.detached { (try? dappTransactionQuote(to: tx.to, valueWei: tx.valueWei, dataHex: tx.data, gasLimit: gas))?.feeWei }.value
+                    let feeWei = quotedFeeWei ?? transferFeeWei
+                    let pending = PendingAsk(id: UUID().uuidString, kind: .send(origin: key, host: host, tx: tx, feeWei: feeWei),
+                                             reply: reply, accountID: accountID, accountAddress: connected.lowercased(),
+                                             documentGeneration: pageGeneration, chainID: chainID,
+                                             privatePermissionGeneration: permissionGeneration, context: dappContext)
+                    guard signingApprovalIsCurrent(pending) else {
+                        pending.reply(.failure(staleRequestError()))
+                        return
+                    }
+                    enqueue(pending)
+                }
             case .failure(let e):
                 reply(.failure(e))
+            }
+        case .typed:
+            guard appIdentity?.permitsSigning(developerMode: developerModeEnabled) != false else {
+                reply(.failure(ProviderError(code: ProviderErrorCode.denied,
+                                             message: "Local app files can sign only on the development network.")))
+                return
+            }
+            guard let dappContext = model.dappContext, let connected = connectedAddress(origin: key) else {
+                reply(.failure(ProviderError(code: ProviderErrorCode.locked, message: String(localized: "This approval is no longer valid. Ask the site to try again."))))
+                return
+            }
+            let host = context.displayOrigin
+            let accountID = model.accountStore.activeAccount?.id
+            let chainID = model.networkChainId
+            let pageGeneration = documentGeneration
+            let permissionGeneration = privatePermissionGeneration
+            preparingAsks[key, default: 0] += 1
+            Task {
+                defer { preparingAsks[key, default: 0] -= 1 }
+                do {
+                    let json = try TypedMessageRequest.parse(params, context: dappContext)
+                    let prepared = try await model.preparePageTypedMessage(json)
+                    let fields = try TypedMessageFields.parse(prepared.typedDataJson)
+                    let pending = PendingAsk(id: UUID().uuidString, kind: .typed(origin: key, host: host, prepared: prepared, fields: fields),
+                                             reply: reply, accountID: accountID, accountAddress: connected.lowercased(),
+                                             documentGeneration: pageGeneration, chainID: chainID,
+                                             privatePermissionGeneration: permissionGeneration, context: dappContext)
+                    guard signingApprovalIsCurrent(pending) else {
+                        pending.reply(.failure(staleRequestError()))
+                        return
+                    }
+                    enqueue(pending)
+                } catch let error as ProviderError { reply(.failure(error)) }
+                catch { reply(.failure(ProviderError(code: ProviderErrorCode.params, message: WalletModel.ffiMessage(error)))) }
             }
         case .read(let verified):
             requestAllowance(verified ? .verifiedRead : .unverifiedRead, origin: key)
@@ -1599,7 +1790,16 @@ final class BrowserController: NSObject, ObservableObject {
         let pending = PendingAsk(id: UUID().uuidString,
                                  kind: kind, reply: reply, accountID: model?.accountStore.activeAccount?.id,
                                  accountAddress: model?.address.lowercased() ?? "", documentGeneration: documentGeneration,
-                                 chainID: model?.networkChainId ?? 0)
+                                 chainID: model?.networkChainId ?? 0,
+                                 privatePermissionGeneration: privatePermissionGeneration, context: model?.dappContext)
+        enqueue(pending)
+    }
+
+    private func enqueue(_ pending: PendingAsk) {
+        guard approvalIsCurrent(pending) else {
+            pending.reply(.failure(staleRequestError()))
+            return
+        }
         if ask == nil { ask = pending } else { askQueue.append(pending) }
     }
 

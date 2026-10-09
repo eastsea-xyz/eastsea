@@ -41,10 +41,11 @@ enum ProviderMethod {
     ]
     static let account: Set<String> = ["eth_requestAccounts", "aether_requestAccounts", "eth_accounts", "aether_accounts"]
     static let send: Set<String> = ["eth_sendTransaction", "aether_sendTransaction"]
+    static let typed: Set<String> = ["eth_signTypedData_v4"]
     static let answered: Set<String> = [
         "eth_chainId", "wallet_disconnect", "aether_disconnect",
     ]
-    static let supported: Set<String> = read.union(account).union(send).union(answered)
+    static let supported: Set<String> = read.union(account).union(send).union(typed).union(answered)
 
     /// The extension's gas cap (methods.js MAX_GAS).
     static let maxGas: UInt64 = 10_000_000
@@ -56,6 +57,9 @@ enum ProviderMethod {
 /// creation rule, same gas cap. This is the value the confirmation sheet
 /// shows and the builder receives — one parse, never re-read.
 struct PageTransaction: Equatable {
+    static func isAddress(_ value: String) -> Bool {
+        value.hasPrefix("0x") && value.count == 42 && value.dropFirst(2).allSatisfy { $0.isASCII && $0.isHexDigit }
+    }
     let to: String
     /// Wei, decimal string (values can exceed UInt64, so never an integer here).
     let valueWei: String
@@ -208,6 +212,7 @@ enum ProviderRouter {
         case disconnect
         /// eth_sendTransaction: always a native sheet, then the FeeChanged flow.
         case send
+        case typed
         /// A read. `verified` names the path that answers it: the certificate
         /// paths in the FFI, or the local node's RPC (which nothing here
         /// vouches for — the tab says so).
@@ -226,6 +231,7 @@ enum ProviderRouter {
         if method == "eth_requestAccounts" || method == "aether_requestAccounts" { return .requestAccounts }
         if method == "wallet_disconnect" || method == "aether_disconnect" { return .disconnect }
         if ProviderMethod.send.contains(method) { return .send }
+        if ProviderMethod.typed.contains(method) { return .typed }
         guard ProviderMethod.read.contains(method) else { return .refused }
         // The verified FFI paths — only the reads whose node response shape
         // the FFI can reproduce exactly (aether_status and aether_getReceipt
@@ -259,19 +265,19 @@ enum ProviderGate {
 /// mirrored selector for selector (display only; the sheet also shows the
 /// raw calldata under a disclosure).
 enum CallDescribe {
-    static func action(to: String, data: String) -> String {
+    static func action(to: String, data: String, ticker: String = Brand.networkCoinTicker) -> String {
         if to.isEmpty { return String(localized: "Deploy a contract (\((data.count - 2) / 2) bytes)") }
-        if data == "0x" { return String(localized: "Send \(Brand.networkCoinTicker)") }
+        if data == "0x" { return String(localized: "Send \(ticker)") }
         let known: [String: String] = [
             "0xa9059cbb": String(localized: "Token transfer"), "0x095ea7b3": String(localized: "Token approval (allows spending)"), "0x23b872dd": String(localized: "Token transfer from"),
             // EastSea DEX router
-            "0x38ed1739": String(localized: "Swap tokens"), "0xac344b4d": String(localized: "Swap \(Brand.networkCoinTicker) for tokens"), "0x3f070ce1": String(localized: "Swap tokens for \(Brand.networkCoinTicker)"),
-            "0xe8e33700": String(localized: "Add liquidity"), "0xcf2df7c6": String(localized: "Add liquidity with \(Brand.networkCoinTicker)"), "0xbaa2abde": String(localized: "Remove liquidity"),
-            "0x0fb9ca68": String(localized: "Remove liquidity to \(Brand.networkCoinTicker)"), "0xd0e30db0": String(localized: "Wrap \(Brand.networkCoinTicker)"), "0x2e1a7d4d": String(localized: "Unwrap \(Brand.networkCoinTicker)"),
+            "0x38ed1739": String(localized: "Swap tokens"), "0xac344b4d": String(localized: "Swap \(ticker) for tokens"), "0x3f070ce1": String(localized: "Swap tokens for \(ticker)"),
+            "0xe8e33700": String(localized: "Add liquidity"), "0xcf2df7c6": String(localized: "Add liquidity with \(ticker)"), "0xbaa2abde": String(localized: "Remove liquidity"),
+            "0x0fb9ca68": String(localized: "Remove liquidity to \(ticker)"), "0xd0e30db0": String(localized: "Wrap \(ticker)"), "0x2e1a7d4d": String(localized: "Unwrap \(ticker)"),
             "0x3ca6d100": String(localized: "Create a token"), "0xc7ff321d": String(localized: "Create a token"),
             // EastSea launchpad
             "0x42a81515": String(localized: "Launch a token"), "0xcce7ec13": String(localized: "Buy on the launch curve"), "0x6a272462": String(localized: "Sell on the launch curve"),
-            "0x5cf66fe1": String(localized: "Buy with \(Brand.networkCoinTicker) (graduated pool)"), "0xff5b07d8": String(localized: "Sell for \(Brand.networkCoinTicker) (graduated pool)"),
+            "0x5cf66fe1": String(localized: "Buy with \(ticker) (graduated pool)"), "0xff5b07d8": String(localized: "Sell for \(ticker) (graduated pool)"),
         ]
         return known[String(data.prefix(10))] ?? String(localized: "Contract call \(String(data.prefix(10)))")
     }

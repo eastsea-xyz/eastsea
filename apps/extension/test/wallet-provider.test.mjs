@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import vm from 'node:vm';
 
-import { READ_METHODS, ACCOUNT_METHODS, SEND_METHODS } from '../src/lib/methods.js';
+import { READ_METHODS, ACCOUNT_METHODS, SEND_METHODS, TYPED_METHODS } from '../src/lib/methods.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const providerSrc = readFileSync(path.join(here, '../../wallet/Resources/provider.js'), 'utf8');
@@ -14,7 +14,7 @@ const inpageSrc = readFileSync(path.join(here, '../src/inpage.js'), 'utf8');
 // The full set the wallet may answer: methods.js's three groups plus the
 // three the extension's background answers by hand.
 const SUPPORTED = new Set([
-  ...READ_METHODS, ...ACCOUNT_METHODS, ...SEND_METHODS,
+  ...READ_METHODS, ...ACCOUNT_METHODS, ...SEND_METHODS, ...TYPED_METHODS,
   'eth_chainId', 'wallet_disconnect', 'aether_disconnect',
 ]);
 
@@ -73,7 +73,7 @@ test('surface parity with the extension inpage provider', () => {
 
 test('unsupported methods reject with 4200, same as the extension', async () => {
   const { sandbox } = run(providerSrc);
-  for (const method of ['personal_sign', 'eth_signTypedData_v4', 'wallet_switchEthereumChain', 'eth_sign', 'eth_getTransactionReceipt']) {
+  for (const method of ['personal_sign', 'wallet_switchEthereumChain', 'eth_sign', 'eth_getTransactionReceipt']) {
     await assert.rejects(sandbox.window.aether.request({ method }), (e) => e.code === 4200, `${method} refused`);
   }
 });

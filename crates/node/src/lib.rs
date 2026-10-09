@@ -42,6 +42,7 @@ pub mod search_events;
 pub mod search_sources;
 pub mod search_unicode;
 pub mod rpc_push;
+mod simulation;
 pub mod shards;
 pub mod spread;
 pub mod shadow;

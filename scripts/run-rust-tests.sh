@@ -269,7 +269,7 @@ try:
                         build_elapsed = time.monotonic() - build_started
                 # Graph retrieval only; every compilation goes through dev-cargo.
                 with metadata.open('w') as output:
-                    subprocess.run(['cargo', 'metadata', '--format-version', '1', '--locked', '--offline'],
+                    subprocess.run(['cargo', 'metadata', '--format-version', '1', '--locked'],
                                    cwd=root, env=env, stdout=output, check=True)
                 target, stamps = artifact_stamps(binaries)
                 try:

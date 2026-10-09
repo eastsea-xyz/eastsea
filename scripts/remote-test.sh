@@ -139,9 +139,10 @@ helpers = {'dev-cargo.sh', 'build-cache.py', 'compile-gate.sh', 'compile-gate.py
            'test-update-daemon.sh', 'test-update-listener.sh', 'remote-resource-guard.py'}
 allowed = {'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config', '.cargo/config.toml', '.config/nextest.toml'}
 allowed.update('scripts/' + name for name in helpers)
-prefixes = ('crates/', 'legacy/', 'vendor/n0-mainline/', 'apps/wallet/Sources/', 'apps/wallet/Tests/',
+prefixes = ('crates/', 'legacy/', 'fuzz/corpus/', 'vendor/n0-mainline/', 'apps/wallet/Sources/', 'apps/wallet/Tests/',
             'apps/agent/Sources/', 'apps/agent/Tests/', 'apps/bridge/Sources/', 'apps/bridge/Tests/')
 allowed.add('apps/wallet/Resources/Localizable.xcstrings')
+allowed.add('apps/wallet/Resources/network.json')
 deny = re.compile(r'(^|/)(?:\.git|target|tmp|\.cache|\.env[^/]*|secrets?(?:[._-][^/]*)?|credentials?(?:[._-][^/]*)?|id_rsa|id_ed25519|\.ssh|\.aws|\.claude|\.omx)(/|$)|\.(?:pem|key|p12|pfx|keystore)$', re.I)
 for raw in sorted(set(files)):
     if not raw: continue

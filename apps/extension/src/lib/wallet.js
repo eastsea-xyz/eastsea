@@ -55,7 +55,7 @@ export class Wallet {
     return run;
   }
 
-  async sendNow(tx, { status: shown } = {}) {
+  async sendNow(tx, { status: shown, beforeSign, afterSign } = {}) {
     const info = await this.vault.info();
     if (!info) throw new Error('No wallet yet.');
     const chainId = this.rpc.chainId;
@@ -68,7 +68,11 @@ export class Wallet {
     checkPaidStateBalance(chainId, read);
     const balance = read ?? 0n;
     const prepared = JSON.parse(this.wasm.prepareTx(hex.dec(info.publicKey), JSON.stringify(status), BigInt(chainId), BigInt(nonce), JSON.stringify({ ...tx, balance_wei: balance.toString() })));
+    // A queued dApp send may have waited while its account, permission or
+    // simulated effects changed. Recheck at the actual signing boundary.
+    await beforeSign?.();
     const sig = await this.vault.sign(hex.dec(prepared.signing_message));
+    await afterSign?.();
     if (this.rpc.chainId !== chainId) throw new Error('The wallet network changed before the transaction was sent.');
     const env = JSON.parse(this.wasm.attachSignature(JSON.stringify(prepared.envelope), sig, hex.dec(info.publicKey)));
     const r = await this.rpc.call('aether_sendTransaction', [env]);

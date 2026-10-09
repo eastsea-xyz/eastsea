@@ -9,7 +9,7 @@ import {
 
 const vectors = JSON.parse(await readFile(new URL('../../../crates/client/tests/account-icon-vectors.json', import.meta.url), 'utf8'));
 const hash = (value) => createHash('sha256').update(value).digest('hex');
-const features = (seed) => ({ version: 2, palette: seed[0] & 15, layout: ((seed[1] << 8) | seed[2]) & 0x3fff, shape: (seed[0] >>> 4) & 3, rotation: (seed[0] >>> 6) & 3 });
+const features = (seed) => ({ version: ACCOUNT_ICON_VERSION, palette: seed[0] & 15, layout: ((seed[1] << 8) | seed[2]) & 0x3fff, shape: (seed[0] >>> 4) & 3, rotation: (seed[0] >>> 6) & 3 });
 
 test('all frozen shared vectors and canonical SVG hashes match', () => {
   assert.equal(ACCOUNT_ICON_VERSION, vectors.version);
@@ -29,7 +29,7 @@ test('case and optional prefixes normalize to the same decoded address', () => {
     assert.deepEqual(deriveAccountIcon(address.slice(2)), expected);
     assert.deepEqual(deriveAccountIcon(address.toUpperCase()), expected);
     assert.deepEqual(deriveAccountIcon(address.slice(2).toUpperCase()), expected);
-    assert.deepEqual(deriveAccountIcon(address, 2), expected);
+    assert.deepEqual(deriveAccountIcon(address, 3), expected);
   }
 });
 
@@ -40,7 +40,7 @@ test('invalid addresses and versions have no seeded icon', () => {
     `0x${'g'.repeat(40)}`, `0x${'f'.repeat(39)}ｆ`, `<svg onload=alert(1)>${'a'.repeat(20)}`]) {
     assert.equal(deriveAccountIcon(invalid), null, String(invalid));
   }
-  for (const version of [0, 1, 3, -1, '2', null, NaN, Infinity]) assert.equal(deriveAccountIcon(address, version), null);
+  for (const version of [0, 1, 2, 4, -1, '3', null, NaN, Infinity]) assert.equal(deriveAccountIcon(address, version), null);
   for (const invalid of [null, {}, { ...deriveAccountIcon(address), version: 1 }, { ...deriveAccountIcon(address), palette: '#fff" onload="alert(1)' },
     { ...deriveAccountIcon(address), layout: -1 }, { ...deriveAccountIcon(address), layout: 0x4000 }, { ...deriveAccountIcon(address), shape: 4 },
     { ...deriveAccountIcon(address), rotation: 1.5 }]) assert.equal(accountIconSVG(invalid), null);
@@ -109,7 +109,7 @@ class El {
 const dom = { createElement: (tag) => new El(tag), createElementNS: (namespace, tag) => new El(tag, namespace) };
 const all = (node) => node instanceof El ? [node, ...node.children.flatMap(all)] : [];
 const find = (root, predicate) => all(root).find(predicate);
-const icons = (root) => all(root).filter((node) => node.tagName === 'svg');
+const icons = (root) => all(root).filter((node) => node.tagName === 'svg' && node.className.split(' ').includes('account-icon'));
 const identity = (root, address) => all(root).find((node) => node.className.split(' ').includes('account-identity') && node.textContent === address);
 
 function serializeIcon(svg) {
@@ -144,7 +144,7 @@ test('16px keeps one broad silhouette; secondary islands appear only at 32px and
   assert.equal(ACCOUNT_ICON_SILHOUETTES.length, 16);
   assert.equal(new Set(ACCOUNT_ICON_SILHOUETTES.map(({ path }) => path)).size, 16);
   for (let silhouette = 0; silhouette < 16; silhouette++) {
-    const spec = { version: 2, palette: 0, layout: silhouette & 3, shape: silhouette >>> 2, rotation: 0 };
+    const spec = { version: ACCOUNT_ICON_VERSION, palette: 0, layout: silhouette & 3, shape: silhouette >>> 2, rotation: 0 };
     assert.equal(accountIconSilhouette(spec), silhouette);
     for (const size of [16, 24, 31, 32, 64]) {
       const svg = accountIconSVG(spec, size);
@@ -155,7 +155,7 @@ test('16px keeps one broad silhouette; secondary islands appear only at 32px and
     }
     const layoutChange = { ...spec, layout: spec.layout | (63 << 2) | (63 << 8) };
     assert.equal(accountIconSVG(spec, 16), accountIconSVG(layoutChange, 16), 'detail bits cannot create 16px noise');
-    assert.notEqual(accountIconSVG(spec, 32), accountIconSVG(layoutChange, 32), 'detail bits change the two large islands');
+    assert.notEqual(accountIconSVG(spec, 32), accountIconSVG(layoutChange, 32), 'detail bits change the unequal neighboring islands');
   }
 });
 
@@ -171,8 +171,8 @@ async function popup(statePatch, { approve = false, operations = {} } = {}) {
   const state = { terms: 4, exists: true, unlocked: true, address: sender, defaultChainId: 7780, developmentNetwork: false, approvals: [], ...statePatch };
   const replies = { state, account: { balance: '1000000000000000000', height: 10, blockAt: Date.now() }, assets: { tokens: [] }, activity: [], ...operations };
   const globals = {
-    Node: El, document: { ...dom, body: new El('body'), getElementById: () => app },
-    chrome: { runtime: { async sendMessage(request) { requests.push(request); const reply = replies[request.op]; if (reply === undefined) throw new Error(`Unexpected operation ${request.op}`); return { ok: true, result: typeof reply === 'function' ? await reply(request.args) : reply }; } } },
+    Node: El, document: { ...dom, body: new El('body'), documentElement: new El('html'), getElementById: () => app },
+    chrome: { runtime: { async sendMessage(request) { requests.push(request); const reply = replies[request.op]; if (reply === undefined) throw new Error(`Unexpected operation ${request.op}`); return { ok: true, result: typeof reply === 'function' ? await reply(request.args) : reply }; } }, storage: { onChanged: { addListener() {} } } },
     location: { search: approve ? '?approve=test' : '' }, navigator: { clipboard: { async writeText(text) { copied.push(text); } } },
     window: { close() {} }, setInterval() {}, setTimeout(fn) { timers.push(fn); },
   };
@@ -210,29 +210,55 @@ test('actual connect and transaction approvals show the signing identities and p
     assert.ok(identity(connect.app, sender));
     assert.equal(connect.requests.some((request) => request.op === 'approve'), false);
     await find(connect.app, (node) => node.tagName === 'button' && node.textContent === 'Connect').fire('click');
-    assert.deepEqual(connect.requests.find((request) => request.op === 'approve').args, { id: 'test' });
+    assert.deepEqual(connect.requests.find((request) => request.op === 'approve').args, { id: 'test', previewId: undefined, confirmRevert: false });
   } finally { connect.restore(); }
+  const preview = { previewId: 'account-icon-preview', chainId: 7780, fee: '1', simulation: { success: true, tokenCoverageComplete: true, balanceChanges: [], approvals: [], unrecognizedLogs: 0 } };
   for (const [selector, what] of [['095ea7b3', 'Token approval (allows spending)'], ['a9059cbb', 'Token transfer']]) {
-    const approval = await popup({ approvals: [{ id: 'test', kind: 'transaction', origin: '<img src=x onerror=alert(1)>', what, value: '0', tx: { to: contract, data: `0x${selector}${recipient.slice(2).padStart(64, '0')}${'0'.repeat(63)}1` } }] }, { approve: true, operations: { quote: '1' } });
+    const approval = await popup({ approvals: [{ id: 'test', kind: 'send', account: sender, chainId: 7780, origin: '<img src=x onerror=alert(1)>', what, value: '0', tx: { to: contract, data: `0x${selector}${recipient.slice(2).padStart(64, '0')}${'0'.repeat(63)}1` } }] }, { approve: true, operations: { preview } });
     try {
-      for (const address of [sender, contract, recipient]) assert.ok(identity(approval.app, address), address);
+      for (const address of [sender, contract, recipient]) {
+        const account = identity(approval.app, address);
+        assert.ok(account, address);
+        assert.equal(icons(account)[0].attrs.width, '24');
+        assert.equal(icons(account)[0].attrs['aria-hidden'], 'true');
+      }
       assert.equal(icons(approval.app).length, 3);
-      assert.equal(all(approval.app).some((node) => node.tagName === 'img'), false);
+      assert.equal(find(approval.app, (node) => node.className === 'origin').textContent, '<img src=x onerror=alert(1)>');
+      assert.equal(all(approval.app).some((node) => node.tagName === 'img' && (node.attrs.src === 'x' || node.attrs.onerror)), false);
+      assert.ok(approval.requests.some((request) => request.op === 'preview'));
       assert.equal(approval.requests.some((request) => request.op === 'approve'), false);
     } finally { approval.restore(); }
   }
   const validApprovalData = `0x095ea7b3${recipient.slice(2).padStart(64, '0')}${'0'.repeat(64)}`;
   for (const data of [`0x095ea7b3${'1'.repeat(24)}${recipient.slice(2)}${'0'.repeat(64)}`, `${validApprovalData}\n`, validApprovalData.slice(0, -2)]) {
-    const malformed = await popup({ approvals: [{ id: 'test', kind: 'transaction', origin: 'https://example.com', what: 'Token approval (allows spending)', value: '0', tx: { to: contract, data } }] }, { approve: true, operations: { quote: '1' } });
+    const malformed = await popup({ approvals: [{ id: 'test', kind: 'send', account: sender, chainId: 7780, origin: 'https://example.com', what: 'Token approval (allows spending)', value: '0', tx: { to: contract, data } }] }, { approve: true, operations: { preview } });
     try { assert.equal(identity(malformed.app, recipient), undefined); assert.equal(icons(malformed.app).length, 2); } finally { malformed.restore(); }
   }
-  const native = await popup({ approvals: [{ id: 'test', kind: 'transaction', origin: 'https://example.com', what: 'Send DBLN', value: '1', tx: { to: recipient, data: '0x' } }] }, { approve: true, operations: { quote: '1', approve: { hash: `0x${'a'.repeat(64)}` } } });
+  const native = await popup({ approvals: [{ id: 'test', kind: 'send', account: sender, chainId: 7780, origin: 'https://example.com', what: 'Send DBLN', value: '1', tx: { to: recipient, data: '0x' } }] }, { approve: true, operations: { preview, approve: { hash: `0x${'a'.repeat(64)}` } } });
   try {
     assert.ok(identity(native.app, sender));
     assert.ok(identity(native.app, recipient));
-    await find(native.app, (node) => node.tagName === 'button' && node.textContent === 'Approve').fire('click');
-    assert.deepEqual(native.requests.find((request) => request.op === 'approve').args, { id: 'test' });
+    assert.equal(native.requests.some((request) => request.op === 'approve'), false);
+    const approve = find(native.app, (node) => node.tagName === 'button' && node.textContent === 'Approve transaction');
+    assert.ok(approve);
+    assert.equal(approve.disabled, false);
+    await approve.fire('click');
+    assert.deepEqual(native.requests.find((request) => request.op === 'approve').args, { id: 'test', previewId: preview.previewId, confirmRevert: false });
   } finally { native.restore(); }
+});
+
+test('approval identity follows the frozen signing account when the active account differs', async () => {
+  const signingAccount = vectors.vectors[1].address;
+  const preview = { previewId: 'frozen-account-preview', chainId: 7780, fee: '1', simulation: { success: true, tokenCoverageComplete: true, balanceChanges: [], approvals: [], unrecognizedLogs: 0 } };
+  const view = await popup({ address: sender, approvals: [{ id: 'test', kind: 'send', account: signingAccount, chainId: 7780,
+    origin: 'https://example.com', what: 'Send DBLN', value: '1', tx: { to: recipient, data: '0x' } }] }, { approve: true, operations: { preview } });
+  try {
+    const from = identity(view.app, signingAccount);
+    assert.ok(from);
+    assert.equal(icons(from)[0].attrs.width, '24');
+    assert.equal(identity(view.app, sender), undefined);
+    assert.equal(view.requests.some((request) => request.op === 'approve'), false);
+  } finally { view.restore(); }
 });
 
 test('actual linked account list preserves full addresses next to 32 px icons', async () => {

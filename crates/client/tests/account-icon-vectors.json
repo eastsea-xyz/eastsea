@@ -1,6 +1,6 @@
 {
   "domain": "eastsea-account-icon-v2",
-  "version": 2,
+  "version": 3,
   "palettes": [
     {
       "name": "tidal",
@@ -173,7 +173,7 @@
     {
       "address": "0x0000000000000000000000000000000000000000",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 3,
         "layout": 12657,
         "shape": 1,
@@ -181,14 +181,14 @@
       },
       "silhouetteClass": 5,
       "seedSha256": "d3717158df7a7a45ee1d79a961ceb15f8591786de958c8bbac7cde29d4038d4c",
-      "svg16Sha256": "5bedbb8bb9a4fc549ad9fe0064816585db8f9a6b2db7472f35f9609c30b8cf4b",
-      "svg32Sha256": "3ea073c50c8daef12f9b046c46e563e3dc99820affec207f3c59a2ed00478db2",
-      "svg64Sha256": "9857f39b31d0f708f477deab8a18450d3b20ce5ebaa075341f1a7ccdb4b97aa1"
+      "svg16Sha256": "09846013dbe29175f66e28d889a2b3a7dd386fea05ca63d9918db011afc11d91",
+      "svg32Sha256": "e0594658149c3f1b04ce4819c6a6eccba5bae04d29e7a2ba2fa706fd6d990ace",
+      "svg64Sha256": "0750b6233e646fe10ec6dea09c2d0ea97df9573492740e1936dff4a550a719da"
     },
     {
       "address": "0xffffffffffffffffffffffffffffffffffffffff",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 1,
         "layout": 11846,
         "shape": 1,
@@ -196,14 +196,14 @@
       },
       "silhouetteClass": 6,
       "seedSha256": "112e46de3137bc9e1da5f90bd3c4589382bf67be5f129fa301bd72b662578770",
-      "svg16Sha256": "472a51ae53404415896c7eb8cf25eb23ddc997ba34c6c1f9bf9bdab0b50f658e",
-      "svg32Sha256": "ff0be0f5aaf847eb2d879bd4f3431cde32fd6554451b48481c1d6a9ae76ebc56",
-      "svg64Sha256": "2e0233c2d8a76c1422626fec1a2e8418db9583c28e1d8c6ab7e2144e78ac0b25"
+      "svg16Sha256": "6d95a445fbc47d2e2ce2dfa0d109128d389a548f2262b51d10cc49e75203a929",
+      "svg32Sha256": "5e52a8ed54718fe2bd493518881fc4c8d22d3b3a4b0c8e7e68153fd89d3e5199",
+      "svg64Sha256": "26de1ae1ca6aa19954408875d993888bcee2d9add1b7cb65c786a6c44008c609"
     },
     {
       "address": "0x0000000000000000000000000000000000000001",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 3,
         "layout": 5157,
         "shape": 2,
@@ -211,14 +211,14 @@
       },
       "silhouetteClass": 9,
       "seedSha256": "a3542582e315f15b3916b6913a3d4c42d3b0ac0d49fb76218adeb4b0262f9463",
-      "svg16Sha256": "7bd471a5f5a8961c213021e761369b15d9d11328f1d3572c486e6a6eb4a591ae",
-      "svg32Sha256": "3023be904520b96fc53f4842d090ef01a13d841c2ef174612ff77aae1dab7c4b",
-      "svg64Sha256": "cdc24cd0a0b35c897d2b9aea1cf9def7259717eb6230071d8d38cd32b7f75ed3"
+      "svg16Sha256": "37f1d1e251b7fc375910dc395da9739f9ee831aea962f303b9a22313f6731e4a",
+      "svg32Sha256": "6844056789e6360f9aa11afef6ac578abc9ab52e4e1d04887c2d5b1c20fa4a6e",
+      "svg64Sha256": "89613ca6a5a81c926f04cc52f75413bce6165a04b3dd51356d1744a0ef4f54d9"
     },
     {
       "address": "0x0000000000000000000000000000000000000002",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 7,
         "layout": 13120,
         "shape": 0,
@@ -226,14 +226,14 @@
       },
       "silhouetteClass": 0,
       "seedSha256": "07f340fc6c1227ac503919295926e66310426083ee22bf5598cccba189e268aa",
-      "svg16Sha256": "7139c1ca82dc0055882ce7b33d46fa41975f43b459b792857be00490dfa5916e",
-      "svg32Sha256": "166151b917426295e70e3a95ace33d0824e6e5d0ed3a1771c6036829788949ba",
-      "svg64Sha256": "8fb3a2a6e999ddb9fcb2c4b9b5d2e41b32f7811cde3f521dd6d39c4a673570aa"
+      "svg16Sha256": "420fbe2d10e4eb074c580c2361258cbfd2160d5d8237728d4ca51d04d141bba8",
+      "svg32Sha256": "f3cdedb46e7097cc9cfca32f1fa106b906cc7f2820e4f258b331a4b3c532a77e",
+      "svg64Sha256": "8015632864296e24420ec5f8a7d72e7aef6bcf43e3d3e7c31d6ef471f235be31"
     },
     {
       "address": "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 13,
         "layout": 7123,
         "shape": 0,
@@ -241,14 +241,14 @@
       },
       "silhouetteClass": 3,
       "seedSha256": "8d1bd39fc91dee7c63461012aa5dbea2e0d6997def1247cd0195691b9e20faf6",
-      "svg16Sha256": "d7096861ddc6322c3eb11be597ef4f0beaa828bb1764b79eeb72b93e0693a1da",
-      "svg32Sha256": "36060872f6b0f13f2b413d0c5b61e77d6a08847abeb2967857d92cbcc2c16b2d",
-      "svg64Sha256": "e84e51e1287187d144a954326b69754a4c32bd4e9c80c575af587d589476e6b5"
+      "svg16Sha256": "d63964ea742013a70b62e31e7df1773299c571dd17b4634cc5e7999c3aa0a539",
+      "svg32Sha256": "f7707be8c2c373fd598dc10d1ad5515a85058ebb5e08662f7146917e17aa3f5b",
+      "svg64Sha256": "7b8cf48f2946a0e3c6cd64470e133ad6c8b1a9373acb5d8d0f4a2085a49f3390"
     },
     {
       "address": "0x52908400098527886e0f7030069857d2e4169ee7",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 3,
         "layout": 8027,
         "shape": 2,
@@ -256,14 +256,14 @@
       },
       "silhouetteClass": 11,
       "seedSha256": "a31f5b2f150af53ff8d7881df04eae5d556c2d90d867200fbfa0474a811e9105",
-      "svg16Sha256": "de7bfa834dfe4d045dd032cde10ab40bb61657f50174232d6744593f8509a56f",
-      "svg32Sha256": "8fdbee76b7b0b7382fd3382ed5d07352034a3cf4d7376907d79e84858a2345da",
-      "svg64Sha256": "75d690aaef3ae9ed6b394edf3db9b46b4682db8e81b60d9f0e8cd6b06f032230"
+      "svg16Sha256": "05a0fc20e86524fd6ec64498d022426cb0d7b96df5493279c334e89b2046a13f",
+      "svg32Sha256": "8c99a16744e7be87a9ea38f67ec2dd9023730db91be44429353ddb814f2ff951",
+      "svg64Sha256": "b066734a74ff428dab2650adbf466d2cb1563923f824ad0cc79e1cc231a5c3af"
     },
     {
       "address": "0x00000000000000000000000000000000000000c1",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 5,
         "layout": 4220,
         "shape": 1,
@@ -271,14 +271,14 @@
       },
       "silhouetteClass": 4,
       "seedSha256": "95507cf62a8cd9d643026802a1f020c6230939008f64731efb0d0df5b7c65c34",
-      "svg16Sha256": "bf4f7a0831b3ac91c32116b0c505733c27f4f6b492359f7eec25cdf061ad917b",
-      "svg32Sha256": "6588260d7cdfe854b2868465f0eb38b200cc96536c18ef8320e14612e73607be",
-      "svg64Sha256": "0c027152f3303247258fddad593107697baf48d5267e2981b10449f38e41eba2"
+      "svg16Sha256": "e499e20314569a324dd8316d3f92d5c79301f8a3da8baaa07a5640b11ea4f2c7",
+      "svg32Sha256": "8327321314c53dec4c339409ae79f0176d3a268cd4c0375b08859b77e9d63440",
+      "svg64Sha256": "a9b5d649adfea7961e3aee19a9f9168c0ccf7b69f89f2969bb95bf98899fe9bb"
     },
     {
       "address": "0x1234567890abcdef1234567890abcdef12345678",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 12,
         "layout": 290,
         "shape": 2,
@@ -286,14 +286,14 @@
       },
       "silhouetteClass": 10,
       "seedSha256": "ac812251ce4a43e999939a95df79eba11ad66e53392a7a794d90deec484adb5a",
-      "svg16Sha256": "0a6ef9ab4bb25a028062a02b44e0f77cf91dac8c623a4199d457b5bc32e51379",
-      "svg32Sha256": "e4bca429fb39fb36f51f9922acfc62f9c3a7935bfca7461e7c9447dc38bc3ecb",
-      "svg64Sha256": "e32efe6dbe768a460b760190e7c895cdb5dc19d470035bd20230e1fdbaa9e3bf"
+      "svg16Sha256": "81432e322ab483ecaf7f4ec1b295cf733c0ae7d78610ee3ec418046cbaa7600c",
+      "svg32Sha256": "490263579beed633076dd1c8b6fe0df74b5c6cf38d69742dd189a1dbc0f58bbf",
+      "svg64Sha256": "238ec74f446b189761764de304dbd1efb09f7dd9dedba8145f5295fd5deea944"
     },
     {
       "address": "0x1234567890abcdef0000000000abcdef12345678",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 2,
         "layout": 12388,
         "shape": 3,
@@ -301,14 +301,14 @@
       },
       "silhouetteClass": 12,
       "seedSha256": "f27064b601a8c559b1ebc69b0eabaadb3bf77900a1f3692170444261664ca723",
-      "svg16Sha256": "d98be63d6873790011edee9e26a5dbe7065b4e23724a0614fca353eeff261ba7",
-      "svg32Sha256": "274f564980ab7dd476c15e4d624486196807dbe24fc7175ebb180aed179e95ed",
-      "svg64Sha256": "66201ac48f016b8bd5e650b9e30c696ec0c2bd5ffd1411a2e334e16e379d35af"
+      "svg16Sha256": "aa9c33516dd64228eea1195e23f7dd54d0b851be679ba788ead61978e803860b",
+      "svg32Sha256": "260d3728fe7ad31a90072e87a13a4a933f069eb60c3781d4f505ec1caf85ce2d",
+      "svg64Sha256": "60856d88f05a12149c96337fd4cd86e1eb64d0730a823bd273d1a414ef72751c"
     },
     {
       "address": "0xa2521982a17474cb2f8741c85de653b5282d72b0",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 11,
         "layout": 5518,
         "shape": 2,
@@ -316,14 +316,14 @@
       },
       "silhouetteClass": 10,
       "seedSha256": "eb158e9230485871805991a835748b4c7042e6bd8ffa819b3061be2bd2656983",
-      "svg16Sha256": "99e2e208a1d133ed27432986827d22b7492cdfcef0f3c767be0a0151cfb00426",
-      "svg32Sha256": "4d11bdc668b8fe33f80e750bcf9e3723309f6c3572ee8231cace53192034bbce",
-      "svg64Sha256": "a399b09f5c13d4f765867c8fca69160af8058c1d268964349fb30fc7bdaf500b"
+      "svg16Sha256": "a8ad7cb7ba740c5d5084a116e8f27eb30e23112452ff7ecef27d167298f89cdc",
+      "svg32Sha256": "ae6d3b778963ed73eb298ef7223976484c1c53bb2594c8e8dd94c9c0ae43f9be",
+      "svg64Sha256": "9f68122d9a665d79d5e9185aa2de884aa0b9416f5a7b1a475a30c04b82f088a8"
     },
     {
       "address": "0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 14,
         "layout": 6726,
         "shape": 3,
@@ -331,14 +331,14 @@
       },
       "silhouetteClass": 14,
       "seedSha256": "3eda46849df7335c4be2d76423c59b9dd9c333f81c199bd3b86912655560f74b",
-      "svg16Sha256": "0810325fa219aad106bbdc71589e4d898bd7242ad38f90f0e660f923b1aae95e",
-      "svg32Sha256": "2f9c73fc1589e6f7a05141a520a149f3c045f64686d62a81ceecf62bfd6a38c2",
-      "svg64Sha256": "619c288720e8ea5c35de7d8afac4a15889f902c6f08442022d3068e87c167ea7"
+      "svg16Sha256": "425f900aa24afb07a65d48df5156e4d49973ee8f1d844b4a0c763766f4bc1a48",
+      "svg32Sha256": "938eb35752ae42578672ed6899890199be55675bbd8a144d88e510cf3ab68324",
+      "svg64Sha256": "c770a76b91fe8c9326e53244412b9fd09b1a7943314d27f01030efacbf7f7af0"
     },
     {
       "address": "0x961f8add5ae93ff0700be8abd5f9f8ec69ba4347",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 15,
         "layout": 6548,
         "shape": 1,
@@ -346,14 +346,14 @@
       },
       "silhouetteClass": 4,
       "seedSha256": "dfd9941df20aabd20f96dc1d2c6188e6cf49041eac30b1c1a5b3f55830306210",
-      "svg16Sha256": "65039dc4f7d0ce3651d74831ffa778b8a334a39e6fd6961854d07f7254755f8e",
-      "svg32Sha256": "9c049769efcf87cf45998917b8184f8846044ffbced8d875c05fb57c53474135",
-      "svg64Sha256": "6110a826a48c21eaac8ea57ea633aa4cf1dc0f250d9c22f4efcdebb103e83f8e"
+      "svg16Sha256": "dc9dfdd0ff8ee4e1ac58004177c012969c1ee0f9e8cbf934a63438beef6b38e9",
+      "svg32Sha256": "a8f386abaaa78b792f961027df4801840d0bae71bb36b691d7f517d75f90bb82",
+      "svg64Sha256": "935c741817c6427cd138cdf46cccf176ef64fb9dba82d5a1a8fc143c1d7a7c24"
     },
     {
       "address": "0xc91367bac92c6de822de8afd0f34ff19fd8f7670",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 8,
         "layout": 10334,
         "shape": 1,
@@ -361,14 +361,14 @@
       },
       "silhouetteClass": 6,
       "seedSha256": "d8685eba46d84d77becd3d922608dcb6157061ee9af379840a3d6cfa2d64cd41",
-      "svg16Sha256": "c813ee69e1a24e3fb9376f156e7ceb84aee36b8d2dcea39415b6a903ccd98307",
-      "svg32Sha256": "447523dd987a3d11d29a6d166520aa8cf31f8c6ae62f9acb5a19fe1152c5e8b5",
-      "svg64Sha256": "a47d15d127bc2acb60ab4b451617cae3a26b32ec9e6cb45d2509b40eed654300"
+      "svg16Sha256": "c413f56353321b2cb06a1476a23867a97da1829e19dbd07126522e1c2dabcb28",
+      "svg32Sha256": "38e3e35b40a0328cf860cd59ef50f3058f60d0364ec4853268416586ce1431f3",
+      "svg64Sha256": "a294099c04cd1baedd4bb9b6e6ac4635a028143f3f554f36cb24a1f8c0f690fc"
     },
     {
       "address": "0x00000000000000000000000000000000000000ff",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 12,
         "layout": 1259,
         "shape": 3,
@@ -376,14 +376,14 @@
       },
       "silhouetteClass": 15,
       "seedSha256": "fc44eb4b84d75156e6271ea6e24b7e5bdb3b474adcc6e0962e9abdb232c7cc50",
-      "svg16Sha256": "c706ebd7b161cc79bda8c05fbb402076259d572b39eaef33774e0252a443b175",
-      "svg32Sha256": "8abe5b487f182f564e67eef5afd1bc1f1ff52c3094732d4716f6bfe5df533c3d",
-      "svg64Sha256": "3cf44b38cb31f356297f401f8ee940ed54e964779ab79a85b83425a937568534"
+      "svg16Sha256": "73564e74e261e69dc48fa008398be00e31228523d5bc6659370e2052e5e8d820",
+      "svg32Sha256": "e00d1010f1d81f5a19e27ec84e35c9d3c774ee5445301d50989fa86ffceb1851",
+      "svg64Sha256": "d2e72e7ed7ee6a2480e89d2a49295c01ac561666582298a75007bd46aeadea4b"
     },
     {
       "address": "0x0000000000000000000000000000000000000100",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 5,
         "layout": 12298,
         "shape": 1,
@@ -391,14 +391,14 @@
       },
       "silhouetteClass": 6,
       "seedSha256": "15b00ae69320a28359159ec028eb4f0d64e3f83bfde8be0656e7514b4c0bc6e6",
-      "svg16Sha256": "a9e0e74fc9ddbcf2a7fc7f378a44aa3beee10c621a507585e4e8a40baa76a048",
-      "svg32Sha256": "59e0190ebbe55dd40fedcea00da2385c989fa4605c847ec60eb14413b06b2c93",
-      "svg64Sha256": "50468a994f4beecae62473de1ac120c385b61d0f3cfeb2d8f111b256458ffdb5"
+      "svg16Sha256": "157fa650bff3c86f5e7e60f791b0dff5065e07a48639dfbc7463dde2197fe04b",
+      "svg32Sha256": "4ab703879d495a01cbffc7787dce82a8a84b7c10311a9ffcf9f3a49ef29eb178",
+      "svg64Sha256": "4bce7d04f95cc580f1351c41cb64396368d0991d065cf2f55dccceac046c9a74"
     },
     {
       "address": "0x000000000000000000000000000000000000ffff",
       "features": {
-        "version": 2,
+        "version": 3,
         "palette": 2,
         "layout": 3628,
         "shape": 0,
@@ -406,9 +406,9 @@
       },
       "silhouetteClass": 0,
       "seedSha256": "820e2cc9154068c232a1c3a601ae0f29224a7d2187980ed473cb0639df71e3b9",
-      "svg16Sha256": "aa0669e335b270af49f811fd21fa785fa17b25dd3e23ae6cd0a3fd5eee78caad",
-      "svg32Sha256": "8b49e3191378c35479c8b64765eb94586c712ff4ed8fd52196ddbc736932d5a3",
-      "svg64Sha256": "8d067d9834b3ed376338f15538d3a13f17d565fb019d7c0184a611500329af06"
+      "svg16Sha256": "ada9724feff717f5474162ae0495b8f24729123dd70a4d9a0b8b9f705f71ddb3",
+      "svg32Sha256": "9d6355474c3c0ff5357f2f758451e292a04beb72b834617a60936d7d2c97ded2",
+      "svg64Sha256": "6fd370a8e04dcb00731d965671f434b666fdbfe5166b6ce676aaaa664e36c694"
     }
   ]
 }

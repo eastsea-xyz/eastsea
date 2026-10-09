@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "comparisons": [
     {
       "theme": "light",
@@ -12,14 +12,14 @@
       "theme": "light",
       "vector": 0,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.3346354166666667,
-      "maximumChannelDifference": 36
+      "meanAbsoluteChannelDifference": 1.3232421875,
+      "maximumChannelDifference": 37
     },
     {
       "theme": "light",
       "vector": 0,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.718994140625,
+      "meanAbsoluteChannelDifference": 0.6919759114583334,
       "maximumChannelDifference": 37
     },
     {
@@ -33,309 +33,309 @@
       "theme": "light",
       "vector": 1,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.4488932291666667,
-      "maximumChannelDifference": 48
+      "meanAbsoluteChannelDifference": 1.4013671875,
+      "maximumChannelDifference": 50
     },
     {
       "theme": "light",
       "vector": 1,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.8162434895833334,
+      "meanAbsoluteChannelDifference": 0.7721354166666666,
       "maximumChannelDifference": 50
     },
     {
       "theme": "light",
       "vector": 2,
       "size": 16,
-      "meanAbsoluteChannelDifference": 1.4557291666666667,
+      "meanAbsoluteChannelDifference": 1.45703125,
       "maximumChannelDifference": 24
     },
     {
       "theme": "light",
       "vector": 2,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.1168619791666667,
-      "maximumChannelDifference": 29
+      "meanAbsoluteChannelDifference": 1.1344401041666667,
+      "maximumChannelDifference": 39
     },
     {
       "theme": "light",
       "vector": 2,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.582763671875,
-      "maximumChannelDifference": 30
+      "meanAbsoluteChannelDifference": 0.5902506510416666,
+      "maximumChannelDifference": 32
     },
     {
       "theme": "light",
       "vector": 3,
       "size": 16,
-      "meanAbsoluteChannelDifference": 2.8359375,
+      "meanAbsoluteChannelDifference": 2.8372395833333335,
       "maximumChannelDifference": 58
     },
     {
       "theme": "light",
       "vector": 3,
       "size": 32,
-      "meanAbsoluteChannelDifference": 2.0817057291666665,
-      "maximumChannelDifference": 64
+      "meanAbsoluteChannelDifference": 2.04296875,
+      "maximumChannelDifference": 63
     },
     {
       "theme": "light",
       "vector": 3,
       "size": 64,
-      "meanAbsoluteChannelDifference": 1.1752115885416667,
+      "meanAbsoluteChannelDifference": 1.1039225260416667,
       "maximumChannelDifference": 66
     },
     {
       "theme": "light",
       "vector": 4,
       "size": 16,
-      "meanAbsoluteChannelDifference": 2.140625,
+      "meanAbsoluteChannelDifference": 2.1419270833333335,
       "maximumChannelDifference": 45
     },
     {
       "theme": "light",
       "vector": 4,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.486328125,
-      "maximumChannelDifference": 52
+      "meanAbsoluteChannelDifference": 1.51171875,
+      "maximumChannelDifference": 50
     },
     {
       "theme": "light",
       "vector": 4,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.9405924479166666,
+      "meanAbsoluteChannelDifference": 0.9141438802083334,
       "maximumChannelDifference": 57
     },
     {
       "theme": "light",
       "vector": 5,
       "size": 16,
-      "meanAbsoluteChannelDifference": 1.6744791666666667,
+      "meanAbsoluteChannelDifference": 1.6796875,
       "maximumChannelDifference": 38
     },
     {
       "theme": "light",
       "vector": 5,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.2610677083333333,
+      "meanAbsoluteChannelDifference": 1.201171875,
       "maximumChannelDifference": 34
     },
     {
       "theme": "light",
       "vector": 5,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.6893717447916666,
+      "meanAbsoluteChannelDifference": 0.6639811197916666,
       "maximumChannelDifference": 37
     },
     {
       "theme": "light",
       "vector": 6,
       "size": 16,
-      "meanAbsoluteChannelDifference": 2.0338541666666665,
+      "meanAbsoluteChannelDifference": 2.0364583333333335,
       "maximumChannelDifference": 28
     },
     {
       "theme": "light",
       "vector": 6,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.5833333333333333,
+      "meanAbsoluteChannelDifference": 1.5078125,
       "maximumChannelDifference": 41
     },
     {
       "theme": "light",
       "vector": 6,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.8600260416666666,
-      "maximumChannelDifference": 40
+      "meanAbsoluteChannelDifference": 0.8536783854166666,
+      "maximumChannelDifference": 41
     },
     {
       "theme": "light",
       "vector": 7,
       "size": 16,
-      "meanAbsoluteChannelDifference": 1.5625,
+      "meanAbsoluteChannelDifference": 1.5638020833333333,
       "maximumChannelDifference": 49
     },
     {
       "theme": "light",
       "vector": 7,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.3531901041666667,
-      "maximumChannelDifference": 57
+      "meanAbsoluteChannelDifference": 1.392578125,
+      "maximumChannelDifference": 51
     },
     {
       "theme": "light",
       "vector": 7,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.7096354166666666,
+      "meanAbsoluteChannelDifference": 0.715576171875,
       "maximumChannelDifference": 62
     },
     {
       "theme": "light",
       "vector": 8,
       "size": 16,
-      "meanAbsoluteChannelDifference": 2.09765625,
+      "meanAbsoluteChannelDifference": 2.0963541666666665,
       "maximumChannelDifference": 44
     },
     {
       "theme": "light",
       "vector": 8,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.8893229166666667,
-      "maximumChannelDifference": 54
+      "meanAbsoluteChannelDifference": 1.8056640625,
+      "maximumChannelDifference": 59
     },
     {
       "theme": "light",
       "vector": 8,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.9961751302083334,
-      "maximumChannelDifference": 62
+      "meanAbsoluteChannelDifference": 0.97265625,
+      "maximumChannelDifference": 59
     },
     {
       "theme": "light",
       "vector": 9,
       "size": 16,
-      "meanAbsoluteChannelDifference": 1.68359375,
+      "meanAbsoluteChannelDifference": 1.6809895833333333,
       "maximumChannelDifference": 49
     },
     {
       "theme": "light",
       "vector": 9,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.53515625,
-      "maximumChannelDifference": 51
+      "meanAbsoluteChannelDifference": 1.5016276041666667,
+      "maximumChannelDifference": 66
     },
     {
       "theme": "light",
       "vector": 9,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.79296875,
+      "meanAbsoluteChannelDifference": 0.7908528645833334,
       "maximumChannelDifference": 62
     },
     {
       "theme": "light",
       "vector": 10,
       "size": 16,
-      "meanAbsoluteChannelDifference": 2.1940104166666665,
+      "meanAbsoluteChannelDifference": 2.19140625,
       "maximumChannelDifference": 26
     },
     {
       "theme": "light",
       "vector": 10,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.8518880208333333,
-      "maximumChannelDifference": 33
+      "meanAbsoluteChannelDifference": 1.7174479166666667,
+      "maximumChannelDifference": 36
     },
     {
       "theme": "light",
       "vector": 10,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.93115234375,
-      "maximumChannelDifference": 32
+      "meanAbsoluteChannelDifference": 0.8976236979166666,
+      "maximumChannelDifference": 33
     },
     {
       "theme": "light",
       "vector": 11,
       "size": 16,
-      "meanAbsoluteChannelDifference": 2.3528645833333335,
+      "meanAbsoluteChannelDifference": 2.3515625,
       "maximumChannelDifference": 32
     },
     {
       "theme": "light",
       "vector": 11,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.826171875,
-      "maximumChannelDifference": 48
+      "meanAbsoluteChannelDifference": 1.7900390625,
+      "maximumChannelDifference": 45
     },
     {
       "theme": "light",
       "vector": 11,
       "size": 64,
-      "meanAbsoluteChannelDifference": 1.0249837239583333,
-      "maximumChannelDifference": 45
+      "meanAbsoluteChannelDifference": 1.0228678385416667,
+      "maximumChannelDifference": 48
     },
     {
       "theme": "light",
       "vector": 12,
       "size": 16,
-      "meanAbsoluteChannelDifference": 1.66015625,
+      "meanAbsoluteChannelDifference": 1.6627604166666667,
       "maximumChannelDifference": 38
     },
     {
       "theme": "light",
       "vector": 12,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.22265625,
-      "maximumChannelDifference": 44
+      "meanAbsoluteChannelDifference": 1.1949869791666667,
+      "maximumChannelDifference": 58
     },
     {
       "theme": "light",
       "vector": 12,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.7726236979166666,
+      "meanAbsoluteChannelDifference": 0.7399088541666666,
       "maximumChannelDifference": 55
     },
     {
       "theme": "light",
       "vector": 13,
       "size": 16,
-      "meanAbsoluteChannelDifference": 2.0703125,
+      "meanAbsoluteChannelDifference": 2.0690104166666665,
       "maximumChannelDifference": 60
     },
     {
       "theme": "light",
       "vector": 13,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.79296875,
-      "maximumChannelDifference": 61
+      "meanAbsoluteChannelDifference": 1.7848307291666667,
+      "maximumChannelDifference": 58
     },
     {
       "theme": "light",
       "vector": 13,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.9454752604166666,
+      "meanAbsoluteChannelDifference": 0.9103190104166666,
       "maximumChannelDifference": 68
     },
     {
       "theme": "light",
       "vector": 14,
       "size": 16,
-      "meanAbsoluteChannelDifference": 1.6171875,
+      "meanAbsoluteChannelDifference": 1.6119791666666667,
       "maximumChannelDifference": 28
     },
     {
       "theme": "light",
       "vector": 14,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.2669270833333333,
-      "maximumChannelDifference": 42
+      "meanAbsoluteChannelDifference": 1.2858072916666667,
+      "maximumChannelDifference": 51
     },
     {
       "theme": "light",
       "vector": 14,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.710205078125,
-      "maximumChannelDifference": 45
+      "meanAbsoluteChannelDifference": 0.7198079427083334,
+      "maximumChannelDifference": 51
     },
     {
       "theme": "light",
       "vector": 15,
       "size": 16,
-      "meanAbsoluteChannelDifference": 2.6393229166666665,
+      "meanAbsoluteChannelDifference": 2.6380208333333335,
       "maximumChannelDifference": 58
     },
     {
       "theme": "light",
       "vector": 15,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.9078776041666667,
-      "maximumChannelDifference": 61
+      "meanAbsoluteChannelDifference": 1.8089192708333333,
+      "maximumChannelDifference": 68
     },
     {
       "theme": "light",
       "vector": 15,
       "size": 64,
-      "meanAbsoluteChannelDifference": 1.098388671875,
-      "maximumChannelDifference": 65
+      "meanAbsoluteChannelDifference": 1.032470703125,
+      "maximumChannelDifference": 64
     },
     {
       "theme": "dark",
@@ -348,14 +348,14 @@
       "theme": "dark",
       "vector": 0,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.1256510416666667,
-      "maximumChannelDifference": 36
+      "meanAbsoluteChannelDifference": 1.11328125,
+      "maximumChannelDifference": 37
     },
     {
       "theme": "dark",
       "vector": 0,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.677978515625,
+      "meanAbsoluteChannelDifference": 0.6509602864583334,
       "maximumChannelDifference": 37
     },
     {
@@ -369,14 +369,14 @@
       "theme": "dark",
       "vector": 1,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.2890625,
-      "maximumChannelDifference": 48
+      "meanAbsoluteChannelDifference": 1.2438151041666667,
+      "maximumChannelDifference": 50
     },
     {
       "theme": "dark",
       "vector": 1,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.7861328125,
+      "meanAbsoluteChannelDifference": 0.7420247395833334,
       "maximumChannelDifference": 50
     },
     {
@@ -390,15 +390,15 @@
       "theme": "dark",
       "vector": 2,
       "size": 32,
-      "meanAbsoluteChannelDifference": 0.9055989583333334,
-      "maximumChannelDifference": 29
+      "meanAbsoluteChannelDifference": 0.9231770833333334,
+      "maximumChannelDifference": 39
     },
     {
       "theme": "dark",
       "vector": 2,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.5423177083333334,
-      "maximumChannelDifference": 30
+      "meanAbsoluteChannelDifference": 0.5494791666666666,
+      "maximumChannelDifference": 32
     },
     {
       "theme": "dark",
@@ -411,14 +411,14 @@
       "theme": "dark",
       "vector": 3,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.8447265625,
-      "maximumChannelDifference": 64
+      "meanAbsoluteChannelDifference": 1.8063151041666667,
+      "maximumChannelDifference": 63
     },
     {
       "theme": "dark",
       "vector": 3,
       "size": 64,
-      "meanAbsoluteChannelDifference": 1.1305338541666667,
+      "meanAbsoluteChannelDifference": 1.059326171875,
       "maximumChannelDifference": 66
     },
     {
@@ -432,14 +432,14 @@
       "theme": "dark",
       "vector": 4,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.5100911458333333,
-      "maximumChannelDifference": 52
+      "meanAbsoluteChannelDifference": 1.5390625,
+      "maximumChannelDifference": 50
     },
     {
       "theme": "dark",
       "vector": 4,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.947265625,
+      "meanAbsoluteChannelDifference": 0.9200846354166666,
       "maximumChannelDifference": 57
     },
     {
@@ -453,14 +453,14 @@
       "theme": "dark",
       "vector": 5,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.0498046875,
+      "meanAbsoluteChannelDifference": 0.990234375,
       "maximumChannelDifference": 34
     },
     {
       "theme": "dark",
       "vector": 5,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.64892578125,
+      "meanAbsoluteChannelDifference": 0.6234537760416666,
       "maximumChannelDifference": 37
     },
     {
@@ -474,15 +474,15 @@
       "theme": "dark",
       "vector": 6,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.4866536458333333,
+      "meanAbsoluteChannelDifference": 1.4108072916666667,
       "maximumChannelDifference": 41
     },
     {
       "theme": "dark",
       "vector": 6,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.842529296875,
-      "maximumChannelDifference": 40
+      "meanAbsoluteChannelDifference": 0.836669921875,
+      "maximumChannelDifference": 41
     },
     {
       "theme": "dark",
@@ -495,14 +495,14 @@
       "theme": "dark",
       "vector": 7,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.2854817708333333,
-      "maximumChannelDifference": 57
+      "meanAbsoluteChannelDifference": 1.3258463541666667,
+      "maximumChannelDifference": 51
     },
     {
       "theme": "dark",
       "vector": 7,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.6981608072916666,
+      "meanAbsoluteChannelDifference": 0.7041829427083334,
       "maximumChannelDifference": 62
     },
     {
@@ -516,15 +516,15 @@
       "theme": "dark",
       "vector": 8,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.826171875,
-      "maximumChannelDifference": 54
+      "meanAbsoluteChannelDifference": 1.7421875,
+      "maximumChannelDifference": 59
     },
     {
       "theme": "dark",
       "vector": 8,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.98486328125,
-      "maximumChannelDifference": 62
+      "meanAbsoluteChannelDifference": 0.9606119791666666,
+      "maximumChannelDifference": 59
     },
     {
       "theme": "dark",
@@ -537,14 +537,14 @@
       "theme": "dark",
       "vector": 9,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.3860677083333333,
-      "maximumChannelDifference": 51
+      "meanAbsoluteChannelDifference": 1.353515625,
+      "maximumChannelDifference": 66
     },
     {
       "theme": "dark",
       "vector": 9,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.7645670572916666,
+      "meanAbsoluteChannelDifference": 0.7625325520833334,
       "maximumChannelDifference": 62
     },
     {
@@ -558,15 +558,15 @@
       "theme": "dark",
       "vector": 10,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.6901041666666667,
-      "maximumChannelDifference": 33
+      "meanAbsoluteChannelDifference": 1.5540364583333333,
+      "maximumChannelDifference": 36
     },
     {
       "theme": "dark",
       "vector": 10,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.9020182291666666,
-      "maximumChannelDifference": 32
+      "meanAbsoluteChannelDifference": 0.86767578125,
+      "maximumChannelDifference": 33
     },
     {
       "theme": "dark",
@@ -579,15 +579,15 @@
       "theme": "dark",
       "vector": 11,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.9417317708333333,
-      "maximumChannelDifference": 48
+      "meanAbsoluteChannelDifference": 1.9085286458333333,
+      "maximumChannelDifference": 45
     },
     {
       "theme": "dark",
       "vector": 11,
       "size": 64,
-      "meanAbsoluteChannelDifference": 1.0486653645833333,
-      "maximumChannelDifference": 45
+      "meanAbsoluteChannelDifference": 1.046875,
+      "maximumChannelDifference": 48
     },
     {
       "theme": "dark",
@@ -600,14 +600,14 @@
       "theme": "dark",
       "vector": 12,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.265625,
-      "maximumChannelDifference": 44
+      "meanAbsoluteChannelDifference": 1.2373046875,
+      "maximumChannelDifference": 58
     },
     {
       "theme": "dark",
       "vector": 12,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.7813313802083334,
+      "meanAbsoluteChannelDifference": 0.7488606770833334,
       "maximumChannelDifference": 55
     },
     {
@@ -621,14 +621,14 @@
       "theme": "dark",
       "vector": 13,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.7252604166666667,
-      "maximumChannelDifference": 61
+      "meanAbsoluteChannelDifference": 1.7174479166666667,
+      "maximumChannelDifference": 58
     },
     {
       "theme": "dark",
       "vector": 13,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.9340006510416666,
+      "meanAbsoluteChannelDifference": 0.8985188802083334,
       "maximumChannelDifference": 68
     },
     {
@@ -642,15 +642,15 @@
       "theme": "dark",
       "vector": 14,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.1702473958333333,
-      "maximumChannelDifference": 42
+      "meanAbsoluteChannelDifference": 1.1888020833333333,
+      "maximumChannelDifference": 51
     },
     {
       "theme": "dark",
       "vector": 14,
       "size": 64,
-      "meanAbsoluteChannelDifference": 0.6927083333333334,
-      "maximumChannelDifference": 45
+      "meanAbsoluteChannelDifference": 0.702392578125,
+      "maximumChannelDifference": 51
     },
     {
       "theme": "dark",
@@ -663,20 +663,20 @@
       "theme": "dark",
       "vector": 15,
       "size": 32,
-      "meanAbsoluteChannelDifference": 1.8447265625,
-      "maximumChannelDifference": 61
+      "meanAbsoluteChannelDifference": 1.7467447916666667,
+      "maximumChannelDifference": 68
     },
     {
       "theme": "dark",
       "vector": 15,
       "size": 64,
-      "meanAbsoluteChannelDifference": 1.0870768229166667,
-      "maximumChannelDifference": 65
+      "meanAbsoluteChannelDifference": 1.0208333333333333,
+      "maximumChannelDifference": 64
     }
   ],
   "comparisonCount": 96,
-  "meanAbsoluteChannelDifference": 1.4199710422092016,
-  "worstMeanAbsoluteChannelDifference": 2.8359375,
+  "meanAbsoluteChannelDifference": 1.4007263183593743,
+  "worstMeanAbsoluteChannelDifference": 2.8372395833333335,
   "thresholdMeanPerImage": 5,
   "passes": true,
   "caveat": "PNG rasterizers differ at antialiased edges; canonical per-size SVG hashes are the cross-language goldens."

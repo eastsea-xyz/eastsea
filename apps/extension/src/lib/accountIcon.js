@@ -1,6 +1,6 @@
-// Archipelago v2. This is the canonical module; mirror it with
+// Archipelago v3. This is the canonical module; mirror it with
 // `node scripts/sync-account-icons.mjs`. See docs/design/46-account-icon.md.
-export const ACCOUNT_ICON_VERSION = 2;
+export const ACCOUNT_ICON_VERSION = 3;
 export const ACCOUNT_ICON_PALETTES = Object.freeze([
   {
     "name": "tidal",
@@ -100,6 +100,7 @@ export const ACCOUNT_ICON_PALETTES = Object.freeze([
   }
 ].map((palette) => Object.freeze(palette)));
 
+// Retain the v2 seed: this polish preserves colors and the 16 px coastline.
 const DOMAIN = 'eastsea-account-icon-v2';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const SHA256_INITIAL = [
@@ -210,16 +211,19 @@ export function accountIconSilhouette(spec) {
   return validSpec(spec) ? spec.shape * 4 + (spec.layout & 3) : null;
 }
 
-// Only at >=32 logical pixels: two large neighboring islands. The remaining
-// layout bits change shore proportions and positions, never small dots.
+// Only at >=32 logical pixels: an elongated island and a smaller offset reef.
+// Unequal areas and staggered shores prevent paired eyes at every rotation.
 function islands(spec, size) {
   const result = [{ d: ACCOUNT_ICON_SILHOUETTES[accountIconSilhouette(spec)].path, transform: `translate(0 ${size < 32 ? 5 : 0}) scale(1 0.8)` }];
   if (size < 32) return result;
   for (let i = 0; i < 2; i++) {
     const bits = (spec.layout >>> (2 + i * 6)) & 63;
-    const x = 9 + i * 25 + (bits & 3), y = 46 + ((bits >>> 2) & 3);
-    const w = 14 + ((bits >>> 4) & 3);
-    result.push({ d: `M ${x} ${y + 4} C ${x + 2} ${y - 3} ${x + w - 5} ${y + 1} ${x + w - 2} ${y - 2} L ${x + w} ${y + 6} C ${x + w - 3} ${y + 11} ${x + 3} ${y + 13} ${x} ${y + 4} Z` });
+    const x = (i === 0 ? 8 : 40) + (bits & 3), y = (i === 0 ? 44 : 5) + ((bits >>> 2) & 3);
+    const w = (i === 0 ? 21 : 10) + ((bits >>> 4) & 3);
+    const d = i === 0
+      ? `M ${x} ${y + 4} C ${x + 2} ${y - 3} ${x + w - 5} ${y + 1} ${x + w - 2} ${y - 2} L ${x + w} ${y + 6} C ${x + w - 3} ${y + 11} ${x + 3} ${y + 13} ${x} ${y + 4} Z`
+      : `M ${x} ${y + 2} C ${x + 3} ${y - 1} ${x + w - 4} ${y - 2} ${x + w} ${y + 1} L ${x + w - 2} ${y + 5} C ${x + 3} ${y + 7} ${x + 1} ${y + 5} ${x} ${y + 2} Z`;
+    result.push({ d });
   }
   return result;
 }
@@ -227,7 +231,7 @@ function islands(spec, size) {
 function drawing(spec, size) {
   const palette = ACCOUNT_ICON_PALETTES[spec.palette];
   // Identical IDs are safe: they always resolve to identical fixed gradients.
-  const id = `eastsea-island-v2-${spec.palette}`;
+  const id = `eastsea-island-v3-${spec.palette}`;
   return [
     ['defs', {}, [['linearGradient', { id, x1: 0, y1: 0, x2: 64, y2: 64, gradientUnits: 'userSpaceOnUse', 'color-interpolation': 'sRGB' }, [
       ['stop', { offset: 0, 'stop-color': palette.start }],

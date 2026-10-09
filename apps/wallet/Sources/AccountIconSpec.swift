@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-/// Archipelago v2: an address-derived recognition aid, never proof of identity.
+/// Islands v3: an address-derived recognition aid, never proof of identity.
 /// Only decoded address bytes enter the hash. Invalid input has no icon spec.
 struct AccountIconSpec: Equatable, Hashable, Sendable {
     struct Palette: Decodable, Equatable, Hashable, Sendable {
@@ -61,17 +61,17 @@ struct AccountIconSpec: Equatable, Hashable, Sendable {
     let rotation: UInt8
 
     private init(palette: UInt8, layout: UInt16, shape: UInt8, rotation: UInt8) {
-        version = 2
+        version = 3
         self.palette = palette
         self.layout = layout
         self.shape = shape
         self.rotation = rotation
     }
 
-    /// The default is explicitly v2. Future versions must use a new domain
-    /// and published vectors; they cannot silently reinterpret this spec.
-    static func of(address: String?, version: UInt8 = 2) -> AccountIconSpec? {
-        guard version == 2, let address, let bytes = addressBytes(address) else { return nil }
+    /// Rendering v3 keeps the v2 seed domain to preserve address-derived features.
+    /// Geometry changes require an explicit rendering version and published vectors.
+    static func of(address: String?, version: UInt8 = 3) -> AccountIconSpec? {
+        guard version == 3, let address, let bytes = addressBytes(address) else { return nil }
         let seed = Array(SHA256.hash(data: Data(domain.utf8) + Data(bytes)))
         return AccountIconSpec(palette: seed[0] & 15,
                                layout: ((UInt16(seed[1]) << 8) | UInt16(seed[2])) & 0x3fff,
@@ -114,14 +114,21 @@ struct AccountIconSpec: Equatable, Hashable, Sendable {
     var silhouetteClass: UInt8 { shape * 4 + UInt8(layout & 3) }
     var mainPath: String { Self.silhouettes[Int(silhouetteClass)].path }
 
-    /// At 32 px and above, the remaining layout bits vary two large islands.
+    /// At 32 px and above, the remaining layout bits vary two unequal islands.
+    /// Opposite-corner coastlines place one island on each side in every rotation.
     var satellitePaths: [String] {
         (0..<2).map { index in
             let bits = Int((layout >> (2 + index * 6)) & 63)
-            let x = 9 + index * 25 + (bits & 3)
-            let y = 46 + ((bits >> 2) & 3)
-            let width = 14 + ((bits >> 4) & 3)
-            return "M \(x) \(y + 4) C \(x + 2) \(y - 3) \(x + width - 5) \(y + 1) \(x + width - 2) \(y - 2) L \(x + width) \(y + 6) C \(x + width - 3) \(y + 11) \(x + 3) \(y + 13) \(x) \(y + 4) Z"
+            if index == 0 {
+                let x = 8 + (bits & 3)
+                let y = 44 + ((bits >> 2) & 3)
+                let width = 21 + ((bits >> 4) & 3)
+                return "M \(x) \(y + 4) C \(x + 2) \(y - 3) \(x + width - 5) \(y + 1) \(x + width - 2) \(y - 2) L \(x + width) \(y + 6) C \(x + width - 3) \(y + 11) \(x + 3) \(y + 13) \(x) \(y + 4) Z"
+            }
+            let x = 40 + (bits & 3)
+            let y = 5 + ((bits >> 2) & 3)
+            let width = 10 + ((bits >> 4) & 3)
+            return "M \(x) \(y + 2) C \(x + 3) \(y - 1) \(x + width - 4) \(y - 2) \(x + width) \(y + 1) L \(x + width - 2) \(y + 5) C \(x + 3) \(y + 7) \(x + 1) \(y + 5) \(x) \(y + 2) Z"
         }
     }
 
@@ -130,7 +137,7 @@ struct AccountIconSpec: Equatable, Hashable, Sendable {
     func svg(size: Int = 64) -> String? {
         guard size > 0 else { return nil }
         let colors = colors
-        let id = "eastsea-island-v2-\(palette)"
+        let id = "eastsea-island-v3-\(palette)"
         var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"\(size)\" height=\"\(size)\" viewBox=\"0 0 64 64\" aria-hidden=\"true\">"
         svg += "<defs><linearGradient id=\"\(id)\" x1=\"0\" y1=\"0\" x2=\"64\" y2=\"64\" gradientUnits=\"userSpaceOnUse\" color-interpolation=\"sRGB\"><stop offset=\"0\" stop-color=\"\(colors.start)\"/><stop offset=\"1\" stop-color=\"\(colors.end)\"/></linearGradient></defs>"
         svg += "<rect width=\"64\" height=\"64\" rx=\"12\" fill=\"url(#\(id))\"/>"

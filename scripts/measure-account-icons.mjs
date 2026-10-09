@@ -20,6 +20,9 @@ if (!Number.isSafeInteger(pairCount) || pairCount < 1 || pairCount > 100_000) th
 if (!output || !rasterBinary) throw new Error('usage: measure-account-icons.mjs PAIRS OUTPUT_JSON ICON_ONLY_RASTER_BINARY');
 const started = performance.now();
 const domain = 'eastsea-account-icon-glance-v2';
+// Keep the original stream and its round 2 limits for a comparable polish gate.
+const round2 = { revision: '20e669a', weakPairFraction: 0.0036,
+  conservativeWeakPairFraction: 0.0068, minimumPaletteDeltaE: 15.995413938449344 };
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = path.join(root, 'tmp/account-icon-glance');
 mkdirSync(scratch, { recursive: true });
@@ -152,6 +155,15 @@ const report = {
   caveat: 'This requested dominant-color/silhouette proxy is not a human recognition experiment or proof against attacker address grinding. Distinct coastline classes may still look similar to a person.',
   elapsedSeconds: (performance.now() - started) / 1000,
 };
+report.round2Regression = { ...round2,
+  sameMeasurementStream: true,
+  samePairCount: pairCount === 10_000,
+  glancePasses: fraction <= round2.weakPairFraction,
+  conservativeGlancePasses: conservativePairs / pairCount <= round2.conservativeWeakPairFraction,
+  palettePasses: report.palette.minimumDeltaE + 1e-10 >= round2.minimumPaletteDeltaE,
+};
+report.round2Regression.passes = report.round2Regression.glancePasses
+  && report.round2Regression.conservativeGlancePasses && report.round2Regression.palettePasses;
 writeFileSync(output, JSON.stringify(report, null, 2) + '\n');
 console.log(`Glance: ${matchingPairs}/${pairCount}=${report.glance.percentage.toFixed(2)}%; minimum palette ΔE=${report.palette.minimumDeltaE.toFixed(4)}`);
-if (!report.glance.passes || !report.palette.allContrastPairsPass) process.exitCode = 1;
+if (!report.glance.passes || !report.palette.allContrastPairsPass || !report.round2Regression.passes) process.exitCode = 1;

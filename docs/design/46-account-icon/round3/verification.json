@@ -1,0 +1,77 @@
+{
+  "algorithmVersion": 3,
+  "seedDomain": "eastsea-account-icon-v2",
+  "founderChoice": "Islands",
+  "founderChoiceDate": "2026-10-10",
+  "integrationBase": "bcd72731d61438489973cc174c7e8dfe0e81f5d7",
+  "checks": {
+    "extensionTests": 329,
+    "explorerTests": 377,
+    "layoutTests": 14,
+    "colorTests": 5,
+    "rustClientTests": 4,
+    "swiftSharedVectors": 16,
+    "svgGoldens": 48,
+    "swiftRasterPNGs": 106,
+    "browserRasterPNGs": 96,
+    "productSurfaces": 8,
+    "geometryOutcomes": 262144,
+    "flaggedLayouts": 0,
+    "secondaryPairsAboveMain": 0,
+    "glancePairs": 10000,
+    "weakPairPercent": 0.36,
+    "conservativeWeakPairPercent": 0.68,
+    "minimumDeltaE": 15.995413938449344,
+    "independentCodeReview": "no actionable findings",
+    "rustfmt": true,
+    "clippyWarningsDenied": true,
+    "jsMirrorsIdentical": true,
+    "pythonOracle": true,
+    "webDesignDetectorFindings": 0,
+    "remoteCleanup": true,
+    "swiftResolvedViewsSyntaxParse": true,
+    "frozenSigningAccountNegativeControl": true
+  },
+  "artifacts": {
+    "measurement": "../measurement.json",
+    "geometry": "pareidolia.json",
+    "resources": "../remote-resources.json",
+    "renderComparison": "../render-comparison.json",
+    "smallSizeStability": "small-size-stability.json",
+    "surfaces": "../surfaces/checks.json",
+    "visualVerdict": "visual-verdict.json"
+  },
+  "limitations": [
+    "Human recognition and pareidolia outside the numeric checks remain unmeasured.",
+    "Wallet/release/Jolt guest builds and live EastSea checks are reserved for the integration lead.",
+    "Existing integration mobile header: Live network label can overlap Settings at360px; recorded in current surface capture."
+  ],
+  "integration": {
+    "base": "bcd7273",
+    "resolvedConflicts": [
+      "apps/explorer/README.md",
+      "apps/explorer/explorer.css",
+      "apps/explorer/js/pages.js",
+      "apps/extension/ui/popup.js",
+      "apps/wallet/Sources/AccountSwitcher.swift",
+      "apps/wallet/Sources/ReceiveAddressView.swift",
+      "apps/wallet/Sources/SimpleDashboard.swift"
+    ],
+    "preserved": [
+      "integration brand tokens and navy plates",
+      "EastSeaReceiveCode QR",
+      "verified reads",
+      "simulation preview and signing behavior"
+    ],
+    "postRebaseChecks": true
+  },
+  "provenance": {
+    "apps/extension/src/lib/accountIcon.js": "5cc8f53b5d3ff26971d561b1c21e456b12134ebc749bafb3c0d11ddb2df7cb91",
+    "crates/client/tests/account-icon-vectors.json": "210015ba73eadad228e8977f1d7c1abd07a4efe6872cf0e60e7fa581079443ce",
+    "scripts/account-icon-layout.mjs": "ce866a168a02dc0ffb002022fdf530a66053dcfd50923ea04bb39f8bf972f4dd",
+    "scripts/measure-account-icons.mjs": "af37f399266b3f40e26b6d37c37c8714b65e429f469deae93b3cf5474c3fe262",
+    "scripts/render-account-icon-review.mjs": "6a1c5dbeed025a13d5ea0d05ff678d4dc740d796bb78925a9a1b04985b5197c9",
+    "apps/extension/ui/popup.js": "75b4e8dd2345d77bb6fed26c002418d646ef4a110d366a456030cd9b40b70b38",
+    "apps/explorer/js/pages.js": "ea436bba7d130cfb71b5227f59effba1cc7a46c6a74d268fd94e89b4e07bdb3f"
+  }
+}

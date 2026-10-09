@@ -16,10 +16,12 @@ test('external DNS names have an explicit HTTPS refusal in five languages', () =
   const catalog = JSON.parse(readFileSync(new URL('Resources/Localizable.xcstrings', wallet), 'utf8'));
   const key = "Web addresses (.com, etc.) aren't EastSea names. Open them with https://.";
   const entries = catalog.strings[key]?.localizations;
+  const refusals = { en: /aren't EastSea names/, ko: /동해 이름이 아니/, ja: /EastSeaの名前ではありません/,
+    'zh-Hans': /不是EastSea名称/, 'zh-Hant': /不是EastSea名稱/ };
   for (const language of ['en', 'ko', 'ja', 'zh-Hans', 'zh-Hant']) {
     assert.equal(entries?.[language]?.stringUnit?.state, 'translated', language);
-    assert.match(entries[language].stringUnit.value, /\.com/);
+    assert.match(entries[language].stringUnit.value, refusals[language]);
     assert.match(entries[language].stringUnit.value, /https:\/\//);
   }
-  assert.equal(entries.ko.stringUnit.value, '웹 주소(.com 등)는 동해 이름이 아니에요. https://로 여세요.');
+  assert.equal(entries.ko.stringUnit.value, '일반 웹 주소는 동해 이름이 아니에요. https://로 여세요.');
 });

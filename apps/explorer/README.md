@@ -216,7 +216,7 @@ settings and source selection. `js/verify.js` loads the pinned network and
 verifier; `js/pages.js` renders proof-backed results and explicit unavailable
 fields. `js/app.js` provides routing, settings and polling.
 
-Account headers and address links show decorative Archipelago v1 icons derived
+Account headers and address links show decorative Islands v3 icons derived
 locally from the full 20-byte address, using the same implementation as the
 wallet extension. The address text remains authoritative. The frozen algorithm
 and shared vectors are in `docs/design/46-account-icon.md`; regenerate the

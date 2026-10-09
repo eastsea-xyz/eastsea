@@ -8,14 +8,14 @@ import { detectVerifier, NOT_COMMITTED } from '../js/verify.js';
 // This smoke checks page output through the real peer reader and RPC failover.
 // BLS cryptography itself is exercised by the Rust/WASM and devnet tests.
 class El {
-  constructor(tag) { this.tagName = tag; this.children = []; }
+  constructor(tag, namespaceURI = null) { this.tagName = tag; this.namespaceURI = namespaceURI; this.children = []; }
   setAttribute() {}
   addEventListener() {}
   append(...children) { this.children.push(...children.flat()); }
   replaceChildren(...children) { this.children = children.flat(); }
 }
 globalThis.Node = El;
-globalThis.document = { createElement: (tag) => new El(tag) };
+globalThis.document = { createElement: (tag) => new El(tag), createElementNS: (namespace, tag) => new El(tag, namespace) };
 function text(value) { return typeof value === 'string' ? value : value?.children?.map(text).join(' ') || ''; }
 
 const ids = ['11', '22', '33'].map((v) => v.repeat(32));

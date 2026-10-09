@@ -34,7 +34,7 @@ struct Fixture: Decodable {
 
 let path = CommandLine.arguments.dropFirst().first ?? "crates/client/tests/account-icon-vectors.json"
 let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
-check(fixture.domain == AccountIconSpec.domain && fixture.version == 2, "v2 domain and explicit version")
+check(fixture.domain == AccountIconSpec.domain && fixture.version == 3, "v2 seed domain and explicit v3 rendering version")
 check(fixture.palettes == AccountIconSpec.palettes && fixture.palettes.count == 16, "sixteen frozen gradient color pairs")
 check(fixture.silhouettes == AccountIconSpec.silhouettes && fixture.silhouettes.count == 16, "sixteen frozen coastlines")
 check(Set(fixture.silhouettes.map(\.path)).count == 16, "coastline classes have distinct paths")
@@ -56,7 +56,7 @@ for vector in fixture.vectors {
     check(sha256(Data(spec.svg64.utf8)) == vector.svg64Sha256, "canonical drawing hash: \(vector.address)")
     check(svg16.components(separatedBy: "<path ").count - 1 == 1, "16px contains one bold silhouette")
     check(spec.svg(size: 31)!.components(separatedBy: "<path ").count - 1 == 1, "simplification continues below 32px")
-    check(svg32.components(separatedBy: "<path ").count - 1 == 3, "32px adds two large satellite islands")
+    check(svg32.components(separatedBy: "<path ").count - 1 == 3, "32px adds two unequal satellite islands")
     check(spec.svg(size: 0) == nil && spec.svg(size: -1) == nil, "nonpositive drawing sizes rejected")
     let text = Array(vector.address.dropFirst(2))
     let bytes = stride(from: 0, to: 40, by: 2).map { UInt8(String(text[$0...($0 + 1)]), radix: 16)! }
@@ -65,7 +65,7 @@ for vector in fixture.vectors {
                      "0X" + vector.address.dropFirst(2), vector.address.replacingOccurrences(of: "a", with: "A")] {
         check(AccountIconSpec.of(address: spelling) == spec, "ASCII case/prefix invariance")
     }
-    check(AccountIconSpec.of(address: vector.address, version: 2) == spec, "default remains v2")
+    check(AccountIconSpec.of(address: vector.address, version: 3) == spec, "default is v3")
     check(spec.layout < 1 << 14 && spec.palette < 16 && spec.shape < 4 && spec.rotation < 4, "feature ranges")
     check(spec.silhouetteClass < 16, "coastline class range")
 }
@@ -78,7 +78,7 @@ let invalid: [String?] = [nil, "", "0x", "0X", String(valid.dropLast()), valid +
                          "0х" + valid.dropFirst(2), "0x+" + valid.dropFirst(3),
                          "0x" + String(repeating: "a", count: 39) + "\n"]
 for address in invalid { check(AccountIconSpec.of(address: address) == nil, "strict malformed-input rejection") }
-for version in UInt8.min...UInt8.max where version != 2 {
+for version in UInt8.min...UInt8.max where version != 3 {
     check(AccountIconSpec.of(address: valid, version: version) == nil, "unsupported version \(version)")
 }
 let similar = fixture.vectors[8].address

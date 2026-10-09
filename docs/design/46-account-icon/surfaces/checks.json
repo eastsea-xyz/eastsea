@@ -1,7 +1,7 @@
 {
   "backend": "Offline bounded RPC and chrome.runtime fixture; real product DOM/CSS; no wallet, live node, signing or external requests",
-  "canonicalSourceSha256": "e4e574a6c848fe7170a565ffa0a543507e86609cdd286886992dcccbdeda1329",
-  "sharedVectorsSha256": "81f8ffae02a923e01c4c521a0b521f6505a620bff9f50c773bf2e4f126810874",
+  "canonicalSourceSha256": "5cc8f53b5d3ff26971d561b1c21e456b12134ebc749bafb3c0d11ddb2df7cb91",
+  "sharedVectorsSha256": "210015ba73eadad228e8977f1d7c1abd07a4efe6872cf0e60e7fa581079443ce",
   "addresses": {
     "sender": "0x1234567890abcdef1234567890abcdef12345678",
     "recipient": "0x1234567890abcdef0000000000abcdef12345678",
@@ -86,7 +86,7 @@
       ],
       "operations": [
         "state",
-        "quote"
+        "preview"
       ],
       "unexpectedOperations": [],
       "rpcMethods": [],
@@ -248,7 +248,7 @@
       ],
       "operations": [
         "state",
-        "quote"
+        "preview"
       ],
       "unexpectedOperations": [],
       "rpcMethods": [],

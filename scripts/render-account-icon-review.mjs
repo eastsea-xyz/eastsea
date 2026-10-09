@@ -17,16 +17,17 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // on another development Mac without introducing a package dependency.
 const playwrightModule = process.env.PLAYWRIGHT_MODULE || '/Users/kjaylee/.codex/skills/develop-web-game/node_modules/playwright/index.mjs';
 const { chromium } = await import(pathToFileURL(path.resolve(root, playwrightModule)).href);
-const temporary = path.join(root, 'tmp/account-icon-round2/review-render');
+const temporary = path.join(root, 'tmp/account-icon-round3/review-render');
 mkdirSync(temporary, { recursive: true });
 process.env.TMPDIR = temporary;
 const prototype = process.argv.includes('--prototype');
 if (process.argv.slice(2).some(arg => arg !== '--prototype')) throw new Error('Usage: node scripts/render-account-icon-review.mjs [--prototype]');
-const output = prototype ? path.join(root, 'tmp/account-icon-round2/prototype') : path.join(root, 'docs/design/46-account-icon');
+const output = prototype ? path.join(root, 'tmp/account-icon-round3/prototype') : path.join(root, 'docs/design/46-account-icon');
 const browserOutput = path.join(output, 'browser');
 const surfaceOutput = path.join(output, 'surfaces');
-const reviewOutput = path.join(output, 'round2');
-for (const dir of [browserOutput, surfaceOutput, reviewOutput]) mkdirSync(dir, { recursive: true });
+const svgOutput = path.join(output, 'svg');
+const reviewOutput = path.join(output, 'round3');
+for (const dir of [browserOutput, surfaceOutput, reviewOutput, svgOutput]) mkdirSync(dir, { recursive: true });
 
 // These identities are the round-one review's actual fixtures. Vector ordering
 // can change with a new specification; the phishing example must not change.
@@ -41,12 +42,12 @@ const provenance = {
   canonicalSourceSha256: createHash('sha256').update(readFileSync(path.join(root, 'apps/extension/src/lib/accountIcon.js'))).digest('hex'),
   sharedVectorsSha256: createHash('sha256').update(readFileSync(path.join(root, 'crates/client/tests/account-icon-vectors.json'))).digest('hex'),
 };
-const baselineModule = path.join(temporary, 'account-icon-v1.mjs');
-writeFileSync(baselineModule, execFileSync('git', ['show', '6cd6fee:apps/extension/src/lib/accountIcon.js'], { cwd: root }));
+const baselineModule = path.join(temporary, 'account-icon-v2.mjs');
+writeFileSync(baselineModule, execFileSync('git', ['show', '20e669a:apps/extension/src/lib/accountIcon.js'], { cwd: root }));
 const baseline = await import(pathToFileURL(baselineModule).href);
-const savedBaselineSurface = path.join(root, 'tmp/account-icon-round2/before/extension-approval-dark.png');
-const baselineSurface = existsSync(savedBaselineSurface) ? savedBaselineSurface : path.join(temporary, 'extension-approval-v1-dark.png');
-if (!existsSync(baselineSurface)) writeFileSync(baselineSurface, execFileSync('git', ['show', '6cd6fee:docs/design/46-account-icon/surfaces/extension-approval-dark.png'], { cwd: root, maxBuffer: 16 * 1024 * 1024 }));
+const savedBaselineSurface = path.join(root, 'tmp/account-icon-round3/before/extension-approval-dark.png');
+const baselineSurface = existsSync(savedBaselineSurface) ? savedBaselineSurface : path.join(temporary, 'extension-approval-v2-dark.png');
+if (!existsSync(baselineSurface)) writeFileSync(baselineSurface, execFileSync('git', ['show', '20e669a:docs/design/46-account-icon/surfaces/extension-approval-dark.png'], { cwd: root, maxBuffer: 16 * 1024 * 1024 }));
 const imageData = filename => `data:image/png;base64,${readFileSync(filename).toString('base64')}`;
 const escape = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const short = address => `${address.slice(0, 10)}…${address.slice(-6)}`;
@@ -76,7 +77,7 @@ const server = createServer((request, response) => {
     // bounded accountView fixture below. Header classes match js/app.js.
     const shell = readFileSync(path.join(root, 'apps/explorer/index.html'), 'utf8')
       .replace('<head>', '<head><base href="/apps/explorer/">')
-      .replace('<header id="top"></header>', '<header id="top"><a class="brand" href="#/"><span class="logo" aria-hidden="true"></span><span class="brand-name">EastSea Explorer</span></a><span class="pill" id="chain">chain 7780</span><span class="pill plain" id="source">offline fixture</span><form id="search" role="search"><input id="q" type="search" placeholder="Height, 0x address or tx hash" aria-label="Search"><button type="submit">Search</button><span id="search-msg" class="small"></span></form><details id="settings"><summary>Settings</summary></details><button class="ghost" title="Switch theme">◐</button></header>')
+      .replace('<header id="top"></header>', '<header id="top"><div class="header-inner"><div class="header-identity"><a class="brand" href="#/" aria-label="EastSea Explorer home"><img class="logo" src="assets/dawn.svg" width="32" height="32" alt=""><span class="brand-name"><span class="es-wordmark">EastSea</span><span class="brand-surface">Explorer</span></span></a><nav class="explorer-nav" aria-label="Explorer pages"><a href="#/">Blocks</a><a href="#/network">Live network</a></nav></div><div class="header-source"><span class="pill" id="chain">chain 7780</span><span class="pill plain" id="source">offline fixture</span></div><form id="search" role="search"><input id="q" type="search" placeholder="Height, 0x address or tx hash" aria-label="Search"><button type="submit" class="es-control">Search</button><span id="search-msg" class="small"></span></form><details id="settings"><summary class="es-control">Settings</summary></details><button class="ghost" title="Switch theme" aria-label="Switch theme"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M 20 15.2 A 8 8 0 0 1 8.8 4 A 8.2 8.2 0 1 0 20 15.2 Z"/></svg></button></div></header>')
       .replace('<script type="module" src="js/app.js"></script>', '');
     response.setHeader('Content-Type', 'text/html; charset=utf-8'); response.end(shell); return;
   }
@@ -84,7 +85,7 @@ const server = createServer((request, response) => {
   const filename = path.resolve(root, `.${decodeURIComponent(url.pathname)}`);
   if (!filename.startsWith(path.join(root, 'apps') + path.sep)) { response.writeHead(403); response.end(); return; }
   try {
-    response.setHeader('Content-Type', ({ '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.json': 'application/json', '.png': 'image/png' })[path.extname(filename)] || 'application/octet-stream');
+    response.setHeader('Content-Type', ({ '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' })[path.extname(filename)] || 'application/octet-stream');
     response.end(readFileSync(filename));
   } catch { response.writeHead(404); response.end(); }
 });
@@ -136,6 +137,9 @@ async function snapshot(page, svg, filename, background) {
 }
 
 async function browserSnapshots(page) {
+  for (const [index, vector] of fixture.vectors.entries()) {
+    writeFileSync(path.join(svgOutput, `${String(index + 1).padStart(2, '0')}-64.svg`), icon(vector.address, 64));
+  }
   for (const theme of ['light', 'dark']) {
     const directory = path.join(browserOutput, theme); mkdirSync(directory, { recursive: true });
     for (const [index, vector] of fixture.vectors.entries()) for (const size of [16, 32, 64]) {
@@ -145,7 +149,7 @@ async function browserSnapshots(page) {
       const spec = deriveAccountIcon(vector.address);
       return `<article>${sizeRow(icon, vector.address)}<code>${String(index).padStart(2, '0')} · ${escape(vector.address)}</code><div class="tuple">${escape(ACCOUNT_ICON_PALETTES[spec.palette].name)} · ${escape(ACCOUNT_ICON_SILHOUETTES[accountIconSilhouette(spec)].name)} · ${spec.rotation * 90}°</div></article>`;
     }).join('');
-    await sheet(page, path.join(browserOutput, `browser-review-${theme}.png`), `<main class="page ${theme === 'dark' ? 'night' : ''}">${mast('Account identity / canonical SVG')}<div class="intro"><div class="kicker">Archipelago v${ACCOUNT_ICON_VERSION} · ${theme}</div><h1>Sixteen addresses, native sizes.</h1><p>One broad coastline below 32 px. Two neighboring islands appear at 32 px and above. Frozen shared vectors shown at actual 16 / 32 / 64 px.</p></div><section>${rows}</section><div class="foot"><span>Canonical browser rendering · 1 CSS px = 1 image px</span><span>Color + coastline + rotation carry the first impression.</span></div></main>`, 'section{display:grid;grid-template-columns:repeat(4,1fr);gap:30px 24px}article{min-height:160px;border-top:1px solid #d8cebb;padding-top:20px}article code{display:block;font-size:9px;margin-top:18px}.tuple{font-size:11px;color:#4b5b6b;margin-top:7px}.night .mast,.night article,.night .foot{border-color:#1f3347}.night .intro p,.night .tuple,.night .mast span,.night .foot{color:#94a4b5}.sizes{height:88px;gap:24px}', 1440);
+    await sheet(page, path.join(browserOutput, `browser-review-${theme}.png`), `<main class="page ${theme === 'dark' ? 'night' : ''}">${mast('Account identity / canonical SVG')}<div class="intro"><div class="kicker">Archipelago v${ACCOUNT_ICON_VERSION} · ${theme}</div><h1>Sixteen addresses, native sizes.</h1><p>One broad coastline below 32 px. Unequal staggered islands appear at 32 px and above. Frozen shared vectors shown at actual 16 / 32 / 64 px.</p></div><section>${rows}</section><div class="foot"><span>Canonical browser rendering · 1 CSS px = 1 image px</span><span>Color + coastline + rotation carry the first impression.</span></div></main>`, 'section{display:grid;grid-template-columns:repeat(4,1fr);gap:30px 24px}article{min-height:160px;border-top:1px solid #d8cebb;padding-top:20px}article code{display:block;font-size:9px;margin-top:18px}.tuple{font-size:11px;color:#4b5b6b;margin-top:7px}.night .mast,.night article,.night .foot{border-color:#1f3347}.night .intro p,.night .tuple,.night .mast span,.night .foot{color:#94a4b5}.sizes{height:88px;gap:24px}', 1440);
   }
   writeFileSync(path.join(browserOutput, 'render-info.json'), JSON.stringify({ renderer: 'Chromium / Playwright, canonical accountIconSVG', chromium: context.browser().version(), accountIconVersion: ACCOUNT_ICON_VERSION, ...provenance, scale: 1, vectorCount: 16, snapshotCount: 96, sizes: [16, 32, 64], themes: ['light', 'dark'] }, null, 2) + '\n');
 }
@@ -168,12 +172,12 @@ function staticDirection(direction, address, size) {
 
 async function directions(page) {
   const directions = [
-    { name: 'Islands', render: icon, status: 'Implemented · recommended', title: 'A coastline to remember.', body: 'Sixteen distinct coastlines. At 16 px, a single large landform carries the silhouette. At 32 px, two neighboring islands extend it.', detail: 'Coastal identity / strongest structural variety' },
+    { name: 'Islands', render: icon, status: 'Founder selected · 2026-10-10', title: 'A coastline to remember.', body: 'Sixteen distinct coastlines. At 16 px, a single large landform carries the silhouette. At 32 px, an elongated island and an offset reef extend it.', detail: 'Coastal identity / strongest structural variety' },
     { name: 'Waves', render: (a, s) => staticDirection('waves', a, s), status: 'Static alternative', title: 'Broad ocean contours.', body: 'A crest or current becomes the primary shape. One sweeping band at 16 px; a second band joins at larger sizes.', detail: 'Sea motion / softer silhouette vocabulary' },
     { name: 'Navigation', render: (a, s) => staticDirection('navigation', a, s), status: 'Static alternative', title: 'A heading on the sea.', body: 'One broad heading marker at 16 px. At larger sizes, two outer bearings form a three-part navigational emblem.', detail: 'Maritime wayfinding / directional geometry' },
   ];
   const columns = directions.map(({ name, render, status, title, body, detail }, index) => `<article><div class="direction-top"><span class="kicker">0${index + 1}</span><span class="status ${index === 0 ? 'chosen' : ''}">${status}</span></div><h2>${name}</h2><div class="hero-icon">${render(ADDRESSES.sender, 144)}<span class="kicker">Enlarged form · 144 px</span></div>${sizeRow(render, ADDRESSES.sender)}<div class="native-list">${[ADDRESSES.sender, ADDRESSES.contract, ADDRESSES.recipient].map(address => `<div class="address">${render(address, 16)}<code>${escape(short(address))}</code></div>`).join('')}<span class="kicker">Native 16 px · three fixed addresses</span></div><div class="night dark-context">${sizeRow(render, ADDRESSES.contract)}<div class="kicker">Night sea · same colors, new context</div></div><h3>${title}</h3><p class="body">${body}</p><div class="detail">${detail}</div></article>`).join('');
-  await sheet(page, path.join(reviewOutput, 'directions.png'), `<main class="page">${mast('Account icon / founder style directions')}<div class="intro"><div class="kicker">Round two · visual direction</div><h1>Addresses as a piece of the sea.</h1><p>Three directions in EastSea’s parchment and night-sea context. All use the same fixed address colors, with native 16 / 32 / 64 px examples for comparison.</p></div><section class="directions">${columns}</section><div class="foot"><span>Islands is the canonical implementation.</span><span>Waves and Navigation are static studies; their recognition and parity have not been measured.</span></div></main>`, '.directions{display:grid;grid-template-columns:repeat(3,1fr)}article{padding:0 32px;border-left:1px solid #d8cebb}article:first-child{padding-left:0;border-left:0}article:last-child{padding-right:0}.direction-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}.status{font-size:11px;color:#4b5b6b}.status.chosen{color:#0f5a75;font-weight:600}article h2{font-size:42px}.hero-icon{display:flex;flex-direction:column;align-items:center;gap:18px;margin:30px 0 32px}.hero-icon .kicker{font-size:9px;color:#4b5b6b}.sizes{justify-content:center;height:90px;gap:34px}.native-list{margin:30px 0 28px;display:flex;flex-direction:column;gap:11px}.native-list .kicker{font-size:9px;color:#4b5b6b;margin-top:5px}.dark-context{padding:22px 10px 20px;margin-bottom:28px;border-radius:12px}.dark-context .sizes{height:80px}.dark-context .kicker{text-align:center;font-size:9px;margin-top:17px}.body{font-size:13px;color:#4b5b6b;line-height:1.6;margin-top:9px;min-height:86px}.detail{font:500 10px/1.5 GeistMono,monospace;color:#0f5a75;margin-top:15px}', 1536);
+  await sheet(page, path.join(reviewOutput, 'directions.png'), `<main class="page">${mast('Account icon / founder style directions')}<div class="intro"><div class="kicker">Round three · Islands selected</div><h1>Addresses as a piece of the sea.</h1><p>Three directions in EastSea’s parchment and night-sea context. All use the same fixed address colors, with native 16 / 32 / 64 px examples for comparison.</p></div><section class="directions">${columns}</section><div class="foot"><span>Islands is the canonical implementation.</span><span>Waves and Navigation are static studies; their recognition and parity have not been measured.</span></div></main>`, '.directions{display:grid;grid-template-columns:repeat(3,1fr)}article{padding:0 32px;border-left:1px solid #d8cebb}article:first-child{padding-left:0;border-left:0}article:last-child{padding-right:0}.direction-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}.status{font-size:11px;color:#4b5b6b}.status.chosen{color:#0f5a75;font-weight:600}article h2{font-size:42px}.hero-icon{display:flex;flex-direction:column;align-items:center;gap:18px;margin:30px 0 32px}.hero-icon .kicker{font-size:9px;color:#4b5b6b}.sizes{justify-content:center;height:90px;gap:34px}.native-list{margin:30px 0 28px;display:flex;flex-direction:column;gap:11px}.native-list .kicker{font-size:9px;color:#4b5b6b;margin-top:5px}.dark-context{padding:22px 10px 20px;margin-bottom:28px;border-radius:12px}.dark-context .sizes{height:80px}.dark-context .kicker{text-align:center;font-size:9px;margin-top:17px}.body{font-size:13px;color:#4b5b6b;line-height:1.6;margin-top:9px;min-height:86px}.detail{font:500 10px/1.5 GeistMono,monospace;color:#0f5a75;margin-top:15px}', 1536);
 }
 
 async function atlas(page) {
@@ -199,14 +203,14 @@ async function beforeAfter(page, hasCurrentSurface) {
     const native = roles.map(([role, address], index) => {
       const raster = imageData(path.join(nativeDirectory, `${current ? 'after' : 'before'}-${index}.png`));
       const spec = current ? deriveAccountIcon(address) : baseline.deriveAccountIcon(address);
-      const description = current ? `${ACCOUNT_ICON_PALETTES[spec.palette].name} · ${ACCOUNT_ICON_SILHOUETTES[accountIconSilhouette(spec)].name} · ${spec.rotation * 90}°` : `palette ${spec.palette} · glyph ${spec.shape}`;
+      const description = `${ACCOUNT_ICON_PALETTES[spec.palette].name} · ${ACCOUNT_ICON_SILHOUETTES[current ? accountIconSilhouette(spec) : baseline.accountIconSilhouette(spec)].name} · ${spec.rotation * 90}°`;
       return `<div class="comparison-row"><div class="magnified"><img src="${raster}" width="96" height="96"><span>16 px · 6× pixels</span></div><div class="identity"><span class="kicker">${role}</span><div class="address"><img src="${raster}" width="16" height="16"><code>${escape(address)}</code></div><div class="descriptor">${escape(description)}</div></div></div>`;
     }).join('');
     const surfaceFile = current ? path.join(surfaceOutput, 'extension-approval-dark.png') : baselineSurface;
-    const surface = existsSync(surfaceFile) && (!current || hasCurrentSurface) ? `<div class="surface-image"><img src="${imageData(surfaceFile)}" width="360"><div><span class="kicker">Product surface / 24 px icons</span><h3>Extension approval</h3><p>The authoritative addresses remain fully visible. Product layout, typography, controls and icon dimensions stay unchanged.</p></div></div>` : '';
-    return `<article><div class="column-title"><span class="kicker">${current ? 'After / Archipelago v2' : 'Before / Archipelago v1'}</span><h2>${current ? 'One readable coastline.' : 'Tiny repeated glyphs.'}</h2><p>${current ? 'Sea / dawn, opposing contrast and rotated hook outlines distinguish To / From.' : 'To and From share teal, with small black marks.'}</p></div><div class="night native-rows">${native}</div>${surface}</article>`;
+    const surface = existsSync(surfaceFile) && (!current || hasCurrentSurface) ? `<div class="surface-image"><img src="${imageData(surfaceFile)}" width="360"><div><span class="kicker">Product surface / 24 px icons</span><h3>Extension approval</h3><p>The authoritative addresses remain fully visible. The after capture includes the current integration branding and transaction preview flow; account icon dimensions are preserved.</p></div></div>` : '';
+    return `<article><div class="column-title"><span class="kicker">${current ? 'After / Islands v3' : 'Before / Islands v2'}</span><h2>${current ? 'Unequal shores, offset reefs.' : 'Paired islands become eyes.'}</h2><p>${current ? 'Secondary islands differ in outline, area and height at every quarter-turn. The 16 px identity stays stable.' : 'The original orange hook at 180° puts two similar small islands above a larger arch.'}</p></div><div class="large-sizes">${sizeRow(current ? icon : (address, size) => baseline.accountIconSVG(baseline.deriveAccountIcon(address), size), ADDRESSES.sender)}</div><div class="night native-rows">${native}</div>${surface}</article>`;
   };
-  await sheet(page, path.join(reviewOutput, 'before-after.png'), `<main class="page">${mast('Account identity / same-address comparison')}<div class="intro"><div class="kicker">Lead review example · 6cd6fee → current</div><h1>The distinction lives in the large form.</h1><p>The same three addresses, at actual 16 px and as nearest-neighbor pixel enlargements. The review’s problematic To / From pair is preserved, with its product approval surface below.</p></div><section class="comparison">${column(false)}${column(true)}</section><div class="foot"><span>16 px samples are actual Chromium raster crops, enlarged without smoothing.</span><span>The icon is a recognition aid; the full address remains authoritative.</span></div></main>`, '.comparison{display:grid;grid-template-columns:1fr 1fr;gap:36px}.column-title{margin-bottom:20px}.column-title .kicker{color:#4b5b6b}.column-title h2{margin-top:8px;font-size:34px}.column-title p{margin-top:9px;font-size:13px;color:#4b5b6b}.native-rows{padding:20px;border-radius:12px}.comparison-row{display:flex;align-items:center;gap:24px;margin:0 0 20px}.comparison-row:last-child{margin-bottom:0}.magnified{display:flex;flex-direction:column;gap:8px;flex:none}.magnified img{image-rendering:pixelated}.magnified span{font:500 8px/1.4 GeistMono,monospace;color:#94a4b5}.identity{min-width:0}.identity .kicker{font-size:9px}.identity .address{gap:9px;margin:10px 0}.identity .address code{font-size:9px;white-space:normal;overflow-wrap:anywhere}.descriptor{font-size:11px;color:#94a4b5}.surface-image{display:flex;gap:24px;margin-top:28px;align-items:start}.surface-image>img{display:block;border-radius:12px;flex:none}.surface-image>div{flex:1;padding-top:16px}.surface-image .kicker{font-size:9px;color:#4b5b6b}.surface-image h3{margin-top:12px;font-size:16px}.surface-image p{font-size:12px;line-height:1.6;color:#4b5b6b;margin-top:12px}', 1536);
+  await sheet(page, path.join(reviewOutput, 'before-after.png'), `<main class="page">${mast('Account identity / same-address comparison')}<div class="intro"><div class="kicker">Lead review example · 20e669a → current</div><h1>A coastline, without a face.</h1><p>The reported orange layout at actual 16 / 32 / 64 px, then the same three addresses at 16 px and as pixel enlargements. Small-size identities are preserved; larger forms are asymmetric. The product approval surface follows below.</p></div><section class="comparison">${column(false)}${column(true)}</section><div class="foot"><span>16 px samples are actual Chromium raster crops, enlarged without smoothing.</span><span>The icon is a recognition aid; the full address remains authoritative.</span></div></main>`, '.large-sizes{padding:0 20px 28px}.large-sizes .sizes{gap:38px;justify-content:center}.comparison{display:grid;grid-template-columns:1fr 1fr;gap:36px}.column-title{margin-bottom:20px}.column-title .kicker{color:#4b5b6b}.column-title h2{margin-top:8px;font-size:34px}.column-title p{margin-top:9px;font-size:13px;color:#4b5b6b}.native-rows{padding:20px;border-radius:12px}.comparison-row{display:flex;align-items:center;gap:24px;margin:0 0 20px}.comparison-row:last-child{margin-bottom:0}.magnified{display:flex;flex-direction:column;gap:8px;flex:none}.magnified img{image-rendering:pixelated}.magnified span{font:500 8px/1.4 GeistMono,monospace;color:#94a4b5}.identity{min-width:0}.identity .kicker{font-size:9px}.identity .address{gap:9px;margin:10px 0}.identity .address code{font-size:9px;white-space:normal;overflow-wrap:anywhere}.descriptor{font-size:11px;color:#94a4b5}.surface-image{display:flex;gap:24px;margin-top:28px;align-items:start}.surface-image>img{display:block;border-radius:12px;flex:none}.surface-image>div{flex:1;padding-top:16px}.surface-image .kicker{font-size:9px;color:#4b5b6b}.surface-image h3{margin-top:12px;font-size:16px}.surface-image p{font-size:12px;line-height:1.6;color:#4b5b6b;margin-top:12px}', 1536);
 }
 
 async function verifySurface(page, surface, theme, expectedAddresses, errors, consoleErrors) {
@@ -241,19 +245,22 @@ async function surfaces() {
       await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
       await page.addInitScript(({ sender, recipient, contract, approval }) => {
         window.__reviewOperations = []; window.__reviewUnexpectedOperations = [];
-        const state = { terms: 4, exists: true, unlocked: true, address: sender, defaultChainId: 7780, developmentNetwork: false, approvals: approval ? [{ id: 'fixture', kind: 'transaction', origin: 'https://trusted.example', what: 'Token approval (allows spending)', value: '0', tx: { to: contract, data: '0x095ea7b3' + recipient.slice(2).padStart(64, '0') + '1'.padStart(64, '0') } }] : [] };
-        window.chrome = { runtime: { async sendMessage({ op }) {
+        const state = { terms: 4, exists: true, unlocked: true, address: sender, defaultChainId: 7780, developmentNetwork: false, approvals: approval ? [{ id: 'fixture', kind: 'send', account: sender, chainId: 7780, origin: 'https://trusted.example', what: 'Token approval (allows spending)', value: '0', tx: { to: contract, data: '0x095ea7b3' + recipient.slice(2).padStart(64, '0') + '1'.padStart(64, '0') } }] : [] };
+        window.chrome = { storage: { onChanged: { addListener() {} } }, runtime: { async sendMessage({ op }) {
           window.__reviewOperations.push(op);
           let result;
           if (op === 'state') result = state;
           else if (op === 'account') result = { balance: '12300000000000000000', height: 42, blockAt: Date.now() };
           else if (op === 'quote') result = '1000000000000';
+          else if (op === 'preview') result = { previewId: 'offline-preview', chainId: 7780, fee: '1000000000000', simulation: { success: true, tokenCoverageComplete: true, balanceChanges: [], approvals: [], unrecognizedLogs: 0 } };
           else { window.__reviewUnexpectedOperations.push(op); throw new Error('Unexpected offline operation: ' + op); }
           return { ok: true, result };
         } } };
       }, { ...ADDRESSES, approval });
       await page.goto(`${origin}/apps/extension/ui/popup.html${approval ? '?approve=fixture' : ''}`, { waitUntil: 'networkidle' });
-      await page.locator('svg.account-icon').first().waitFor();
+      await page.locator('svg.account-icon').first().waitFor({ timeout: 10000 }).catch(error => {
+        throw new Error(JSON.stringify({ fixture: approval ? 'extension-approval' : 'extension-home', theme, pageErrors: errors, consoleErrors, cause: error.message }));
+      });
       await verifySurface(page, approval ? 'extension-approval' : 'extension-home', theme, approval ? Object.values(ADDRESSES) : [ADDRESSES.sender], errors, consoleErrors);
       await page.close();
     }
@@ -293,7 +300,7 @@ try {
   }
   await beforeAfter(page, !prototype);
   if (externalRequests.length) throw new Error('Unexpected external request(s): ' + externalRequests.join(', '));
-  writeFileSync(path.join(reviewOutput, 'render-info.json'), JSON.stringify({ accountIconVersion: ACCOUNT_ICON_VERSION, ...provenance, baselineCommit: '6cd6fee', renderer: 'Chromium / Playwright', chromium: context.browser().version(), scale: 1, prototype, addresses: ADDRESSES, staticAlternatives: ['Waves', 'Navigation'], externalRequests, sheets, surfaceCount: checks.length }, null, 2) + '\n');
+  writeFileSync(path.join(reviewOutput, 'render-info.json'), JSON.stringify({ accountIconVersion: ACCOUNT_ICON_VERSION, ...provenance, baselineCommit: '20e669a', renderer: 'Chromium / Playwright', chromium: context.browser().version(), scale: 1, prototype, addresses: ADDRESSES, staticAlternatives: ['Waves', 'Navigation'], externalRequests, sheets, surfaceCount: checks.length }, null, 2) + '\n');
   console.log(JSON.stringify({ output: path.relative(root, output), sheets: sheets.length, browserSnapshots: prototype ? 0 : 96, surfaces: checks.length, externalRequests: externalRequests.length }));
 } finally {
   await context.close();

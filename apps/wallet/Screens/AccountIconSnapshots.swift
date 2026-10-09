@@ -114,7 +114,7 @@ enum AccountIconSnapshots {
     @MainActor
     private static func sheet(_ vectors: [Fixture.Vector], dark: Bool) -> some View {
         VStack(alignment: .leading, spacing: 24) {
-            Text(verbatim: "Archipelago v2 · SwiftUI · \(dark ? "dark" : "light")")
+            Text(verbatim: "Islands v3 · SwiftUI · \(dark ? "dark" : "light")")
                 .font(.system(size: 24, weight: .semibold))
             Text(verbatim: "Frozen address vectors · 16 / 32 / 64 px at natural size")
                 .font(.system(size: 14)).foregroundStyle(.secondary)

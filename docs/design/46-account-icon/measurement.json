@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "pairCount": 10000,
   "addressCount": 20000,
   "stream": "SHA-256(UTF8(\"eastsea-account-icon-glance-v2\") || UInt32BE(i))[0..20]; consecutive independent pairs; i=0..19999",
@@ -1017,14 +1017,14 @@
     ],
     "features": [
       {
-        "version": 2,
+        "version": 3,
         "palette": 12,
         "layout": 290,
         "shape": 2,
         "rotation": 2
       },
       {
-        "version": 2,
+        "version": 3,
         "palette": 11,
         "layout": 5518,
         "shape": 2,
@@ -1042,9 +1042,9 @@
     "dominantDeltaE": 49.256554844477996
   },
   "provenance": {
-    "scriptSha256": "1a29df84651c27c722861bd36ac49e8e6125cceba4bcfa19f67805df475e216a",
-    "canonicalSourceSha256": "e4e574a6c848fe7170a565ffa0a543507e86609cdd286886992dcccbdeda1329",
-    "rasterBinarySha256": "b52bb8537144f147248d10bb3696624139ba5138f8a98d2b2498d38da7c95386"
+    "scriptSha256": "af37f399266b3f40e26b6d37c37c8714b65e429f469deae93b3cf5474c3fe262",
+    "canonicalSourceSha256": "5cc8f53b5d3ff26971d561b1c21e456b12134ebc749bafb3c0d11ddb2df7cb91",
+    "rasterBinarySha256": "49c64c5461738c73e1f2a27d88dfe5b7e64126d62c911908a0f35f48f04ae48a"
   },
   "environment": {
     "host": "Jayui-MacBookPro-2.local",
@@ -1053,5 +1053,17 @@
     "node": "v26.3.0"
   },
   "caveat": "This requested dominant-color/silhouette proxy is not a human recognition experiment or proof against attacker address grinding. Distinct coastline classes may still look similar to a person.",
-  "elapsedSeconds": 0.953544291
+  "elapsedSeconds": 0.9284296670000001,
+  "round2Regression": {
+    "revision": "20e669a",
+    "weakPairFraction": 0.0036,
+    "conservativeWeakPairFraction": 0.0068,
+    "minimumPaletteDeltaE": 15.995413938449344,
+    "sameMeasurementStream": true,
+    "samePairCount": true,
+    "glancePasses": true,
+    "conservativeGlancePasses": true,
+    "palettePasses": true,
+    "passes": true
+  }
 }

@@ -1,14 +1,16 @@
-# 46. Account icons: Archipelago v2
+# 46. Account icons: Islands (Archipelago v3)
 
-2026-10-10. Round 2 replaces the visual layer reviewed at `6cd6fee`.
-The implemented direction is **Islands**; **Waves** and **Navigation** are static
-alternatives in the [founder directions sheet](46-account-icon/round2/directions.png).
+2026-10-10. The founder selected **Islands** for 0.7.4. Round 3 removes the
+face-like layouts reviewed at `20e669a`. **Waves** and **Navigation** remain
+static studies in the [directions sheet](46-account-icon/round3/directions.png);
+the original round 2 studies are retained in the artifact index.
 
 ## Direction and boundaries
 
 An address becomes a piece of coastline: a broad cove, headland, sandbar, reef
 or inlet on a colored sea. Below 32 logical pixels there is one large silhouette.
-At 32 px and above two substantial irregular neighboring islands appear.
+At 32 px and above an elongated island and a smaller reef occupy opposite
+corners around the main coastline. Their sizes, outlines and positions differ.
 There are no black dot grids, circles or small repeated glyphs. Identity colors
 and geometry are stable in both appearances; the surrounding surface changes.
 
@@ -19,7 +21,7 @@ families are used only for account identity, without changing product status col
 The exact To/From addresses from the lead's review now use sea/sand and dawn/navy,
 with different hook orientations. Their measured dominant-color ΔE is **49.26**;
 they still share the unrotated hook class. See the
-[before/after sheet](46-account-icon/round2/before-after.png).
+[before/after sheet](46-account-icon/round3/before-after.png).
 
 This is a client-only recognition aid next to authoritative address text.
 Derivation reads no names, keys, chain state, storage or network. Drawing uses
@@ -29,12 +31,16 @@ No protected guest-compiled crate changed, so no proving-program ID change is ne
 
 ## Version and seed
 
-The redesign publishes v2 rather than silently reinterpreting v1 drawing goldens.
-JS, Swift and Rust now default to **2** and reject other explicit versions.
+The drawing publishes **v3** and rejects every other explicit version in JS,
+Swift and Rust. The seed domain remains **eastsea-account-icon-v2** deliberately:
+colors, silhouette class, orientation and below-32-px geometry stay stable for
+existing addresses. Only larger-size satellite geometry changes. The v3 SVG
+namespace (`eastsea-island-v3-<palette>`) changes the canonical hashes at all sizes;
+it does not change the gradient colors.
+
 No icon or feature tuple is stored in an account database, so this changes the
-recognition art without migrating account state. The v1 implementation and its
-100,000-address coarse equality report remain in commit `6cd6fee`; those numbers
-must not be presented as v2 perceptual results.
+recognition art without migrating account state. V1 and v2 remain in commits
+`6cd6fee` and `20e669a`. The v1 coarse equality report is not a v3 perceptual result.
 
 Input is exactly 20 decoded bytes: 40 ASCII hexadecimal digits, optionally
 prefixed with `0x` or `0X`. ASCII case and optional prefix do not affect identity.
@@ -42,7 +48,7 @@ Whitespace, names, shortened addresses, Unicode digits and other lengths are rej
 
 ```text
 seed = SHA-256(UTF8("eastsea-account-icon-v2") || address_bytes[20])
-version  = 2
+version  = 3
 palette  = seed[0] & 15
 layout   = ((seed[1] << 8) | seed[2]) & 0x3fff
 shape    = (seed[0] >> 4) & 3
@@ -53,7 +59,7 @@ silhouette_class = shape * 4 + (layout & 3)
 The feature tuple retains its five-field structure. Palette gets four bits;
 shape and rotation move to the next two-bit fields. The layout remains 14 bits.
 The first two select a coastline variant; the remaining twelve vary the two
-larger-size islands. Swift/JS share all drawing tables; Rust derives the same
+opposite-corner islands. Swift/JS share all drawing tables; Rust derives the same
 features and silhouette class without owning UI geometry.
 
 ## Normative drawing
@@ -66,32 +72,75 @@ the background gradient does not rotate.
 
 Sixteen fixed integer `M/L/C/Z` paths are normative in the `silhouettes` table of
 [the shared fixture](../../crates/client/tests/account-icon-vectors.json).
-The [atlas](46-account-icon/round2/atlas.png) shows all colors and classes independently.
+The [atlas](46-account-icon/round3/atlas.png) shows all colors and classes independently.
 The main path uses `translate(0 5) scale(1 0.8)` below 32 px and
 `translate(0 0) scale(1 0.8)` at 32 px and above. Its proportions stay the same;
 it moves upward to leave space for the neighboring islands. No secondary
 geometry is painted below 32 logical pixels, including the extension's 24 px
 approval icons and the menu bar's 16 pt icon at Retina scale.
 
-At 32 px and above, for each island `i = 0, 1`:
+At 32 px and above, read six bits per secondary island:
 
 ```text
 bits = (layout >> (2 + 6*i)) & 63
-x = 9 + 25*i + (bits & 3)
-y = 46 + ((bits >> 2) & 3)
-w = 14 + ((bits >> 4) & 3)
+
+Long island (i = 0):
+x = 8 + (bits & 3)
+y = 44 + ((bits >> 2) & 3)
+w = 21 + ((bits >> 4) & 3)
 M x y+4
 C x+2 y-3 x+w-5 y+1 x+w-2 y-2
 L x+w y+6
 C x+w-3 y+11 x+3 y+13 x y+4
 Z
+
+Smaller reef (i = 1):
+x = 40 + (bits & 3)
+y = 5 + ((bits >> 2) & 3)
+w = 10 + ((bits >> 4) & 3)
+M x y+2
+C x+3 y-1 x+w-4 y-2 x+w y+1
+L x+w-2 y+5
+C x+3 y+7 x+1 y+5 x y+2
+Z
 ```
 
-These are two large irregular forms, 7–8.5 px wide at 32 px. The previous
+The forms occupy southwest and northeast corners before rotation. A main arch
+cannot acquire two eyes above it: in every quarter-turn one secondary centroid
+is above the main centroid and the other below. Unequal outlines and areas provide
+additional asymmetry. Widths at 32 px are 10.5–12 px and 5–6.5 px respectively.
+The previous
 occupancy-grid and rotated-mask helpers were removed because they no longer
 describe visible art. SVG export and safe SVG DOM construction share one drawing
 tree. SwiftUI Canvas paints the same paths; its menu-bar NSImage bridge keeps
 its 16 pt logical size and original decorative accessibility behavior.
+
+## Face-layout regression
+
+The [geometry report](46-account-icon/round3/pareidolia.json) exhausts all
+**262,144** geometry outcomes (`4 shapes × 16,384 layouts × 4 rotations`).
+It verifies that actual emitted paths and transforms are identical at 32 and
+64 px. Palette does not enter geometry or detection, so these outcomes cover
+all sixteen colors. The check ran on guarded poc-m3.
+
+The independent detector samples each emitted cubic in 64 steps, applies SVG
+transforms, and measures filled-polygon area, centroid and bounds. A face pattern
+requires two elements with area ratio >=0.65, each <=0.65 of a larger element,
+centroid Y separation <=0.5 mean heights and X separation >=1 mean width,
+with both above the larger element. **0 outcomes are flagged.** The fixed real
+round 2 orange SVG flags once, proving the detector reproduces the reported bug.
+
+A stronger placement gate ignores size and alignment: **0 outcomes put both
+secondary centroids above the main centroid**. Every unrotated main centroid lies
+between the secondary centroids in both X and Y; minimum bracketing margins are
+**4.0173** and **11.2807** view-box units. This remains true under all quarter-turns.
+Maximum secondary area ratio is **0.3461**, well below the similarity threshold.
+Unit tests cover positive controls, threshold boundaries, SVG transforms and all
+sixteen golden addresses in every rotation at 32/64 px.
+
+The numeric checks cover the specified composition; human pareidolia remains
+unmeasured. Direct artifact review additionally confirmed that the original orange
+example no longer presents two eyes over an arch.
 
 ## Palette and contrast
 
@@ -101,7 +150,7 @@ without changing the set of colors. The reordering separates the review pair's
 hue families; there is no address-specific exception in derivation or rendering.
 The search is a heuristic, not a proof of global optimality.
 
-Minimum ΔE2000 across all 120 background midpoint pairs is
+Re-measured minimum ΔE2000 across all 120 background midpoint pairs is
 **15.9954**. Midpoints are encoded-sRGB averages converted
 to D65 Lab, with `kL = kC = kH = 1`. The closest pair is iris/lilac.
 The color implementation passes 40 ordered comparisons against the published
@@ -146,7 +195,7 @@ SHA-256(UTF8("eastsea-account-icon-glance-v2") || UInt32BE(i))[0..20]
 i = 0..19999
 ```
 
-The measurement ran on poc-m3 using the icon-only SwiftUI executable built on
+The v3 measurement repeated the same round 2 stream on poc-m3 using the icon-only SwiftUI executable built on
 the development Mac. It rendered all **1,024** visible 16 px combinations
 (`palette × coastline class × rotation`) and reused only exact visual signatures.
 Each raster is truly 16×16 sRGB RGBA, without a surface backdrop. Premultiplied
@@ -178,12 +227,11 @@ The exact owned measurement staging and processes were removed after retrieval.
 These are the requested visual proxies, not a human-recognition experiment.
 There are only 1,024 small-size visual identities, so repeated identities and
 address grinding remain possible. Large-size detail does not add entropy at
-16 px. The full address remains authoritative, and founder style selection
-remains separate from artifact QA.
+16 px. The full address remains authoritative.
 
 ## Shared goldens and validation
 
-The original sixteen representative addresses now have v2 feature, seed and
+The original sixteen representative addresses now have v3 feature, stable v2 seed and
 **16/32/64 px canonical SVG hashes**. The Python oracle independently implements
 SHA-256 and geometry; expected values are frozen and tests do not regenerate them.
 Swift and JS check every per-size SVG hash; Rust checks every feature/class tuple.
@@ -191,39 +239,66 @@ Swift and JS check every per-size SVG hash; Rust checks every feature/class tupl
 <!-- ACCOUNT-ICON-VECTORS:START -->
 | Address | Tuple `(v,p,l,s,r)` | SVG SHA-256 at 64 px |
 | --- | --- | --- |
-| `0x0000000000000000000000000000000000000000` | `2,3,12657,1,3` | `9857f39b31d0f708f477deab8a18450d3b20ce5ebaa075341f1a7ccdb4b97aa1` |
-| `0xffffffffffffffffffffffffffffffffffffffff` | `2,1,11846,1,0` | `2e0233c2d8a76c1422626fec1a2e8418db9583c28e1d8c6ab7e2144e78ac0b25` |
-| `0x0000000000000000000000000000000000000001` | `2,3,5157,2,2` | `cdc24cd0a0b35c897d2b9aea1cf9def7259717eb6230071d8d38cd32b7f75ed3` |
-| `0x0000000000000000000000000000000000000002` | `2,7,13120,0,0` | `8fb3a2a6e999ddb9fcb2c4b9b5d2e41b32f7811cde3f521dd6d39c4a673570aa` |
-| `0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef` | `2,13,7123,0,2` | `e84e51e1287187d144a954326b69754a4c32bd4e9c80c575af587d589476e6b5` |
-| `0x52908400098527886e0f7030069857d2e4169ee7` | `2,3,8027,2,2` | `75d690aaef3ae9ed6b394edf3db9b46b4682db8e81b60d9f0e8cd6b06f032230` |
-| `0x00000000000000000000000000000000000000c1` | `2,5,4220,1,2` | `0c027152f3303247258fddad593107697baf48d5267e2981b10449f38e41eba2` |
-| `0x1234567890abcdef1234567890abcdef12345678` | `2,12,290,2,2` | `e32efe6dbe768a460b760190e7c895cdb5dc19d470035bd20230e1fdbaa9e3bf` |
-| `0x1234567890abcdef0000000000abcdef12345678` | `2,2,12388,3,3` | `66201ac48f016b8bd5e650b9e30c696ec0c2bd5ffd1411a2e334e16e379d35af` |
-| `0xa2521982a17474cb2f8741c85de653b5282d72b0` | `2,11,5518,2,3` | `a399b09f5c13d4f765867c8fca69160af8058c1d268964349fb30fc7bdaf500b` |
-| `0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416` | `2,14,6726,3,0` | `619c288720e8ea5c35de7d8afac4a15889f902c6f08442022d3068e87c167ea7` |
-| `0x961f8add5ae93ff0700be8abd5f9f8ec69ba4347` | `2,15,6548,1,3` | `6110a826a48c21eaac8ea57ea633aa4cf1dc0f250d9c22f4efcdebb103e83f8e` |
-| `0xc91367bac92c6de822de8afd0f34ff19fd8f7670` | `2,8,10334,1,3` | `a47d15d127bc2acb60ab4b451617cae3a26b32ec9e6cb45d2509b40eed654300` |
-| `0x00000000000000000000000000000000000000ff` | `2,12,1259,3,3` | `3cf44b38cb31f356297f401f8ee940ed54e964779ab79a85b83425a937568534` |
-| `0x0000000000000000000000000000000000000100` | `2,5,12298,1,0` | `50468a994f4beecae62473de1ac120c385b61d0f3cfeb2d8f111b256458ffdb5` |
-| `0x000000000000000000000000000000000000ffff` | `2,2,3628,0,2` | `8d067d9834b3ed376338f15538d3a13f17d565fb019d7c0184a611500329af06` |
+| `0x0000000000000000000000000000000000000000` | `3,3,12657,1,3` | `0750b6233e646fe10ec6dea09c2d0ea97df9573492740e1936dff4a550a719da` |
+| `0xffffffffffffffffffffffffffffffffffffffff` | `3,1,11846,1,0` | `26de1ae1ca6aa19954408875d993888bcee2d9add1b7cb65c786a6c44008c609` |
+| `0x0000000000000000000000000000000000000001` | `3,3,5157,2,2` | `89613ca6a5a81c926f04cc52f75413bce6165a04b3dd51356d1744a0ef4f54d9` |
+| `0x0000000000000000000000000000000000000002` | `3,7,13120,0,0` | `8015632864296e24420ec5f8a7d72e7aef6bcf43e3d3e7c31d6ef471f235be31` |
+| `0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef` | `3,13,7123,0,2` | `7b8cf48f2946a0e3c6cd64470e133ad6c8b1a9373acb5d8d0f4a2085a49f3390` |
+| `0x52908400098527886e0f7030069857d2e4169ee7` | `3,3,8027,2,2` | `b066734a74ff428dab2650adbf466d2cb1563923f824ad0cc79e1cc231a5c3af` |
+| `0x00000000000000000000000000000000000000c1` | `3,5,4220,1,2` | `a9b5d649adfea7961e3aee19a9f9168c0ccf7b69f89f2969bb95bf98899fe9bb` |
+| `0x1234567890abcdef1234567890abcdef12345678` | `3,12,290,2,2` | `238ec74f446b189761764de304dbd1efb09f7dd9dedba8145f5295fd5deea944` |
+| `0x1234567890abcdef0000000000abcdef12345678` | `3,2,12388,3,3` | `60856d88f05a12149c96337fd4cd86e1eb64d0730a823bd273d1a414ef72751c` |
+| `0xa2521982a17474cb2f8741c85de653b5282d72b0` | `3,11,5518,2,3` | `9f68122d9a665d79d5e9185aa2de884aa0b9416f5a7b1a475a30c04b82f088a8` |
+| `0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416` | `3,14,6726,3,0` | `c770a76b91fe8c9326e53244412b9fd09b1a7943314d27f01030efacbf7f7af0` |
+| `0x961f8add5ae93ff0700be8abd5f9f8ec69ba4347` | `3,15,6548,1,3` | `935c741817c6427cd138cdf46cccf176ef64fb9dba82d5a1a8fc143c1d7a7c24` |
+| `0xc91367bac92c6de822de8afd0f34ff19fd8f7670` | `3,8,10334,1,3` | `a294099c04cd1baedd4bb9b6e6ac4635a028143f3f554f36cb24a1f8c0f690fc` |
+| `0x00000000000000000000000000000000000000ff` | `3,12,1259,3,3` | `d2e72e7ed7ee6a2480e89d2a49295c01ac561666582298a75007bd46aeadea4b` |
+| `0x0000000000000000000000000000000000000100` | `3,5,12298,1,0` | `4bce7d04f95cc580f1351c41cb64396368d0991d065cf2f55dccceac046c9a74` |
+| `0x000000000000000000000000000000000000ffff` | `3,2,3628,0,2` | `6fd370a8e04dcb00731d965671f434b666fdbfe5166b6ce676aaaa664e36c694` |
 <!-- ACCOUNT-ICON-VECTORS:END -->
 
 Validation passed: Swift pure icon goldens and static Canvas/menu-bar rendering;
-Rust client tests **4/4** locally and remotely, rustfmt and clippy with warnings
-denied; extension **126/126** and explorer **67/67**; color-science tests **5/5**;
+Rust client tests **4/4** locally, rustfmt and clippy with warnings
+denied; extension **329/329** and explorer **377/377**; color-science tests **5/5** and layout tests **14/14**;
 independent Python oracle, byte-identical JS mirrors and syntax/whitespace checks.
 The extension suite used exact staged sources and existing WASM under `./tmp`,
-without rebuilding it. The client crate has only the existing SHA-256 dependency.
+without rebuilding it. The reused WASM exports the account verifier and matches
+the captured proof fixture; the unrelated older root WASM lacks that export. The client crate has only the existing SHA-256 dependency.
 
 All 106 SwiftUI PNGs, 96 browser icon PNGs, both browser review sheets and eight
 extension/explorer light/dark surfaces were regenerated. Their
 [96-pair raster comparison](46-account-icon/render-comparison.json) has mean
-absolute RGB-channel difference **1.4200/255** and worst image **2.8359/255**,
+absolute RGB-channel difference **1.4007/255** and worst image **2.8372/255**,
 within the 5/255 review limit; edge antialiasing remains platform-specific.
-The [artifact index](46-account-icon/README.md) contains review links and commands.
+The [artifact index](46-account-icon/README.md) contains review links and commands. The
+[64-image stability report](46-account-icon/round3/small-size-stability.json)
+finds all browser and native dark 16 px captures exact against round 2. Fifteen
+native light captures differ by at most one channel level out of 255; their
+canonical geometry and colors are unchanged. The measured glance result remains
+**36/10,000 = 0.36%**, with the same **0.68%** conservative result and **15.9954**
+minimum midpoint ΔE. The measurement script enforces all three round 2 limits.
 
 Wallet/release/guest builds and launching EastSea are reserved for the lead and
 were not performed in this lane. No node, signing request or wallet state was
 used by the renderers. The new executable's macOS 14 deployment target lets the
 same development-Mac build produce the measured rasters on poc-m3's macOS 15.
+
+## Integration handoff
+
+Rebased onto `codex/integrate-074` at `bcd7273`. Seven round 1 conflicts were
+resolved in explorer documentation/CSS/pages, the extension popup, and wallet
+account-switcher/receive/dashboard views. Integration design tokens, navy plates,
+QR rendering, branding, verified reads and transaction-preview/signing behavior
+were preserved while restoring the account-icon wiring. Gated Swift syntax parsing
+of the three resolved views passed; the lead still owns the full wallet build.
+
+The integration's newer DOM and approval lifecycle required namespace/storage
+mocks and reviewed-preview fixtures. Its existing locale test was updated to
+assert the current five translated HTTPS refusals rather than requiring the English
+`.com` example in every language. Product translations were not edited. Expanded
+extension/explorer suites pass after these adaptations.
+
+The fresh mobile capture shows an existing integration header issue: the Live
+network label can overlap Settings at 360 px. It is recorded for the lead; this
+lane preserved that header's styling. Account icons, full addresses and the
+specified face-layout gates pass. See [verification](46-account-icon/round3/verification.json).

@@ -14,7 +14,7 @@ struct AccountIcon: View {
         self.size = size
     }
 
-    init(address: String?, version: UInt8 = 2, size: CGFloat = 32) {
+    init(address: String?, version: UInt8 = 3, size: CGFloat = 32) {
         self.init(spec: AccountIconSpec.of(address: address, version: version), size: size)
     }
 

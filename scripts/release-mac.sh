@@ -3,6 +3,11 @@
 #   scripts/release-mac.sh --prepare            # build and print fingerprints
 #   scripts/release-mac.sh --publish-prepared   # after builder signing and chain publication
 #   scripts/release-mac.sh [--draft]            # legacy 7780 release
+#   scripts/release-mac.sh --publish-draft      # retry gates on the staged GitHub DMG
+#   scripts/release-mac.sh --dry-run --canary-host stub-mac
+# Every publication is staged as a draft, then VM and canary smoke-tested.
+# --draft leaves the tested release as a draft; --skip-vm-smoke is an explicit,
+# logged exception only when Tart/the clean base is not set up. Canary is mandatory.
 # Version and build number come from apps/wallet/project.yml (MARKETING_VERSION,
 # CURRENT_PROJECT_VERSION); bump the build number for every release.
 # Feeds (release-070 review B2): EastSea 0.7.0+ reads eastsea-appcast.xml, which
@@ -16,8 +21,6 @@
 # A Terms.version change needs TERMS_BUMP_REASON (dist/release-gates.log).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-mkdir -p tmp
-export TMPDIR="$PWD/tmp"
 export PATH="$HOME/.cargo/bin:$PATH"
 yml=apps/wallet/project.yml
 version=$(awk '/MARKETING_VERSION:/{print $2; exit}' "$yml")
@@ -25,19 +28,155 @@ build=$(awk '/CURRENT_PROJECT_VERSION:/{print $2; exit}' "$yml")
 tag="app-v$version"
 repo=eastsea-xyz/eastsea
 dmg="dist/EastSea-$version.dmg"
-mode=${1:-}
+mode=""
+keep_draft=0
+skip_vm_smoke=0
+dry_run=0
+canary_host=poc-m3
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --prepare|--publish-prepared|--publish-draft)
+      [ -z "$mode" ] || { echo "REFUSED: choose one release mode" >&2; exit 2; }
+      mode=$1 ;;
+    --draft) keep_draft=1 ;;
+    --skip-vm-smoke) skip_vm_smoke=1 ;;
+    --dry-run) dry_run=1 ;;
+    --canary-host)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "REFUSED: --canary-host needs a host" >&2; exit 2; }
+      canary_host=$2; shift ;;
+    --help|-h)
+      echo "Usage: $0 [--prepare|--publish-prepared|--publish-draft] [--draft] [--skip-vm-smoke] [--canary-host HOST] [--dry-run]"
+      exit 0 ;;
+    *) echo "REFUSED: unknown release option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+[[ "$canary_host" =~ ^([A-Za-z_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "REFUSED: --canary-host needs an SSH alias, hostname or IPv4 address" >&2; exit 2; }
+[ "$mode" != --prepare ] || [ "$keep_draft" -eq 0 ] || { echo "REFUSED: --prepare does not create a draft" >&2; exit 2; }
 manifest="dist/EastSea-$version-manifest.json"
 builder_sigs="dist/EastSea-$version-builder-sigs.json"
 release_index="dist/EastSea-$version-release-index.json"
+gates_log="dist/release-gates.log"
+
+release_record() {
+  if [ "$dry_run" -eq 1 ]; then printf '%s\n' "$*"; else printf '%s\n' "$*" | tee -a "$gates_log"; fi
+}
+release_command() {
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'DRY-RUN:'; printf ' %q' "$@"; printf '\n'
+  else
+    "$@" 2>&1 | tee -a "$gates_log"
+  fi
+}
+release_candidate_unchanged() {
+  local current_sha
+  current_sha=$(shasum -a 256 "$dmg" | awk '{print $1}') || { release_record "FAIL: cannot fingerprint DMG; release remains draft"; return 1; }
+  if [ "$1" != "$current_sha" ]; then
+    release_record "FAIL: DMG changed during smoke gates; release remains draft"
+    return 1
+  fi
+}
+release_smoke_gates() {
+  local candidate_sha=""
+  local vm_setup_status vm_setup_evidence
+  release_record "Smoke candidate: $tag ($dmg); canary=$canary_host"
+  if [ "$dry_run" -eq 0 ]; then
+    candidate_sha=$(shasum -a 256 "$dmg" | awk '{print $1}') || return 1
+    release_record "Smoke started: $(date -u '+%Y-%m-%dT%H:%M:%SZ'); DMG SHA-256: $candidate_sha"
+  fi
+  # --publish-prepared and --publish-draft must also consume a notarized DMG.
+  release_command xcrun stapler validate "$dmg" || { release_record "FAIL: notarization ticket; release remains draft"; return 1; }
+  if [ "$skip_vm_smoke" -eq 1 ]; then
+    vm_setup_evidence=$(scripts/release-vm-smoke.sh --check-setup 2>&1) && vm_setup_status=0 || vm_setup_status=$?
+    [ -z "$vm_setup_evidence" ] || release_record "$vm_setup_evidence"
+    case "$vm_setup_status" in
+      0) release_record "FAIL: --skip-vm-smoke refused: Tart and the VM base are set up; run the VM gate"; return 1 ;;
+      78) : ;;
+      *) release_record "FAIL: cannot check VM setup (exit $vm_setup_status); release remains draft"; return 1 ;;
+    esac
+    release_record "ALARM: VM SMOKE SKIPPED (--skip-vm-smoke): Tart or eastsea-smoke-base is not set up. Canary remains mandatory."
+  elif [ "$dry_run" -eq 1 ]; then
+    release_command scripts/release-vm-smoke.sh --dry-run "$dmg"
+    scripts/release-vm-smoke.sh --dry-run "$dmg" || return 1
+  else
+    release_command scripts/release-vm-smoke.sh "$dmg" || { release_record "FAIL: VM smoke; release remains draft"; return 1; }
+  fi
+  if [ "$dry_run" -eq 0 ]; then release_candidate_unchanged "$candidate_sha" || return 1; fi
+  if [ "$dry_run" -eq 1 ]; then
+    release_command scripts/release-canary.sh --dry-run "$dmg" "$canary_host"
+    scripts/release-canary.sh --dry-run "$dmg" "$canary_host" || return 1
+  else
+    release_command scripts/release-canary.sh "$dmg" "$canary_host" || { release_record "FAIL: canary smoke; release remains draft"; return 1; }
+  fi
+  if [ "$dry_run" -eq 0 ]; then release_candidate_unchanged "$candidate_sha" || return 1; fi
+}
+release_finish_draft() {
+  release_smoke_gates || return 1
+  if [ "$keep_draft" -eq 1 ]; then
+    if [ "$dry_run" -eq 1 ]; then
+      release_record "DRY-RUN: would keep $tag draft after gates (--draft)"
+    else
+      release_record "Gates passed; $tag remains draft (--draft). Use --publish-draft to recheck and publish."
+    fi
+  else
+    release_command gh release edit "$tag" --repo "$repo" --draft=false --latest || return 1
+    if [ "$dry_run" -eq 1 ]; then
+      release_record "DRY-RUN: would publish $tag as latest after gates"
+    else
+      release_record "released $tag as latest after smoke gates"
+    fi
+  fi
+}
+release_load_draft_candidate() {
+  local expected_sha=${1:-} staged_sha
+  [ "$(gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft)" = true ] || { release_record "REFUSED: $tag must be an existing draft"; return 1; }
+  draft_work=$(mktemp -d "$TMPDIR/publish-draft.XXXXXX")
+  trap 'rm -rf "${draft_work:?}"' EXIT
+  gh release download "$tag" --repo "$repo" --pattern "EastSea-$version.dmg" --dir "$draft_work"
+  dmg="$draft_work/EastSea-$version.dmg"
+  [ -f "$dmg" ] || { release_record "REFUSED: staged draft DMG missing"; return 1; }
+  staged_sha=$(shasum -a 256 "$dmg" | awk '{print $1}')
+  if [ -n "$expected_sha" ] && [ "$expected_sha" != "$staged_sha" ]; then
+    release_record "FAIL: uploaded DMG differs from the candidate fingerprint; release remains draft"
+    return 1
+  fi
+  release_record "Staged DMG SHA-256: $staged_sha"
+}
+
+if [ "$dry_run" -eq 1 ]; then
+  if [ "$mode" = --prepare ]; then
+    echo "DRY-RUN: build, notarize and prepare artifacts; no GitHub publication or smoke gates"
+    exit 0
+  fi
+  echo "DRY-RUN: publication after packaging/notarization; no build, remote connection or app launch"
+  if [ "$mode" != --publish-draft ]; then
+    release_command gh release create "$tag" "$dmg" dist/eastsea-appcast.xml dist/appcast.xml --repo "$repo" --verify-tag --title "EastSea $version (testnet)" --draft --latest=false
+  fi
+  release_command gh release view "$tag" --repo "$repo" --json isDraft --jq .isDraft
+  release_command gh release download "$tag" --repo "$repo" --pattern "EastSea-$version.dmg" --dir 'tmp/publish-draft.RUN'
+  dmg="tmp/publish-draft.RUN/EastSea-$version.dmg"
+  release_finish_draft
+  exit 0
+fi
+
+mkdir -p tmp dist
+export TMPDIR="$PWD/tmp"
+if [ "$mode" = --publish-draft ]; then
+  release_load_draft_candidate
+  release_finish_draft
+  exit 0
+fi
 
 if [ "$mode" != --publish-prepared ]; then
+# shellcheck disable=SC1090
 source ~/.config/app-store-release/env.sh
 if [ "$mode" = --prepare ]; then : "${AETHER_RELEASE_LOG:?set AETHER_RELEASE_LOG to prepare an on-chain release}"; fi
 if [ -n "${AETHER_RELEASE_LOG:-}" ]; then
   [ -z "$(git -C "$PWD" status --porcelain)" ] || { echo "ALARM: source worktree is dirty" >&2; exit 1; }
   source_commit=$(git -C "$PWD" rev-parse "refs/tags/$tag^{commit}")
   [ "$source_commit" = "$(git -C "$PWD" rev-parse HEAD)" ] || { echo "ALARM: $tag is not the source commit being built" >&2; exit 1; }
-  export SOURCE_DATE_EPOCH=$(git -C "$PWD" show -s --format=%ct HEAD)
+  SOURCE_DATE_EPOCH=$(git -C "$PWD" show -s --format=%ct HEAD)
+  export SOURCE_DATE_EPOCH
   export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$PWD=/aether-src"
   export OTHER_SWIFT_FLAGS="${OTHER_SWIFT_FLAGS:+$OTHER_SWIFT_FLAGS }-debug-prefix-map $PWD=/aether-src"
 fi
@@ -45,20 +184,32 @@ fi
 # building, mount it read only, and pass that explicit input to the packager.
 # The temporary mount is detached before later release traps/publication run.
 rollback_work=""
+rollback_mount=""
 rollback_mounted=0
+read_rollback_mount() {
+  python3 - "$rollback_work/attach.plist" <<'PY'
+import pathlib, plistlib, sys
+with open(sys.argv[1], 'rb') as f:
+    mounts = [e['mount-point'] for e in plistlib.load(f)['system-entities']
+              if 'mount-point' in e and (pathlib.Path(e['mount-point']) / 'EastSea.app').is_dir()]
+if len(mounts) != 1:
+    raise SystemExit('REFUSED: previous DMG must mount exactly one EastSea.app')
+print(mounts[0])
+PY
+}
 cleanup_rollback_release() {
   if [ "$rollback_mounted" = 1 ]; then
-    hdiutil detach -quiet "$rollback_work/mount" || return
+    if [ -z "$rollback_mount" ]; then
+      rollback_mount=$(read_rollback_mount) || return
+    fi
+    hdiutil detach -quiet "$rollback_mount" || return
     rollback_mounted=0
   fi
   if [ -n "$rollback_work" ]; then rm -rf "${rollback_work:?}"; rollback_work=""; fi
 }
 if [ -z "${AETHER_PREVIOUS_APP:-}" ]; then
-  # macOS per-user temp, not the worktree (TMPDIR is the worktree here): hdiutil refuses (EPERM) to mount a
-  # downloaded DMG on a mountpoint inside the external workspace volume.
-  rollback_work=$(mktemp -d "$(getconf DARWIN_USER_TEMP_DIR)rollback-release.XXXXXX")
+  rollback_work=$(mktemp -d "$TMPDIR/rollback-release.XXXXXX")
   trap cleanup_rollback_release EXIT
-  mkdir "$rollback_work/mount"
   prev_tag=${PREV_RELEASE_TAG:-}
   previous_download=""
   if [ -n "$prev_tag" ]; then
@@ -82,8 +233,11 @@ if [ -z "${AETHER_PREVIOUS_APP:-}" ]; then
   # Set the state before attach so an interrupted/partly successful attach
   # cannot make cleanup recurse into a still-mounted previous release.
   rollback_mounted=1
-  hdiutil attach -quiet -readonly -nobrowse -mountpoint "$rollback_work/mount" "${previous_dmgs[0]}"
-  export AETHER_PREVIOUS_APP="$rollback_work/mount/EastSea.app"
+  # Let hdiutil choose its system volume mount; explicit mountpoints on the
+  # external workspace fail with EPERM. All scratch files stay in repo tmp/.
+  hdiutil attach -readonly -nobrowse -plist "${previous_dmgs[0]}" > "$rollback_work/attach.plist"
+  rollback_mount=$(read_rollback_mount)
+  export AETHER_PREVIOUS_APP="$rollback_mount/EastSea.app"
   export PREV_RELEASE_TAG="$prev_tag"
 fi
 AETHER_VERSION="$version" SIGN_IDENTITY="Developer ID Application: Pipln (45WU468FZE)" scripts/package-mac.sh
@@ -221,7 +375,8 @@ else
   git -C "$PWD" push -q origin "refs/tags/$tag"
 fi
 
-draft=()
-if [ "$mode" = --draft ]; then draft=(--draft); fi
-gh release create "$tag" "${assets[@]}" --repo "$repo" --verify-tag --title "EastSea $version (testnet)" --notes "$notes" --latest ${draft[@]+"${draft[@]}"}
-echo "released $tag"
+uploaded_sha=$(shasum -a 256 "$dmg" | awk '{print $1}')
+release_command gh release create "$tag" "${assets[@]}" --repo "$repo" --verify-tag --title "EastSea $version (testnet)" --notes "$notes" --draft --latest=false
+# Consume GitHub's uploaded bytes, and refuse a concurrent change during upload.
+release_load_draft_candidate "$uploaded_sha"
+release_finish_draft

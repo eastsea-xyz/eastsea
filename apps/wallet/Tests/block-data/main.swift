@@ -235,9 +235,14 @@ defer { try? fm.removeItem(at: moveFixture); try? fm.removeItem(at: NodeControll
 let recordURL = NodeController.dataDir.appendingPathComponent(BlockDataMove.recordName)
 
 func waitForMove(_ node: NodeController) async throws {
-    let end = Date().addingTimeInterval(10)
-    while node.storageMovePreparing && Date() < end { try await Task.sleep(nanoseconds: 10_000_000) }
-    check(!node.storageMovePreparing, "fixture preparation completes within deadline")
+    let deadline = ProcessInfo.processInfo.systemUptime + 30
+    while node.storageMovePreparing {
+        guard ProcessInfo.processInfo.systemUptime < deadline else {
+            throw NSError(domain: "BlockDataFixture", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "timed out after 30s waiting for fresh-start preparation (source=\(node.chainDataPath))"])
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
 }
 func resetJournal() { try? fm.removeItem(at: recordURL) }
 func prepare(_ tag: String) throws -> (URL, URL) {
@@ -641,6 +646,9 @@ check((try? Data(contentsOf: rootSentinel)) == Data("outside block data".utf8)
 roundTripMover.finishBlockDataMove(answered: true, height: 100, certifiedHeight: 100, networkHeight: 100)
 await roundTripMover.storageMoveCleanup?.value
 check(roundTripMover.storageMoveSync == nil, "the sync status clears after catching up")
+let completedOutward = try JSONDecoder().decode(BlockDataMove.Record.self, from: Data(contentsOf: recordURL))
+check(completedOutward.committed && completedOutward.cleanupDone && completedOutward.target == roundTripTarget.path,
+      "R07 reverse movement waits for the committed outward cleanup record")
 // A return accepts retained nested keys in place, and refuses links.
 check(!BlockDataLocation.destinationAvailable(NodeController.dataDir, preservingInternalKeys: true),
       "a retained link is not an empty return destination")

@@ -20,18 +20,24 @@ func spawn(_ binary: URL, _ args: [String]) throws -> Process {
     owned.append(process)
     return process
 }
-func ready(_ file: URL, process: Process) throws -> (Int32, UInt16) {
-    let until = Date().addingTimeInterval(5)
-    while Date() < until, process.isRunning {
+func ready(_ file: URL, process: Process, replacing priorPID: Int32? = nil,
+           port expectedPort: UInt16? = nil) async throws -> (Int32, UInt16) {
+    let deadline = ProcessInfo.processInfo.systemUptime + 30
+    var lastText = "absent"
+    while ProcessInfo.processInfo.systemUptime < deadline, process.isRunning {
         if let text = try? String(contentsOf: file, encoding: .utf8) {
-            let fields = text.split(separator: " ")
-            if fields.count == 2, let pid = Int32(fields[0]), let port = UInt16(fields[1].trimmingCharacters(in: .whitespacesAndNewlines)) {
+            lastText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fields = text.split(whereSeparator: { $0.isWhitespace })
+            if fields.count == 2, let pid = Int32(fields[0]), pid > 1, pid != priorPID,
+               let port = UInt16(fields[1]), port > 0, expectedPort == nil || expectedPort == port {
                 return (pid, port)
             }
         }
-        Thread.sleep(forTimeInterval: 0.01)
+        try await Task.sleep(nanoseconds: 10_000_000)
     }
-    throw NSError(domain: "R11Fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "listener did not become ready"])
+    let status = process.isRunning ? "still running" : "exited \(process.terminationStatus)"
+    throw NSError(domain: "R11Fixture", code: 1, userInfo: [NSLocalizedDescriptionKey:
+        "listener readiness missing within 30s: supervisor=\(process.processIdentifier) \(status) file=\(file.path) last=\(lastText)"])
 }
 func reply(port: UInt16) -> String? {
     let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
@@ -64,7 +70,7 @@ do {
     defer { cleanup() }
     let badReady = directory.appendingPathComponent("R11-child-A-ready")
     let mixed = try spawn(b, ["parent", a.path, badReady.path])
-    let (badPID, badPort) = try ready(badReady, process: mixed)
+    let (badPID, badPort) = try await ready(badReady, process: mixed)
     check(badPID != mixed.processIdentifier, "R11 parent and actual listener have distinct PIDs")
     check(reply(port: badPort) == "A", "R11 status reply actually comes from old listener A")
     check(NodeReleaseIdentity.matches(pid: mixed.processIdentifier, expected: b), "R11 supervisor B alone is correctly signed")
@@ -72,20 +78,20 @@ do {
           "R11 signed supervisor B with old listener A cannot authenticate RPC")
     let goodReady = directory.appendingPathComponent("R11-child-B-ready")
     let good = try spawn(b, ["parent", b.path, goodReady.path])
-    let (_, goodPort) = try ready(goodReady, process: good)
+    let (_, goodPort) = try await ready(goodReady, process: good)
     check(reply(port: goodPort) == "B", "R11 current listener B returns its own reply")
     var currentListenerAccepted = false
-    let settleUntil = Date().addingTimeInterval(2)
-    while !currentListenerAccepted, Date() < settleUntil {
+    let settleUntil = ProcessInfo.processInfo.systemUptime + 30
+    while !currentListenerAccepted, ProcessInfo.processInfo.systemUptime < settleUntil, good.isRunning {
         currentListenerAccepted = accepted(rootPID: good.processIdentifier, port: goodPort, expected: b)
-        if !currentListenerAccepted { Thread.sleep(forTimeInterval: 0.01) }
+        if !currentListenerAccepted { try await Task.sleep(nanoseconds: 10_000_000) }
     }
     check(currentListenerAccepted,
-          "R11 supervisor B with signed listener B authenticates RPC")
+          "R11 supervisor B with signed listener B authenticates RPC within 30s (pid=\(good.processIdentifier), port=\(goodPort))")
     let idle = try spawn(b, ["idle"])
     let unrelatedReady = directory.appendingPathComponent("R11-unrelated-A-ready")
     let unrelated = try spawn(a, ["listen", unrelatedReady.path])
-    let (_, unrelatedPort) = try ready(unrelatedReady, process: unrelated)
+    let (_, unrelatedPort) = try await ready(unrelatedReady, process: unrelated)
     check(reply(port: unrelatedPort) == "A", "R11 unrelated listener is live")
     check(!accepted(rootPID: idle.processIdentifier, port: unrelatedPort, expected: b),
           "R11 unrelated listener outside supervisor descendants is excluded")
@@ -95,24 +101,29 @@ do {
 let stableReady = directory.appendingPathComponent("R11-stable-ready")
 let control = directory.appendingPathComponent("R11-stable-control")
 let stable = try spawn(b, ["parent", b.path, stableReady.path, b.path, control.path])
-let (oldOwner, stablePort) = try ready(stableReady, process: stable)
+let (oldOwner, stablePort) = try await ready(stableReady, process: stable)
 let unchanged = await NodeReleaseIdentity.readVerified(rootPID: stable.processIdentifier, port: stablePort, expected: b,
     operation: { reply(port: stablePort) })
 check(unchanged?.value == "B", "R11 unchanged listener proof brackets a fresh response")
 check(unchanged.map { NodeReleaseIdentity.matches(binding: $0.binding, port: stablePort, expected: b) } == true,
       "R11 returned binding still authenticates the same live listener")
+var replacementConfirmed = false
+var replacementError: Error?
 let changed = await NodeReleaseIdentity.readVerified(rootPID: stable.processIdentifier, port: stablePort, expected: b,
     operation: {
         let priorReply = reply(port: stablePort)
+        check(priorReply == "B", "R11 listener replacement starts with a fresh B response")
         try? Data("restart".utf8).write(to: control, options: .atomic)
-        let until = Date().addingTimeInterval(5)
-        while Date() < until {
-            if let (newOwner, newPort) = try? ready(stableReady, process: stable),
-               newOwner != oldOwner, newPort == stablePort { return priorReply }
-            Thread.sleep(forTimeInterval: 0.01)
+        do {
+            _ = try await ready(stableReady, process: stable, replacing: oldOwner, port: stablePort)
+            replacementConfirmed = true
+            return priorReply
+        } catch {
+            replacementError = error
+            return nil
         }
-        return nil
     })
+check(replacementConfirmed, "R11 replacement listener publishes a new PID on the same port: \(String(describing: replacementError))")
 check(changed == nil, "R11 response crossing a same-release listener replacement is refused")
 check(unchanged.map { NodeReleaseIdentity.matches(binding: $0.binding, port: stablePort, expected: b) } == false,
       "R11 returned binding cannot authorize shutdown of a replacement listener")

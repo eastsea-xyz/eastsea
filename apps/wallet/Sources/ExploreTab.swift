@@ -21,8 +21,14 @@ struct ExplorePage: View {
                     .padding(.horizontal, 16).padding(.vertical, 6)
                     .background(Color.warn.opacity(0.12))
             }
+            if browser.httpsOffer != nil {
+                Button("Open with HTTPS") { browser.openOfferedHTTPS() }
+                    .buttonStyle(.bordered).padding(.bottom, 8)
+            }
             Divider()
-            if browser.webView == nil {
+            if let page = browser.namePage {
+                resolvedName(page).padding(20)
+            } else if browser.webView == nil {
                 home.padding(20)
             } else if let web = browser.webView {
                 WebViewHolder(webView: web)
@@ -54,13 +60,40 @@ struct ExplorePage: View {
             }
             #endif
             Image(systemName: "lock.fill").font(.aeCaption).foregroundStyle(.secondary)
-            TextField("Enter a web address (https)", text: $browser.addressField)
+            TextField("Enter a .sea name or https:// address", text: $browser.addressField)
                 .textFieldStyle(.roundedBorder).font(.aeBody)
                 .onSubmit { browser.open(browser.addressField) }
             Button("Go") { browser.open(browser.addressField) }
                 .buttonStyle(.borderedProminent).disabled(browser.addressField.trimmingCharacters(in: .whitespaces).isEmpty)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+
+    private func resolvedName(_ page: BrowserController.NamePage) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(page.link.name).font(.aeTitle).textSelection(.enabled)
+                if page.loading {
+                    ProgressView("Resolving name…")
+                } else if let failure = page.failure {
+                    Text(failure).font(.aeBody).foregroundStyle(Color.warn)
+                } else if let record = page.resolution {
+                    Text("Content delivery comes next.").font(.aeHeadline)
+                    Card {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Name record").font(.aeHeadline)
+                            Text(record.address).font(.aeCaption.monospaced()).textSelection(.enabled)
+                            Text("App record").font(.aeHeadline)
+                            Text(record.app.appID).font(.aeCaption.monospaced()).textSelection(.enabled)
+                        }
+                    }
+                    Text("Name and app records were read from the local node. Content and name binding are not verified yet.")
+                        .font(.aeFootnote).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: 620, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     /// The curated home: what the tab is for, before any address is typed.

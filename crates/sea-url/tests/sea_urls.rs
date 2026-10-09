@@ -1,5 +1,5 @@
 //! Shared golden contract with the pure Swift and browser helpers.
-use aether_types::sea_url::{browser_input, parse, suggested_https, BrowserInput, Link};
+use aether_sea_url::{browser_input, parse, suggested_https, BrowserInput, Link, RESERVED_HOSTS};
 use serde_json::{json, Value};
 
 fn result(input: &str, operation: &str, chain_id: u64) -> Value {
@@ -33,6 +33,7 @@ fn result(input: &str, operation: &str, chain_id: u64) -> Value {
 fn shared_sea_url_golden_contract() {
     let fixture: Value =
         serde_json::from_str(include_str!("../../../tests/fixtures/sea-urls.json")).unwrap();
+    assert_eq!(json!(RESERVED_HOSTS), fixture["reservedHosts"]);
     for row in fixture["cases"].as_array().unwrap() {
         let input = row["input"].as_str().unwrap();
         assert_eq!(

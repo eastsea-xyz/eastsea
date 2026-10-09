@@ -1,6 +1,76 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "The page or network changed.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The page or network changed."
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "페이지 또는 네트워크가 변경됐어요."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ページまたはネットワークが変更されました。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "页面或网络已更改。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "頁面或網路已變更。"
+          }
+        }
+      }
+    },
+    "Back to Developer Mode": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Back to Developer Mode"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "개발자 모드로 돌아가기"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "開発者モードに戻る"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "返回开发者模式"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "返回開發者模式"
+          }
+        }
+      }
+    },
     "Web addresses (.com, etc.) aren't EastSea names. Open them with https://.": {
       "extractionState": "manual",
       "localizations": {
@@ -28,10 +98,10 @@
             "value": "网页地址（.com 等）不是 EastSea 名称。请使用 https:// 打开。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Las direcciones web (.com, etc.) no son nombres de EastSea. Ábrelas con https://."
+            "value": "網頁地址（.com 等）不是 EastSea 名稱。請使用 https:// 開啟。"
           }
         }
       }
@@ -63,10 +133,10 @@
             "value": "使用 HTTPS 打开"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Abrir con HTTPS"
+            "value": "使用 HTTPS 開啟"
           }
         }
       }
@@ -98,10 +168,10 @@
             "value": "输入 .sea 名称或 https:// 地址"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Introduce un nombre .sea o una dirección https://"
+            "value": "輸入 .sea 名稱或 https:// 地址"
           }
         }
       }
@@ -133,10 +203,10 @@
             "value": "正在解析名称…"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Resolviendo el nombre…"
+            "value": "正在解析名稱…"
           }
         }
       }
@@ -168,10 +238,10 @@
             "value": "内容传输将在下一阶段推出。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "La entrega de contenido es el siguiente paso."
+            "value": "內容傳輸將於下一階段推出。"
           }
         }
       }
@@ -203,10 +273,10 @@
             "value": "此网络尚无名称注册表。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "El registro de nombres no está disponible en esta red."
+            "value": "此網路尚無名稱註冊表。"
           }
         }
       }
@@ -238,10 +308,10 @@
             "value": "此名称尚未注册。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Este nombre no está registrado."
+            "value": "此名稱尚未註冊。"
           }
         }
       }
@@ -273,10 +343,10 @@
             "value": "此名称已过期。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Este nombre ha caducado."
+            "value": "此名稱已過期。"
           }
         }
       }
@@ -308,10 +378,10 @@
             "value": "此名称未关联应用。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "No hay ninguna aplicación vinculada a este nombre."
+            "value": "此名稱未連結應用程式。"
           }
         }
       }
@@ -343,10 +413,10 @@
             "value": "此应用已取消登记。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Esta aplicación ya no está registrada."
+            "value": "此應用程式已取消登錄。"
           }
         }
       }
@@ -378,10 +448,10 @@
             "value": "无法读取名称注册表。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "No se pudo leer el registro de nombres."
+            "value": "無法讀取名稱註冊表。"
           }
         }
       }
@@ -413,10 +483,10 @@
             "value": "这不是有效的 .sea 名称。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "No es un nombre .sea válido."
+            "value": "這不是有效的 .sea 名稱。"
           }
         }
       }
@@ -448,10 +518,10 @@
             "value": "此名称已保留供钱包操作使用。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Este nombre está reservado para una acción de la cartera."
+            "value": "此名稱已保留供錢包操作使用。"
           }
         }
       }
@@ -483,10 +553,10 @@
             "value": "旧 .aeth 名称仅可用于测试网 7780。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Los nombres .aeth antiguos solo están disponibles en la red de prueba 7780."
+            "value": "舊版 .aeth 名稱僅可於測試網 7780 使用。"
           }
         }
       }
@@ -518,10 +588,10 @@
             "value": "此钱包操作尚未开放。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Esta acción de la cartera aún no está disponible."
+            "value": "此錢包操作尚未開放。"
           }
         }
       }
@@ -553,10 +623,10 @@
             "value": "名称记录"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Registro del nombre"
+            "value": "名稱記錄"
           }
         }
       }
@@ -588,10 +658,10 @@
             "value": "应用记录"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Registro de la aplicación"
+            "value": "應用程式記錄"
           }
         }
       }
@@ -623,10 +693,10 @@
             "value": "名称与应用记录已从本地节点读取。内容及名称绑定尚未验证。"
           }
         },
-        "es": {
+        "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Los registros del nombre y la aplicación se han leído del nodo local. El contenido y la vinculación del nombre aún no se han verificado."
+            "value": "名稱與應用程式記錄已從本機節點讀取。內容及名稱綁定尚未驗證。"
           }
         }
       }

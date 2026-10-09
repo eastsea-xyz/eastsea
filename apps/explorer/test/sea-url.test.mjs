@@ -33,7 +33,9 @@ test('explorer search routes a sea name without submitting a transaction', async
 
 test('external TLD refusal is available in all five wallet languages', () => {
   assert.equal(externalNameMessage('ko'), '웹 주소(.com 등)는 동해 이름이 아니에요. https://로 여세요.');
-  for (const language of ['en', 'ko', 'ja', 'zh-Hans', 'es']) assert.match(externalNameMessage(language), /https:\/\//);
+  for (const language of ['en', 'ko', 'ja', 'zh-Hans', 'zh-Hant']) assert.match(externalNameMessage(language), /https:\/\//);
+  const traditional = '網頁地址（.com 等）不是 EastSea 名稱。請使用 https:// 開啟。';
+  for (const language of ['zh-Hant', 'zh-TW', 'zh-HK']) assert.equal(externalNameMessage(language), traditional);
 });
 
 test('HTTPS offers do not reinterpret userinfo, ports or backslashes', () => {

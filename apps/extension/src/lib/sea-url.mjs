@@ -13,9 +13,11 @@ export function externalNameMessage(language = 'en') {
     ko: '웹 주소(.com 등)는 동해 이름이 아니에요. https://로 여세요.',
     ja: 'ウェブアドレス（.com など）は EastSea の名前ではありません。https:// で開いてください。',
     'zh-Hans': '网站地址（如 .com）不是 EastSea 名称。请使用 https:// 打开。',
+    'zh-Hant': '網頁地址（.com 等）不是 EastSea 名稱。請使用 https:// 開啟。',
     es: 'Una dirección web como .com no es un nombre de EastSea. Ábrela con https://.',
   };
-  const locale = String(language).startsWith('zh') ? 'zh-Hans' : String(language).split('-')[0];
+  const locale = /^zh-(?:hant|tw|hk|mo)(?:-|$)/i.test(language) ? 'zh-Hant'
+    : /^zh(?:-|$)/i.test(language) ? 'zh-Hans' : String(language).split('-')[0];
   return messages[locale] || messages.en;
 }
 

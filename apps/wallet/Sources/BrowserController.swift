@@ -13,6 +13,18 @@ final class BrowserController: NSObject, ObservableObject {
     @Published var addressField = ""
     /// The one-line refusal under the address bar (why a URL did not load).
     @Published var notice: String?
+    @Published private(set) var httpsOffer: URL?
+    @Published private(set) var namePage: NamePage?
+
+    struct NamePage {
+        let link: SeaURL.NameLink
+        var resolution: SeaNameResolver.Resolution?
+        var failure: String?
+        var loading = true
+    }
+    private var nameTask: Task<Void, Never>?
+    private var navigationGeneration: UInt64 = 0
+    private let contentSource: any ContentSource
     /// The one-time warning sheet for an external site.
     @Published var warning: SiteWarning?
     /// The confirmation sheet a page's request opened (one at a time).
@@ -46,6 +58,11 @@ final class BrowserController: NSObject, ObservableObject {
         }
         let id: String
         let kind: Kind
+        let view: WKWebView
+        let chainID: UInt64
+        let port: UInt16
+        let owner: String
+        let generation: UInt64
         let reply: (Result<Any?, ProviderError>) -> Void
     }
 
@@ -66,6 +83,11 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     /// Wire the wallet state the bridge answers from (called once, at attach).
+    init(contentSource: any ContentSource = PendingContentSource()) {
+        self.contentSource = contentSource
+        super.init()
+    }
+
     func attach(model: WalletModel) {
         self.model = model
     }
@@ -84,6 +106,7 @@ final class BrowserController: NSObject, ObservableObject {
             if wantExternal == nil && externalHost == nil { return view }
             if let host = wantExternal, let current = externalHost, host == current { return view }
         }
+        rejectPageRequests()
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(BundledPageScheme(root: BundledPageScheme.defaultRoot()
             ?? URL(fileURLWithPath: "/nonexistent")), forURLScheme: BrowserOriginPolicy.bundledScheme)
@@ -126,20 +149,92 @@ final class BrowserController: NSObject, ObservableObject {
 
     // MARK: - Navigation
 
-    /// The address bar's Go: scheme-less text is treated as a host.
+    /// The pure parser chooses a name, an action requiring wallet approval,
+    /// or an explicitly entered web URL. It never silently imports DNS.
     func open(_ text: String) {
-        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return }
-        let withScheme = raw.contains("://") ? raw : "https://\(raw)"
-        guard let url = URL(string: withScheme) else {
-            notice = String(localized: "That is not a web address.")
-            return
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        notice = nil
+        httpsOffer = nil
+        do {
+            switch try SeaURL.browserInput(text, chainID: model?.browserChainID ?? Brand.networkChainId) {
+            case .name(let link): resolve(link)
+            case .web(let url): load(url)
+            case .action(let host, let raw):
+                if ["pay", "call", "connect", "tx"].contains(host) { model?.open(link: raw) }
+                else { notice = String(localized: "This wallet action is not available yet.") }
+            }
+        } catch {
+            notice = SeaNameText.message(error)
+            if error as? SeaURL.ParseError == .externalTLD { httpsOffer = SeaURL.suggestedHTTPS(text) }
         }
+    }
+
+    func openOfferedHTTPS() {
+        guard let url = httpsOffer else { return }
         load(url)
+    }
+
+    /// A resolved name belongs to one chain. Changing networks clears its
+    /// records and repeats the lookup rather than retaining the old app.
+    func networkDidChange() {
+        rejectPageRequests()
+        guard let link = namePage?.link else { return }
+        nameTask?.cancel()
+        navigationGeneration &+= 1
+        namePage = NamePage(link: link)
+        let query = link.query.map { "?" + $0 } ?? ""
+        open("sea://" + link.registryName + link.path + query)
+        if let notice { namePage = NamePage(link: link, failure: notice, loading: false) }
+    }
+
+    func walletIdentityDidChange() {
+        rejectPageRequests()
+    }
+
+    private func resolve(_ link: SeaURL.NameLink) {
+        nameTask?.cancel()
+        navigationGeneration &+= 1
+        let generation = navigationGeneration
+        rejectPageRequests()
+        webView?.stopLoading()
+        webView = nil
+        warning = nil
+        currentURL = URL(string: link.canonicalURL)
+        addressField = link.canonicalURL
+        canGoBack = false
+        namePage = NamePage(link: link)
+        let chain = model?.browserChainID ?? Brand.networkChainId
+        let port = model?.nodeRpcPort ?? 18545
+        let sources = SeaRegistrySources.bundled(chainID: chain)
+        nameTask = Task { [weak self] in
+            do {
+                let result = try await SeaRegistryReader.resolve(link, chainID: chain, port: port, sources: sources)
+                // The next lane replaces this source and renders verified bytes.
+                _ = try await self?.contentSource.page(for: result.app, at: link)
+                guard let self, !Task.isCancelled, self.navigationGeneration == generation,
+                      (self.model?.nodeRpcPort ?? 18545) == port,
+                      (self.model?.browserChainID ?? Brand.networkChainId) == chain else { return }
+                self.namePage = NamePage(link: link, resolution: result, loading: false)
+            } catch {
+                guard let self, !Task.isCancelled, self.navigationGeneration == generation,
+                      (self.model?.nodeRpcPort ?? 18545) == port,
+                      (self.model?.browserChainID ?? Brand.networkChainId) == chain else { return }
+                self.namePage = NamePage(link: link, failure: SeaNameText.message(error), loading: false)
+            }
+        }
     }
 
     /// Load a URL through the same rules a link goes through.
     func load(_ url: URL) {
+        if ["sea", "eastsea", "aether"].contains(url.scheme?.lowercased() ?? "") {
+            open(url.absoluteString)
+            return
+        }
+        nameTask?.cancel()
+        navigationGeneration &+= 1
+        rejectPageRequests()
+        namePage = nil
+        httpsOffer = nil
         notice = nil
         switch BrowserOriginPolicy.classify(url) {
         case .bundled, .external:
@@ -183,6 +278,14 @@ final class BrowserController: NSObject, ObservableObject {
     func approveAsk() {
         guard let pending = ask else { return }
         ask = nil
+        guard pending.view === webView, pending.generation == navigationGeneration,
+              let wallet = model, !wallet.exploreLocked, pending.owner == wallet.address,
+              pending.chainID == (model?.browserChainID ?? Brand.networkChainId),
+              pending.port == (model?.nodeRpcPort ?? 18545) else {
+            pending.reply(.failure(ProviderError(code: ProviderErrorCode.denied, message: "The page or network changed.")))
+            drainAskQueue()
+            return
+        }
         switch pending.kind {
         case .connect(let origin, _):
             if let model = model, !model.address.isEmpty {
@@ -195,9 +298,16 @@ final class BrowserController: NSObject, ObservableObject {
         case .send(let origin, _, let tx, let feeWei):
             if let model {
                 let shown = tx.isPlainTransfer ? feeWei ?? model.status?.transferFeeWei : nil
-                Task {
+                Task { [weak self] in
+                    guard let self, pending.view === self.webView,
+                          pending.generation == self.navigationGeneration else {
+                        pending.reply(.failure(ProviderError(code: ProviderErrorCode.denied,
+                                                            message: "The page or network changed.")))
+                        return
+                    }
                     let (hash, refusal) = await model.sendPageTransaction(tx, origin: origin,
-                                                                          title: origin, shownFeeWei: shown)
+                        title: origin, shownFeeWei: shown, approvedOwner: pending.owner,
+                        approvedChainID: pending.chainID, approvedPort: pending.port)
                     if let hash {
                         pending.reply(.success(hash))
                     } else {
@@ -227,6 +337,16 @@ final class BrowserController: NSObject, ObservableObject {
         ask = askQueue.removeFirst()
     }
 
+    private func rejectPageRequests() {
+        let pending = ask.map { [$0] } ?? []
+        let queued = askQueue
+        ask = nil
+        askQueue.removeAll()
+        for request in pending + queued {
+            request.reply(.failure(ProviderError(code: ProviderErrorCode.denied, message: "The page or network changed.")))
+        }
+    }
+
     // MARK: - The bridge
 
     /// The reply closure WebKit hands over. This SDK imports the reply's error
@@ -242,6 +362,10 @@ final class BrowserController: NSObject, ObservableObject {
             case .failure(let e):
                 replyHandler(["error": ["code": e.code, "message": e.message]], nil)
             }
+        }
+        guard let source = message.webView, source === webView else {
+            reply(.failure(ProviderError(code: ProviderErrorCode.locked, message: "the tab is gone")))
+            return
         }
         guard let model else {
             reply(.failure(ProviderError(code: ProviderErrorCode.internalError, message: "The wallet is not ready.")))
@@ -374,6 +498,10 @@ final class BrowserController: NSObject, ObservableObject {
     fileprivate func handleVerifyMessage(_ message: WKScriptMessage,
                                          replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let reply = Self.envelope(replyHandler)
+        guard let source = message.webView, source === webView else {
+            reply(.failure(ProviderError(code: ProviderErrorCode.locked, message: "the tab is gone")))
+            return
+        }
         guard let model else {
             reply(.failure(ProviderError(code: ProviderErrorCode.internalError, message: "The wallet is not ready.")))
             return
@@ -433,8 +561,16 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     private func enqueue(_ kind: PendingAsk.Kind, id: Any?, reply: @escaping (Result<Any?, ProviderError>) -> Void) {
+        guard let view = webView else {
+            reply(.failure(ProviderError(code: ProviderErrorCode.denied, message: "The page or network changed.")))
+            return
+        }
         let pending = PendingAsk(id: (id as? String).map { "ask-\($0)" } ?? UUID().uuidString,
-                                 kind: kind, reply: reply)
+                                 kind: kind, view: view,
+                                 chainID: model?.browserChainID ?? Brand.networkChainId,
+                                 port: model?.nodeRpcPort ?? 18545, owner: model?.address ?? "",
+                                 generation: navigationGeneration,
+                                 reply: reply)
         if ask == nil { ask = pending } else { askQueue.append(pending) }
     }
 
@@ -550,7 +686,14 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate {
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences) async -> WKNavigationActionPolicy {
+        guard self.webView === webView else { return .cancel }
         guard let url = navigationAction.request.url else { return .cancel }
+        if ["sea", "eastsea", "aether"].contains(url.scheme?.lowercased() ?? "") {
+            guard navigationAction.sourceFrame.isMainFrame,
+                  navigationAction.targetFrame?.isMainFrame != false else { return .cancel }
+            open(url.absoluteString)
+            return .cancel
+        }
         switch BrowserOriginPolicy.classify(url) {
         case .bundled:
             return .allow
@@ -571,6 +714,9 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard self.webView === webView, namePage == nil else { return }
+        rejectPageRequests()
+        navigationGeneration &+= 1
         currentURL = webView.url
         addressField = webView.url.map { urlBarText($0) } ?? ""
         canGoBack = webView.canGoBack
@@ -578,6 +724,7 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard self.webView === webView, namePage == nil else { return }
         canGoBack = webView.canGoBack
     }
 
@@ -595,6 +742,7 @@ extension BrowserController: WKNavigationDelegate, WKUIDelegate {
     /// No popups, no new windows: everything stays in this tab.
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        guard self.webView === webView, navigationAction.sourceFrame.isMainFrame else { return nil }
         if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
             load(url)   // a plain target=_blank link opens in the same tab
         }

@@ -51,7 +51,7 @@ run browser-origin BrowserOriginPolicy.swift
 run browser-permissions SitePermissions.swift
 run browser-routing Brand.swift BrowserPolicy.swift
 run sea-url SeaURL.swift
-run sea-resolution SeaURL.swift SeaNameResolver.swift
+run sea-resolution SeaURL.swift SeaNameResolver.swift SeaRegistryReader.swift
 run browser-verify Brand.swift BrowserOriginPolicy.swift BrowserPolicy.swift VerifyBridge.swift
 run candidate-eligibility CandidateEligibilityText.swift
 run diagnostic-report Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift HealthCheck.swift DiagnosticReport.swift

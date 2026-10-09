@@ -1,0 +1,13 @@
+[package]
+name = "aether-sea-url"
+description = "Pure client-side EastSea custom-link and browser-input grammar"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -16,7 +16,7 @@ test('external DNS names have an explicit HTTPS refusal in five languages', () =
   const catalog = JSON.parse(readFileSync(new URL('Resources/Localizable.xcstrings', wallet), 'utf8'));
   const key = "Web addresses (.com, etc.) aren't EastSea names. Open them with https://.";
   const entries = catalog.strings[key]?.localizations;
-  for (const language of ['en', 'ko', 'ja', 'zh-Hans', 'es']) {
+  for (const language of ['en', 'ko', 'ja', 'zh-Hans', 'zh-Hant']) {
     assert.equal(entries?.[language]?.stringUnit?.state, 'translated', language);
     assert.match(entries[language].stringUnit.value, /\.com/);
     assert.match(entries[language].stringUnit.value, /https:\/\//);

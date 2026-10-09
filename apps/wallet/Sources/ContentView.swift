@@ -10,13 +10,21 @@ struct ContentView: View {
     @EnvironmentObject var node: NodeController
     #endif
     @AppStorage("developerMode") private var developerMode = false
+    @State private var showLinkedBrowser = false
     /// The terms version this user accepted (0: none yet).
     @AppStorage("acceptedTerms") private var acceptedTerms = 0
 
     var body: some View {
         page
-            .onAppear { model.start() }
+            .onAppear {
+                showLinkedBrowser = model.browserLinkRequest != nil
+                model.start()
+            }
+            .onChange(of: model.browserLinkRequest) { _, request in
+                if request != nil { showLinkedBrowser = true }
+            }
             .onChange(of: developerMode) { _, enabled in
+                showLinkedBrowser = false
                 if !enabled && model.developmentNetwork {
                     model.selectNetwork(development: false)
                     #if os(macOS)
@@ -25,6 +33,10 @@ struct ContentView: View {
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
+                if developerMode && showLinkedBrowser {
+                    Button("Back to Developer Mode") { showLinkedBrowser = false }
+                        .frame(maxWidth: .infinity, alignment: .trailing).padding(8)
+                }
                 if model.developmentNetwork {
                     Text("Dev network · 127.0.0.1")
                         .font(.caption.bold()).frame(maxWidth: .infinity)
@@ -46,7 +58,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var page: some View {
-        if developerMode {
+        if developerMode && !showLinkedBrowser {
             DeveloperView()
         } else {
             SimpleDashboard()

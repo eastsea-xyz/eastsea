@@ -155,6 +155,12 @@ final class WalletModel: ObservableObject {
 
     // MARK: Explore tab (the in-app browser)
 
+    struct BrowserLinkRequest: Equatable {
+        let id = UUID()
+        let raw: String
+    }
+    @Published var browserLinkRequest: BrowserLinkRequest?
+
     /// While this is true, the Explore tab's provider answers nothing — reads
     /// included — exactly as the extension's vault does while locked.
     var exploreLocked: Bool { enclave == nil || keyError != nil }
@@ -162,6 +168,7 @@ final class WalletModel: ObservableObject {
     /// The port this Mac's own node serves JSON-RPC on (the dev network gets
     /// its own port). The Explore tab's unverified reads go here.
     var nodeRpcPort: UInt16 { developmentNetwork ? developmentPort : 18545 }
+    var browserChainID: UInt64 { networkChainId == 0 ? Brand.networkChainId : networkChainId }
 
     /// The address a site may see, nil unless this exact origin was granted
     /// the account the wallet holds right now (a switched account disconnects
@@ -197,7 +204,14 @@ final class WalletModel: ObservableObject {
     /// Returns the tx hash once submitted (the page watches it with
     /// aether_getReceipt); a refusal comes back as text and nothing is signed.
     func sendPageTransaction(_ tx: PageTransaction, origin: String, title: String,
-                             shownFeeWei: String?) async -> (hash: String?, refusal: String?) {
+                             shownFeeWei: String?, approvedOwner: String,
+                             approvedChainID: UInt64, approvedPort: UInt16) async -> (hash: String?, refusal: String?) {
+        // Validate again on the model actor before capturing a signer. The
+        // browser's approved task may have waited behind an account change.
+        guard address == approvedOwner, nodeRpcPort == approvedPort,
+              browserChainID == approvedChainID else {
+            return (nil, String(localized: "The page or network changed."))
+        }
         guard let enclave else { return (nil, String(localized: "The wallet key is not ready yet.")) }
         guard let operation = beginOperation() else { return (nil, AccountStore.Failure.operationInProgress.localizedDescription) }
         let pk = enclave.publicKey
@@ -937,13 +951,26 @@ final class WalletModel: ObservableObject {
     /// `aether://pay?to=0x…&amount=1.5&memo=…&callback=https://…` from a web page
     /// (no extension needed): the payment is shown for approval, never sent by itself.
     func open(url: URL) {
-        // The rename kept every existing aether:// payment link alive: both
-        // schemes stay registered and both are parsed the same way.
-        guard url.scheme == "eastsea" || url.scheme == "aether",
-              let c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        open(link: url.absoluteString)
+    }
+
+    /// Names go to Explore. Action parameters keep their original bytes and
+    /// enter the existing approval sheets; opening a link never signs it.
+    func open(link raw: String) {
+        let parsed: SeaURL.Link
+        do { parsed = try SeaURL.parse(raw, chainID: browserChainID) }
+        catch {
+            browserLinkRequest = BrowserLinkRequest(raw: raw)
+            return
+        }
+        if case .name = parsed {
+            browserLinkRequest = BrowserLinkRequest(raw: raw)
+            return
+        }
+        guard case .action(let action, let original) = parsed,
+              let c = URLComponents(string: original) else { return }
         // A repeated parameter keeps its first value (never a crash on odd links).
         let q = Dictionary((c.queryItems ?? []).compactMap { i in i.value.map { (i.name, $0) } }, uniquingKeysWith: { first, _ in first })
-        let action = c.host ?? c.path
         // One request at a time, never written into what the user is typing.
         guard paymentRequest == nil, callRequest == nil, connectRequest == nil else {
             note("Ignored a link while another request is waiting for approval")

@@ -124,7 +124,7 @@
 
 이 단계는 이름의 `textOf(node, "app")` 레코드에서 appId를 읽고 [앱 레지스트리](31-app-registry.md)의 활성 릴리스 기록까지 조회합니다. `sea://`와 `eastsea://`는 같은 호스트를 해석합니다. 주소창 표시형은 `sea://<전체이름.sea>/…`입니다. 지갑은 해석된 앱 기록과 “content delivery comes next”를 보여줍니다. 콘텐츠 전달과 manifest의 양방향 `name_binding` 검증은 `ContentSource`를 구현하는 다음 lane의 작업이며, 검증 전에는 콘텐츠를 실행하거나 게시자 인증으로 표시하지 않습니다. 이름 해석만으로 결제·서명·컨트랙트 호출을 승인하지 않습니다.
 
-역방향은 컨트랙트가 읽을 때마다 재검증합니다(살아있는 기록 + 정방향이 되돌아보기). 그래서 만료·이전·주소 변경 뒤의 낡은 클레임은 자동으로 조용해지고, `setAddr`은 옛 주소의 클레임을 즉시 회수합니다. 앱은 아무것도 믿고 재검증할 필요가 없습니다.
+역방향은 컨트랙트가 읽을 때마다 재검증합니다(살아있는 기록 + 정방향이 되돌아보기). 만료·주소 변경 뒤의 낡은 클레임과 뿌리 이전으로 무효화된 자식 클레임은 조용해집니다. 뿌리 자체의 기존 클레임은 이전 후에도 정방향 주소가 그대로인 동안 유지되며, `setAddr`은 옛 주소의 클레임을 즉시 회수합니다. 앱은 역방향 이름만으로 새 오너나 콘텐츠 게시자를 인증하지 않습니다.
 
 ## 이벤트
 
@@ -143,6 +143,8 @@
 | `SubdomainDeleted(node, parent)` | 무료 자식 삭제; 후손은 세대 검증으로 무효 |
 
 ## 테스트 (`cd contracts && forge test`)
+
+URL·주소창·기존 액션 호환성은 `tests/fixtures/sea-urls.json` 하나를 공유합니다. Swift는 `scripts/test-swift-pure.sh`, JavaScript는 탐색기·확장 `npm test`, Rust는 `cargo test -p aether-sea-url`로 검사합니다. Rust 파서는 클라이언트 전용 `crates/sea-url`에 둡니다. 이름 URL 해석 때문에 증명 게스트가 컴파일하는 `crates/types` 등이나 proving program id를 바꾸지 않습니다.
 
 | 테스트 | 확인 |
 |---|---|

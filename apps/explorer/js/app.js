@@ -285,5 +285,6 @@ try {
 await setupPeers(savedRelays);
 window.addEventListener('pagehide', () => ctx.peerPool?.close());
 // Bounded diagnostics for the devnet browser measurement; no telemetry.
-window.aetherReadDiagnostics = () => ({ source: ctx.node?.source, livePeers: ctx.peerPool?.livePeers || [], metrics: ctx.peerPool?.metrics || null });
+window.aetherReadDiagnostics = () => ({ source: ctx.node?.source, livePeers: ctx.peerPool?.livePeers || [],
+  firstVerifiedHeadAt: ctx.peerPool?.monotonicFirstVerifiedHeadAt ?? null, metrics: ctx.peerPool?.metrics || null });
 connect();

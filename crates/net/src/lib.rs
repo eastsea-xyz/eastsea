@@ -223,6 +223,14 @@ impl WalletServers {
         out
     }
 
+    pub(crate) fn sample_with_operators(&self) -> Vec<(EndpointId, [u8; 20])> {
+        let ids = self.sample();
+        let announced = self.announced.lock().expect("wallet servers lock");
+        ids.into_iter()
+            .filter_map(|id| announced.get(&id).map(|entry| (id, entry.operator)))
+            .collect()
+    }
+
     fn live_at(&self, now: Instant) -> Vec<(EndpointId, [u8; 20])> {
         let g = self.announced.lock().expect("wallet servers lock");
         let mut ids: Vec<_> = g

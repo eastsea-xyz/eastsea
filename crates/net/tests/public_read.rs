@@ -289,8 +289,9 @@ async fn peer_exchange_includes_admitted_followers_but_never_unregistered_announ
     let hints = call(&probe, "aether_readPeers").await.unwrap();
     let hints = hints["result"].as_array().unwrap();
     assert_eq!(hints.len(), 2);
-    assert!(hints.contains(&json!(wallet.id().to_string())));
-    assert!(!hints.contains(&json!(unknown.id().to_string())));
+    assert_eq!(hints[0], json!({"node": wallet.id().to_string(), "operator": hex::encode([7; 20])}),
+        "admitted operator diversity must reach browser discovery before truncation");
+    assert!(!hints.iter().any(|hint| hint.as_str().or_else(|| hint["node"].as_str()) == Some(unknown.id().to_string().as_str())));
     router.shutdown().await.unwrap();
     wallet.close().await;
     unknown.close().await;

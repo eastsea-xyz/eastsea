@@ -334,11 +334,15 @@ test('a paced request gives transport only the remaining deadline', async () => 
     sleep: async (ms) => { tick += ms; } });
   transport.call = async () => '{}';
   for (let n = 0; n < 16; n++) await pool.raw({ node: ids[0] }, 'aether_status');
-  transport.call = () => new Promise(() => {});
+  let wireStarted = false;
+  transport.call = () => { wireStarted = true; return new Promise(() => {}); };
   const originalTimer = globalThis.setTimeout;
   let wireBudget;
   try {
-    globalThis.setTimeout = (callback, ms) => { wireBudget = ms; queueMicrotask(callback); return null; };
+    globalThis.setTimeout = (callback, ms) => {
+      if (wireStarted) { wireBudget = ms; queueMicrotask(callback); }
+      return null;
+    };
     await assert.rejects(pool.raw({ node: ids[0] }, 'aether_status', [], 200), /timed out/);
   } finally { globalThis.setTimeout = originalTimer; }
   assert.equal(wireBudget, 75, '125ms of pacing consumes the original 200ms transport deadline');
@@ -398,4 +402,117 @@ test('a genuine server-busy response still drops the peer despite local pacing',
   assert.ok(closed.includes(busyPeer));
   assert.equal(pool.dropped.get(busyPeer).reason, 'server busy');
   pool.close();
+});
+
+test('a concurrent receipt page keeps honest peers below their four-stream limit', async () => {
+  const { pool, transport, mod, closed } = setup({ timeoutMs: 1000 });
+  await pool.call('aether_status');
+  const original = transport.call.bind(transport);
+  const active = new Map(), pending = [];
+  let maximum = 0, done = false;
+  transport.call = async (peerJson, method, params) => {
+    if (method !== 'aether_getReceiptProof') return original(peerJson, method, params);
+    const node = JSON.parse(peerJson).node;
+    const count = (active.get(node) || 0) + 1;
+    maximum = Math.max(maximum, count);
+    if (count > 4) throw new Error('public read rate or concurrency limit reached');
+    active.set(node, count);
+    try {
+      await new Promise((resolve) => pending.push(resolve));
+      return JSON.stringify({ height: 7, receipt: { tx_hash: JSON.parse(params)[0] }, certified_block: {} });
+    } finally { active.set(node, active.get(node) - 1); }
+  };
+  mod.verifyReceipt = (_network, _status, answer) => JSON.stringify(JSON.parse(answer));
+  const finished = Promise.all(Array.from({ length: 18 }, (_, i) => pool.call('aether_getReceipt',
+    [`0x${(i + 1).toString(16).padStart(64, '0')}`]))).finally(() => { done = true; });
+  finished.catch(() => {});
+  try {
+    for (let turn = 0; turn < 32 && !done; turn++) {
+      await new Promise((resolve) => setImmediate(resolve));
+      for (const resolve of pending.splice(0)) resolve();
+    }
+    assert.equal((await finished).length, 18);
+    assert.equal(maximum, 4);
+    assert.equal(closed.length, 0);
+    assert.equal(pool.livePeers.length, 3);
+  } finally {
+    for (const resolve of pending.splice(0)) resolve();
+    pool.close();
+    await finished.catch(() => {});
+  }
+});
+
+test('transport-wide concurrency never exceeds the wasm limit of thirty-two calls', async () => {
+  const { pool, transport } = setup({ timeoutMs: 1000 });
+  const pending = [];
+  let active = 0, maximum = 0, done = false;
+  transport.call = async () => {
+    active++;
+    maximum = Math.max(maximum, active);
+    try {
+      if (active > 32) throw new Error('too many public read calls in flight');
+      await new Promise((resolve) => pending.push(resolve));
+      return '{}';
+    } finally { active--; }
+  };
+  const finished = Promise.all(Array.from({ length: 36 }, (_, i) => pool.raw({
+    node: (Math.floor(i / 4) + 1).toString(16).padStart(2, '0').repeat(32),
+  }, 'aether_status'))).finally(() => { done = true; });
+  finished.catch(() => {});
+  try {
+    for (let turn = 0; turn < 16 && !done; turn++) {
+      await new Promise((resolve) => setImmediate(resolve));
+      for (const resolve of pending.splice(0)) resolve();
+    }
+    assert.equal((await finished).length, 36);
+    assert.equal(maximum, 32);
+  } finally {
+    for (const resolve of pending.splice(0)) resolve();
+    pool.close();
+    await finished.catch(() => {});
+  }
+});
+
+test('a timed-out wire call keeps its slot until transport actually settles', async () => {
+  const { pool, transport } = setup();
+  const pending = [];
+  let sent = 0;
+  transport.call = () => { sent++; return new Promise((resolve) => pending.push(resolve)); };
+  try {
+    const first = await Promise.allSettled(Array.from({ length: 4 }, () => pool.raw({ node: ids[0] }, 'aether_status', [], 20)));
+    assert.ok(first.every((result) => result.status === 'rejected' && /timed out/.test(result.reason.message)));
+    await assert.rejects(pool.raw({ node: ids[0] }, 'aether_status', [], 20),
+      (error) => error.unavailable && /deadline/.test(error.message));
+    assert.equal(sent, 4, 'a JavaScript timeout cannot free an occupied iroh stream');
+    for (const resolve of pending.splice(0)) resolve('{}');
+    await new Promise((resolve) => setImmediate(resolve));
+    transport.call = async () => { sent++; return '{}'; };
+    await pool.raw({ node: ids[0] }, 'aether_status');
+    assert.equal(sent, 5, 'settled wire calls return their permits');
+  } finally {
+    for (const resolve of pending.splice(0)) resolve('{}');
+    pool.close();
+  }
+});
+
+test('closing the pool wakes a queued concurrency waiter without sending it', async () => {
+  const { pool, transport } = setup();
+  const pending = [];
+  let sent = 0;
+  transport.call = () => { sent++; return new Promise((resolve) => pending.push(resolve)); };
+  const first = Array.from({ length: 4 }, () => pool.raw({ node: ids[0] }, 'aether_status', [], 100));
+  const finished = Promise.allSettled(first);
+  await new Promise((resolve) => setImmediate(resolve));
+  const queued = pool.raw({ node: ids[0] }, 'aether_status', [], 100);
+  queued.catch(() => {});
+  await new Promise((resolve) => setImmediate(resolve));
+  try {
+    pool.close();
+    await assert.rejects(queued, /closed/);
+    assert.equal(sent, 4);
+  } finally {
+    for (const resolve of pending.splice(0)) resolve('{}');
+    pool.close();
+    await finished;
+  }
 });

@@ -13,6 +13,8 @@ const ACCOUNT_POLL_MS = 250;
 const ACCOUNT_POLLS = ACCOUNT_WAIT_MS / ACCOUNT_POLL_MS + 1;
 const PEER_BURST = 16;
 const PEER_RATE = 8;
+const PEER_INFLIGHT = 4;
+const TRANSPORT_INFLIGHT = 32;
 const monotonicNow = () => globalThis.performance?.now?.() ?? Date.now();
 const METHODS = new Set(['aether_status', 'eth_chainId', 'net_version', 'eth_blockNumber',
   'aether_getBlock', 'aether_recentBlocks', 'aether_getAccount', 'eth_getBalance',
@@ -103,7 +105,11 @@ export class PublicPeerPool {
     this.onPeer = onPeer;
     this.sleep = sleep;
     this.monotonic = monotonic;
+    this.monotonicStartedAt = this.monotonic();
+    this.monotonicFirstVerifiedHeadAt = null;
     this.pacing = new Map();
+    this.inflight = 0;
+    this.slotWaiters = new Set();
     this.candidates = new Map();
     this.active = new Map();
     this.dropped = new Map();
@@ -137,15 +143,24 @@ export class PublicPeerPool {
     let bucket = this.pacing.get(peer.node);
     if (!bucket) {
       if (this.pacing.size >= MAX_PEERS) throw missingProof('public peer pacing limit reached');
-      bucket = { tokens: PEER_BURST, last: this.monotonic(), firstResponse: false, queue: Promise.resolve() };
+      bucket = { tokens: PEER_BURST, last: this.monotonic(), firstResponse: false, inflight: 0, queue: Promise.resolve() };
       this.pacing.set(peer.node, bucket);
     }
+    let expired = false, wake, timer;
+    const deadlineError = () => missingProof('public read deadline expired while waiting for a request slot');
     const reservation = bucket.queue.then(async () => {
       for (;;) {
         if (this.closed) throw new Error('public peer pool is closed');
         const time = this.monotonic();
         const remaining = deadline - time;
-        if (remaining <= 0) throw missingProof('public read deadline expired while waiting for a request slot');
+        if (expired || remaining <= 0) throw deadlineError();
+        if (bucket.inflight >= PEER_INFLIGHT || this.inflight >= TRANSPORT_INFLIGHT) {
+          await new Promise((resolve) => {
+            wake = () => { this.slotWaiters.delete(wake); wake = null; resolve(); };
+            this.slotWaiters.add(wake);
+          });
+          continue;
+        }
         const elapsed = Math.max(0, Math.floor(time - bucket.last));
         // Match the node's integral refill; preserve depleted buckets across
         // connection rotation so reconnecting cannot earn an extra burst.
@@ -154,27 +169,46 @@ export class PublicPeerPool {
           bucket.tokens = Math.min(PEER_BURST, bucket.tokens + refill);
           bucket.last = time;
         }
-        if (bucket.tokens > 0) { bucket.tokens--; return bucket; }
+        if (bucket.tokens > 0) {
+          bucket.tokens--;
+          bucket.inflight++;
+          this.inflight++;
+          return bucket;
+        }
         const wait = bucket.firstResponse ? Math.max(1, Math.ceil(1000 / PEER_RATE - elapsed)) : 1000 / PEER_RATE;
         if (wait >= remaining) throw missingProof('public read deadline expires before a request slot is available');
         await this.sleep(wait);
       }
     });
     bucket.queue = reservation.catch(() => {});
-    return reservation;
+    // Each caller's deadline also covers time behind earlier queued callers.
+    // A cancelled reservation never acquires a slot when that queue resumes.
+    const deadlineTask = new Promise((_, reject) => {
+      timer = setTimeout(() => { expired = true; wake?.(); reject(deadlineError()); }, Math.max(0, deadline - this.monotonic()));
+    });
+    return Promise.race([reservation, deadlineTask]).finally(() => clearTimeout(timer));
   }
 
   async raw(peer, method, params = [], timeoutMs = this.timeoutMs) {
     if (this.closed) throw new Error('public peer pool is closed');
     const deadline = this.monotonic() + timeoutMs;
     const bucket = await this.reserve(peer, deadline);
-    const remaining = deadline - this.monotonic();
-    if (this.closed) throw new Error('public peer pool is closed');
-    if (remaining <= 0) throw missingProof('public read deadline expired before transport');
-    let timer;
+    const release = () => {
+      bucket.inflight--;
+      this.inflight--;
+      for (const wake of this.slotWaiters) wake();
+    };
+    let timer, wire;
     try {
+      const remaining = deadline - this.monotonic();
+      if (this.closed) throw new Error('public peer pool is closed');
+      if (remaining <= 0) throw missingProof('public read deadline expired before transport');
+      wire = Promise.resolve(this.transport.call(JSON.stringify(peer), method, JSON.stringify(params)));
+      // A JS timeout does not cancel an iroh call. Return its permits only when
+      // the actual operation settles, including late failures after the race.
+      wire.then(release, release);
       const result = await Promise.race([
-        this.transport.call(JSON.stringify(peer), method, JSON.stringify(params)),
+        wire,
         new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('public peer timed out')), remaining); }),
       ]);
       if (!bucket.firstResponse) {
@@ -191,9 +225,12 @@ export class PublicPeerPool {
       }
       // Pruning or a legacy block without receipt commitments is lack of data,
       // not evidence that this otherwise certified peer lied about the chain.
-      if (/pruned:|receipt proofs unavailable|receipt proof unavailable|receipt certificate unavailable/i.test(e?.message || '')) e.unavailable = true;
+      if (/pruned:|receipt proofs unavailable|receipt proof unavailable|receipt certificate unavailable|too many public read calls in flight|public read peer pool is full/i.test(e?.message || '')) e.unavailable = true;
       throw e;
-    } finally { clearTimeout(timer); }
+    } finally {
+      if (!wire) release();
+      clearTimeout(timer);
+    }
   }
 
   async floor() {
@@ -236,7 +273,10 @@ export class PublicPeerPool {
       prover_escrow: null, node_protocol: null, newest_scheduled: null, verified: true };
     this.active.set(peer.node, { peer, head, checkedAt: this.now(), latencyMs: this.now() - (old?.startedAt || this.now()) });
     certifiedRead(head, block.height, peer);
-    if (this.metrics.firstVerifiedHeadMs === null) this.metrics.firstVerifiedHeadMs = Math.max(0, this.now() - this.startedAt);
+    if (this.metrics.firstVerifiedHeadMs === null) {
+      this.monotonicFirstVerifiedHeadAt = this.monotonic();
+      this.metrics.firstVerifiedHeadMs = Math.max(0, this.monotonicFirstVerifiedHeadAt - this.monotonicStartedAt);
+    }
     return head;
   }
 
@@ -414,6 +454,7 @@ export class PublicPeerPool {
 
   close() {
     this.closed = true;
+    for (const wake of this.slotWaiters) wake();
     this.active.clear();
     this.pacing.clear();
     return this.transport.close?.();

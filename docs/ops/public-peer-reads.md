@@ -42,7 +42,8 @@ the derived target, key, salt, signature, network, size, expiry, and sequence.
 Browser seeds include the bundled validator node IDs and
 `public-read-peers.json`. Replaceable pkarr HTTP bridges resolve these known
 keys into signed addresses. A bounded `aether_readPeers` exchange introduces
-more configured peers and registry-admitted followers; the pool prefers
+more configured peers and registry-admitted followers. Admitted followers
+carry operator hints, with distinct operators sampled before duplicates; the pool prefers
 diverse operator/relay hints and keeps at least three verified peers when
 three are reachable. Hints select routes and never change network trust.
 Salted contact publication does not provide public-topic enumeration: the
@@ -60,6 +61,10 @@ verify their committed inclusion proof and requested transaction hash.
 Unverifiable peers are dropped. Live head floors survive storage when available
 and remain monotonic in memory when it is unavailable. Historical blocks
 remain readable without a live-head freshness requirement.
+
+Browser admission respects the service's four concurrent streams per peer and
+the WASM transport's 32-call limit. A JavaScript timeout keeps its permit until
+the underlying transport call settles, and queued reads retain their deadlines.
 
 Execution-only node metrics and unsupported contract calls are unavailable
 through peers. Presence returns an explicit unavailable aggregate until the
@@ -91,6 +96,9 @@ hosts in headless Chrome, measures cold verified-head/block-page times,
 rejects an actual iroh peer with a forged header, and stops every process in
 `finally`. Logs, screenshots, measurements, and stop evidence live under
 `tmp/p2p-read/`. It never launches the wallet app or builds a proving guest.
+First certificate timing uses the navigation's monotonic performance clock.
+Direct block-page timings launch a separate fresh browser, with empty caches;
+warm navigation and full home-page rendering are recorded separately.
 
 For local-only tests, `AETHER_IROH_RELAY_URL=http://127.0.0.1:<port>/` explicitly
 replaces native relays and `AETHER_IROH_NO_DHT=1` disables public DHT activity.

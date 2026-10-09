@@ -192,12 +192,18 @@ fn add_read_peer_hints(req: &Value, response: &mut Value, wallets: &WalletServer
         .filter_map(Value::as_str)
         .map(ToString::to_string)
         .collect();
-    ids.extend(wallets.sample().into_iter().map(|id| id.to_string()));
-    let mut seen = HashSet::new();
-    ids.retain(|id| seen.insert(id.clone()));
     ids.shuffle(&mut rand::rng());
-    ids.truncate(limit);
-    *hints = ids.into_iter().map(Value::String).collect();
+    // Preserve the admitted sample's operator spread through truncation and
+    // carry its hints to the browser's diverse-peer preference.
+    let mut sampled: Vec<Value> = wallets.sample_with_operators().into_iter()
+        .map(|(node, operator)| json!({"node": node.to_string(), "operator": hex::encode(operator)}))
+        .collect();
+    sampled.extend(ids.into_iter().map(Value::String));
+    let mut seen = HashSet::new();
+    sampled.retain(|hint| hint.as_str().or_else(|| hint.get("node").and_then(Value::as_str))
+        .is_some_and(|id| seen.insert(id.to_owned())));
+    sampled.truncate(limit);
+    *hints = sampled;
 }
 
 impl std::fmt::Debug for ReadProtocol {

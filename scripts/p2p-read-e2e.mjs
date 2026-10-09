@@ -23,7 +23,7 @@ const playwrightPath = process.env.PLAYWRIGHT_MODULE || '/Users/kjaylee/.codex/s
 for (const file of [binary, networkBinary, forgedBinary, relayBinary, playwrightPath]) await access(file);
 const { chromium } = await import(pathToFileURL(playwrightPath).href);
 const chrome = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const network = JSON.parse(execFileSync(networkBinary, ['3'], { cwd: root, encoding: 'utf8' }));
+const network = JSON.parse(execFileSync(networkBinary, ['3'], { cwd: root, encoding: 'utf8', timeout: 60_000 }));
 const children = []; const logs = []; let server; let browser;
 const ports = { relay: 19440, p2p: 19100, rpc: 19500 };
 const relay = `http://127.0.0.1:${ports.relay}/`;
@@ -54,6 +54,28 @@ async function rpc(port, method, params = []) {
     headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
     signal: AbortSignal.timeout(2_000) });
   const body = await response.json(); if (body.error) throw new Error(body.error.message); return body.result;
+}
+
+async function openPage(origin, attempted, pageErrors) {
+  browser = await chromium.launch({ executablePath: chrome, headless: true, env: environment });
+  const context = await browser.newContext();
+  await context.route('**/*', async route => {
+    const u = new URL(route.request().url()); attempted.add(`${u.protocol}//${u.host}`);
+    if (u.origin === origin) return route.continue();
+    return route.abort('blockedbyclient');
+  });
+  await context.routeWebSocket('**/*', socket => {
+    const u = new URL(socket.url()); attempted.add(`${u.protocol}//${u.host}`);
+    if (u.host === new URL(relay).host) socket.connectToServer();
+    else socket.close({ code: 1008, reason: 'Only the local test relay is allowed' });
+  });
+  await context.addInitScript(url => {
+    localStorage.setItem('aether-explorer.relays', JSON.stringify([url]));
+    localStorage.setItem('aether-explorer.gateway', '');
+  }, relay);
+  const page = await context.newPage();
+  page.on('pageerror', error => pageErrors.push(error.message));
+  return { context, page };
 }
 
 try {
@@ -98,25 +120,7 @@ try {
   const runs = Number(process.env.AETHER_READ_COLD_RUNS || 3);
   assert.ok(Number.isInteger(runs) && runs >= 1 && runs <= 5);
   for (let run = 0; run < runs; run++) {
-    browser = await chromium.launch({ executablePath: chrome, headless: true, env: environment });
-    const context = await browser.newContext();
-    await context.route('**/*', async route => {
-      const u = new URL(route.request().url()); attempted.add(`${u.protocol}//${u.host}`);
-      if (u.origin === origin) return route.continue();
-      // Explicitly deny HTTP RPC, public gateways and all non-test hosts.
-      return route.abort('blockedbyclient');
-    });
-    await context.routeWebSocket('**/*', socket => {
-      const u = new URL(socket.url()); attempted.add(`${u.protocol}//${u.host}`);
-      if (u.host === new URL(relay).host) socket.connectToServer();
-      else socket.close({ code: 1008, reason: 'Only the local test relay is allowed' });
-    });
-    await context.addInitScript(url => {
-      localStorage.setItem('aether-explorer.relays', JSON.stringify([url]));
-      localStorage.setItem('aether-explorer.gateway', '');
-    }, relay);
-    const page = await context.newPage();
-    page.on('pageerror', error => pageErrors.push(error.message));
+    const { context, page } = await openPage(origin, attempted, pageErrors);
     await page.goto(origin, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => window.aetherReadDiagnostics?.().source?.kind === 'peers'
       && window.aetherReadDiagnostics().livePeers.length >= 3
@@ -128,16 +132,19 @@ try {
     const began = Date.now();
     await page.evaluate(h => { location.hash = `#/block/${h}`; }, height);
     await page.waitForFunction(() => /verified by committee certificate/.test(document.getElementById('view')?.textContent || ''), null, { timeout: 30_000 });
-    const blockMs = Date.now() - began;
+    const warmBlockMs = Date.now() - began;
     await page.screenshot({ path: path.join(task, `block-${run}.png`), fullPage: true });
-    samples.push({ coldVerifiedHeadMs: head.totalMs, blockPageMs: blockMs, ...head.diagnostics.metrics });
+    const sample = { coldVerifiedHeadMs: head.diagnostics.firstVerifiedHeadAt, homePageMs: head.totalMs,
+      warmBlockPageMs: warmBlockMs, ...head.diagnostics.metrics };
+    assert.ok(Number.isFinite(sample.coldVerifiedHeadMs) && sample.coldVerifiedHeadMs >= 0);
     if (run === 0) {
       const rejection = await page.evaluate(async ({ network, peers, forged, relay }) => {
         const mod = await import('./wasm/aether_wasm.js'); await mod.default();
         const { PublicPeerPool } = await import('./js/peers.js');
         const transport = await mod.PublicReadTransport.create(JSON.stringify([relay]), JSON.stringify([relay]));
         const dropped = [];
-        const pool = new PublicPeerPool({ network, peers: [forged, ...peers], mod, transport, onPeer: event => dropped.push(event) });
+        const pool = new PublicPeerPool({ network, peers: [{ ...forged, operator: 'forged-test' }, ...peers],
+          mod, transport, onPeer: event => dropped.push(event) });
         try {
           const head = await pool.call('aether_status');
           return { head, dropped, live: pool.livePeers, metrics: pool.metrics };
@@ -149,6 +156,16 @@ try {
       await writeFile(path.join(task, 'forged-rejection.json'), JSON.stringify(rejection, null, 2));
     }
     await context.close(); await browser.close(); browser = null;
+    // Measure a direct block URL with a new browser process and empty caches.
+    const cold = await openPage(origin, attempted, pageErrors);
+    await cold.page.goto(`${origin}/#/block/${height}`, { waitUntil: 'domcontentloaded' });
+    await cold.page.waitForFunction(() => window.aetherReadDiagnostics?.().source?.kind === 'peers'
+      && window.aetherReadDiagnostics().livePeers.length >= 3
+      && /verified by committee certificate/.test(document.getElementById('view')?.textContent || ''), null, { timeout: 90_000 });
+    sample.coldBlockPageMs = await cold.page.evaluate(() => performance.now());
+    await cold.page.screenshot({ path: path.join(task, `cold-block-${run}.png`), fullPage: true });
+    samples.push(sample);
+    await cold.context.close(); await browser.close(); browser = null;
   }
   assert.deepEqual(pageErrors, []);
   assert.ok(![...attempted].some(host => host.includes('rpc.eastsea.xyz')));

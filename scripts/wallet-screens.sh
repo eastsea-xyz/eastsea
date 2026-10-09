@@ -29,7 +29,7 @@ if [ "$build" = 1 ]; then
   xcodegen generate >/dev/null
   # The gate's parent shell stays alive through xcodebuild. The alarm bounds
   # only the slot wait, never an already-authorized compile or fixture render.
-  perl -e 'alarm 1200; exec @ARGV' "$HOME/.claude/playbooks/aether-team/wait-compile.sh" && \
+  perl -e 'alarm 1200; exec @ARGV' "$root/scripts/compile-gate.sh" && \
   xcodebuild -project AetherWallet.xcodeproj -scheme WalletScreens -configuration Debug \
   -derivedDataPath "$root/tmp/wallet-screens-build" \
   CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build >"$root/tmp/wallet-screens-build.log" 2>&1 || {

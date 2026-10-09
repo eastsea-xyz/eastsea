@@ -91,6 +91,41 @@ check(W.votingMembership(network: member, validatorKey: "bad") == nil, "R10 unkn
 check(W.votingMembership(network: member, validatorKey: "0x" + mine.uppercased()) == true,
       "R10 canonical public-key spelling identifies the same member")
 
+// Recovery uses the attested shard identity; a validator key is not a node ID.
+let myNode = String(repeating: "c", count: 64)
+let otherNode = String(repeating: "d", count: 64)
+let nodeMember: [String: Any] = ["validators": [["key": mine, "node": myNode], ["key": other, "node": otherNode]]]
+let nodeFollower: [String: Any] = ["validators": [["key": myNode, "node": otherNode]]]
+check(W.votingMembership(network: nodeMember, nodeID: myNode) == true, "attested seated node membership is confirmed")
+check(W.votingMembership(network: nodeFollower, nodeID: myNode) == false, "a complete node set confirms a follower")
+check(W.votingMembership(network: nodeMember, nodeID: mine) == false, "validator keys do not identify member nodes")
+check(W.votingMembership(network: nodeFollower, validatorKey: myNode) == true, "the key overload keeps its separate identity semantics")
+check(W.votingMembership(network: nodeMember, validatorKey: mine) == true, "node fields preserve existing key membership")
+check(W.votingMembership(network: nodeMember, nodeID: "0X" + myNode.uppercased()) == true,
+      "node identity accepts canonical prefix and case variants")
+check(W.votingMembership(network: ["validators": [["node": "0x" + myNode.uppercased()]]], nodeID: myNode) == true,
+      "member node prefix and case variants normalize before comparison")
+check(W.votingMembership(network: nil, nodeID: myNode) == nil, "failed node membership read remains unknown")
+check(W.votingMembership(network: NSNull(), nodeID: myNode) == nil, "null node membership remains unknown")
+check(W.votingMembership(network: [:], nodeID: myNode) == nil, "missing node member list remains unknown")
+check(W.votingMembership(network: ["validators": []], nodeID: myNode) == nil, "empty node member list remains unknown")
+check(W.votingMembership(network: ["validators": "invalid"], nodeID: myNode) == nil, "a non-array node member list remains unknown")
+check(W.votingMembership(network: ["validators": [["node": otherNode], ["key": mine]]], nodeID: myNode) == nil,
+      "a missing member node ID cannot confirm absence")
+check(W.votingMembership(network: ["validators": [["node": otherNode], ["node": ""]]], nodeID: myNode) == nil,
+      "an empty member node ID cannot confirm absence")
+check(W.votingMembership(network: ["validators": [["node": myNode], ["node": "bad"]]], nodeID: myNode) == nil,
+      "a malformed later member invalidates even a seated match")
+check(W.votingMembership(network: ["validators": [["node": otherNode], ["node": 7]]], nodeID: myNode) == nil,
+      "a non-string member node ID cannot confirm absence")
+check(W.votingMembership(network: ["validators": [["node": otherNode], ["node": otherNode]]], nodeID: myNode) == nil,
+      "duplicate member node IDs cannot confirm absence")
+check(W.votingMembership(network: ["validators": [["node": myNode], ["node": "0X" + myNode.uppercased()]]], nodeID: myNode) == nil,
+      "duplicate canonical node identities invalidate even a seated match")
+for invalidNode in ["", "bad", String(repeating: "c", count: 63), String(repeating: "c", count: 65), String(repeating: "g", count: 64)] {
+    check(W.votingMembership(network: nodeMember, nodeID: invalidNode) == nil, "a malformed own node identity remains unknown")
+}
+
 var membership = W.MembershipSnapshot()
 check(membership.value(at: 100) == nil, "R10 initial membership snapshot is unknown")
 let initialGeneration = membership.generation

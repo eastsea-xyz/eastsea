@@ -97,6 +97,7 @@ final class UnattendedDaemon: ObservableObject {
     /// AppStorage restores the choice without invoking its didSet. Reconcile
     /// a saved opt-in once at startup, including a service never seen by macOS.
     func restore() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         if enabled { applyEnabledChange() } else { refreshStatus() }
     }
 
@@ -156,6 +157,7 @@ final class UnattendedDaemon: ObservableObject {
     }
 
     private func applyEnabledChange() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         #if WALLET_SCREENS
         // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
         return 
@@ -204,6 +206,9 @@ final class UnattendedDaemon: ObservableObject {
     /// single source of what the daemon runs: the same argv the app's own node
     /// takes (minus `--exit-with-parent`), so a restart changes nothing.
     func syncMarker() {
+        // An aborted update must not start background work from recovery.
+        // The saved preference is applied again on normal startup/retry.
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         #if WALLET_SCREENS
         return
         #endif

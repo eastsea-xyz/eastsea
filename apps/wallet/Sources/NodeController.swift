@@ -385,6 +385,17 @@ final class NodeController: ObservableObject {
         self.clock = clock
         wrongLocation = !InstallLocation.currentIsRunnable
         if wrongLocation { state = .failed(InstallLocation.moveSentence) }
+        prepareNormalLaunch()
+    }
+
+    private var normalLaunchPrepared = false
+
+    /// Defer data-folder reads and account subscriptions until normal mode.
+    /// A user retry takes the same path as a healthy ordinary launch.
+    func prepareNormalLaunch() {
+        guard !LaunchRecovery.shared.isSafeMode, !normalLaunchPrepared else { return }
+        normalLaunchPrepared = true
+        _ = MigrationStatus.shared
         do {
             if let root = try BlockDataMove.authoritativeRoot(in: Self.dataDir) {
                 chainDataPath = root.path == BlockDataLocation.resolvedRoot(Self.dataDir).path ? "" : root.path
@@ -467,6 +478,16 @@ final class NodeController: ObservableObject {
         if let rootPID, let expected = Self.helperBinaryURL {
             let sample = await LocalRPC.callVerified(rootPID: rootPID, port: Self.port, expected: expected,
                                                      method: "aether_status", params: [])
+            if LaunchRecovery.shared.isSafeMode {
+                // Membership belongs to this listener instance, not just
+                // its PID. A replaced daemon must be probed again.
+                guard let sample, sample.binding == verifiedStatusBinding,
+                      updateMembershipSnapshot.value(at: clock.now.seconds) != nil else {
+                    invalidateUpdateMembership()
+                    abortUpdatePreparation()
+                    return false
+                }
+            }
             releaseVerified = sample.map { NodeReleaseIdentity.hasWriterLease(status: $0.value) } ?? false
             runtimeAbsent = false
             attestedBinding = sample?.binding
@@ -527,7 +548,7 @@ final class NodeController: ObservableObject {
             updateOwnsRespawnSuspension = false
             unattended?.resumeRespawn()
         }
-        if enabled { applyPower() }
+        if enabled && !LaunchRecovery.shared.isSafeMode { applyPower() }
     }
 
     private var powerTimer: Timer?
@@ -543,6 +564,7 @@ final class NodeController: ObservableObject {
     }
 
     private func startIfAllowed() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         #if WALLET_SCREENS
         // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
         return 
@@ -560,6 +582,7 @@ final class NodeController: ObservableObject {
     /// reason when the node does not run. Nothing else may leave the switch
     /// on with no node and no reason (the founder's 0.7.0 report).
     func applyPower() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         guard !updateInProgress else { return }
         if storageMovePreparing {
             refreshStopReason()
@@ -883,7 +906,7 @@ final class NodeController: ObservableObject {
         // logs or reads ever lands in the real node folder.
         return FileManager.default.temporaryDirectory.appendingPathComponent("wallet-screens-no-node", isDirectory: true)
         #endif
-        DataMigration.ensure()
+        if !LaunchRecovery.shared.isSafeMode { DataMigration.ensure() }
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/EastSea/node", isDirectory: true)
     }
 
@@ -1004,6 +1027,8 @@ final class NodeController: ObservableObject {
 
     /// Resume the user's choice at launch.
     func restore() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
+        prepareNormalLaunch()
         #if WALLET_SCREENS
         // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
         return
@@ -1025,6 +1050,7 @@ final class NodeController: ObservableObject {
     }
 
     func start() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         guard !updateInProgress, !storageMovePreparing else { return }
         runningReleaseVerified = false
         #if WALLET_SCREENS
@@ -1206,6 +1232,7 @@ final class NodeController: ObservableObject {
     /// The tail of the node's log: what the watchdog reads to tell a full disk
     /// from a damaged database when the node exits with the storage code.
     private func nodeLogTail(_ bytes: Int = 8_192) -> String {
+        guard !LaunchRecovery.shared.isSafeMode else { return "" }
         let url = chainRoot.appendingPathComponent("node.log")
         guard let data = try? NodeLogTail.read(url, wanted: bytes) else { return "" }
         return String(data: data, encoding: .utf8) ?? ""
@@ -1215,6 +1242,7 @@ final class NodeController: ObservableObject {
     /// retain the state until another transition. Re-reading the tail also
     /// handles a marker that was only partly written at the previous poll.
     private func refreshMacConfirmation() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         let waiting = NodeMacConfirmation.waiting(in: nodeLogTail(65_536), previously: confirmingMac)
         if confirmingMac != waiting {
             confirmingMac = waiting
@@ -1364,6 +1392,7 @@ final class NodeController: ObservableObject {
     /// Hardware verification can wait indefinitely; it must not hold the
     /// main actor or delay launching the node that reports the waiting state.
     private func loadCandidate(_ binary: URL) {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         guard candidate == nil, candidateProcess == nil, !confirmingMac, answeredSinceStart,
               DataMigration.mayStartNode() == nil else { return }
         // RPC only starts after the node's identity setup. Waiting for it
@@ -1424,8 +1453,12 @@ final class NodeController: ObservableObject {
     /// read from the same signed listener. An unclaimed endpoint is unknown.
     var updateMembership: Bool? {
         if updateInProgress { return updateMembershipSnapshot.value(at: clock.now.seconds) }
+        if LaunchRecovery.shared.isSafeMode, unattended?.runningNodePID != nil {
+            guard updateReleaseVerified else { return nil }
+            return updateMembershipSnapshot.value(at: clock.now.seconds)
+        }
         guard process != nil || attached else {
-            guard !enabled, !lockRefused, unattended?.runningNodePID == nil,
+            guard (!enabled || LaunchRecovery.shared.isSafeMode), !lockRefused, unattended?.runningNodePID == nil,
                   let at = unclaimedProbeRequestedAt,
                   clock.now.elapsed(since: at) >= 0, clock.now.elapsed(since: at) <= 15,
                   unclaimedEndpointAbsent, Self.updateLockIsClear(in: Self.dataDir) else { return nil }
@@ -1470,8 +1503,45 @@ final class NodeController: ObservableObject {
         let generation = updateMembershipSnapshot.generation
         let requestedAt = clock.now
         let port = Self.port
+        if LaunchRecovery.shared.isSafeMode, let pid = unattended?.runningNodePID,
+           let expected = Self.helperBinaryURL {
+            lastUpdateMembershipCheck = requestedAt
+            updateMembershipTask = Task { [weak self] in
+                let status = await LocalRPC.callVerified(rootPID: pid, port: port, expected: expected,
+                                                        method: "aether_status", params: [])
+                let leased = status.map { NodeReleaseIdentity.hasWriterLease(status: $0.value) } ?? false
+                var identity: LocalRPC.VerifiedReply?
+                var network: LocalRPC.VerifiedReply?
+                if leased {
+                    // The running node exposes its public node ID. No
+                    // candidate-info process, key-file read, or log parser.
+                    identity = await LocalRPC.callVerified(rootPID: pid, port: port, expected: expected,
+                                                          method: "aether_shardStats", params: [])
+                    if identity?.binding == status?.binding {
+                        network = await LocalRPC.callVerified(rootPID: pid, port: port, expected: expected,
+                                                             method: "aether_network", params: [])
+                    }
+                }
+                guard let self, self.updateMembershipSnapshot.generation == generation else { return }
+                self.updateMembershipTask = nil
+                guard LaunchRecovery.shared.isSafeMode, !self.updateInProgress,
+                      self.unattended?.runningNodePID == pid else { return }
+                let sameListener = leased && status?.binding == identity?.binding && status?.binding == network?.binding
+                self.runningReleaseVerified = sameListener
+                self.releaseVerifiedPID = sameListener ? pid : nil
+                self.verifiedStatusBinding = sameListener ? status?.binding : nil
+                self.verifiedStatusRequestedAt = sameListener ? requestedAt : nil
+                let nodeID = (identity?.value as? [String: Any])?["me"] as? String
+                let membership = sameListener ? nodeID.flatMap {
+                    UpdateWindow.votingMembership(network: network?.value, nodeID: $0)
+                } : nil
+                self.updateMembershipSnapshot.observe(membership, requestedAt: requestedAt.seconds, generation: generation)
+                self.onUpdateMomentChanged?()
+            }
+            return
+        }
         if process == nil, !attached {
-            guard !enabled, !lockRefused, unattended?.runningNodePID == nil,
+            guard (!enabled || LaunchRecovery.shared.isSafeMode), !lockRefused, unattended?.runningNodePID == nil,
                   Self.updateLockIsClear(in: Self.dataDir) else { return }
             lastUpdateMembershipCheck = requestedAt
             updateMembershipTask = Task { [weak self] in
@@ -1481,7 +1551,7 @@ final class NodeController: ObservableObject {
                 guard !self.updateInProgress, self.process == nil, !self.attached else { return }
                 self.unclaimedProbeRequestedAt = requestedAt
                 self.unclaimedEndpointAbsent = absent
-                let clear = absent && !self.enabled && self.unattended?.runningNodePID == nil
+                let clear = absent && (!self.enabled || LaunchRecovery.shared.isSafeMode) && self.unattended?.runningNodePID == nil
                     && Self.updateLockIsClear(in: Self.dataDir)
                 self.updateMembershipSnapshot.observe(clear ? false : nil,
                     requestedAt: requestedAt.seconds, generation: generation)
@@ -1741,6 +1811,7 @@ final class NodeController: ObservableObject {
     }
 
     private func check() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         refreshPresenceRegion()
         restartPresenceCountryIfNeeded()
         if refusePersistedBindingMismatch() { return }

@@ -84,23 +84,35 @@ enum UpdateWindow {
     /// Followers forward aether_network to a validator. Transport failures,
     /// null responses and malformed member rows remain unknown.
     static func votingMembership(network: Any?, validatorKey: String) -> Bool? {
-        func normalizedKey(_ text: String) -> String? {
-            let lower = text.lowercased()
-            let key = lower.hasPrefix("0x") ? String(lower.dropFirst(2)) : lower
-            guard key.utf8.count == 64,
-                  key.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
-            return key
-        }
-        guard let mine = normalizedKey(validatorKey),
+        votingMembership(network: network, identity: validatorKey, field: "key")
+    }
+
+    /// Recovery can attest the running node's identity without reading its
+    /// candidate key. Node IDs and validator keys are separate identities;
+    /// every member's node ID must be valid before absence is confirmed.
+    static func votingMembership(network: Any?, nodeID: String) -> Bool? {
+        votingMembership(network: network, identity: nodeID, field: "node")
+    }
+
+    private static func normalizedIdentity(_ text: String) -> String? {
+        let lower = text.lowercased()
+        let identity = lower.hasPrefix("0x") ? String(lower.dropFirst(2)) : lower
+        guard identity.utf8.count == 64,
+              identity.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
+        return identity
+    }
+
+    private static func votingMembership(network: Any?, identity: String, field: String) -> Bool? {
+        guard let mine = normalizedIdentity(identity),
               let object = network as? [String: Any],
               let members = object["validators"] as? [[String: Any]],
               !members.isEmpty else { return nil }
-        var keys = Set<String>()
+        var identities = Set<String>()
         for member in members {
-            guard let raw = member["key"] as? String, let key = normalizedKey(raw),
-                  keys.insert(key).inserted else { return nil }
+            guard let raw = member[field] as? String, let identity = normalizedIdentity(raw),
+                  identities.insert(identity).inserted else { return nil }
         }
-        return keys.contains(mine)
+        return identities.contains(mine)
     }
 
     static func decide(_ m: Moment) -> Decision {

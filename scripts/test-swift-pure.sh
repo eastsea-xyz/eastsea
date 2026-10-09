@@ -93,6 +93,7 @@ run fee-confirm EarningsModel.swift
 run health-check Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift HealthCheck.swift
 run history-notice HistoryFailure.swift
 run install-location Brand.swift InstallLocation.swift
+run launch-tracker LaunchTracker.swift
 run key-exposure KeyExposureNotice.swift
 run legacy-aether Brand.swift LegacyAether.swift
 run live-presence LivePresence.swift UnattendedDecision.swift

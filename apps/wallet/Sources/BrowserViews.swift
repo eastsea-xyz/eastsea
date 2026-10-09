@@ -673,7 +673,7 @@ enum BrowserExternal {
         guard ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return }
         #if os(macOS)
         guard let safari = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Safari") else { return }
-        NSWorkspace.shared.open([url], withApplicationAt: safari, configuration: .init())
+        NSWorkspace.shared.open([url], withApplicationAt: safari, configuration: NSWorkspace.OpenConfiguration())
         #else
         UIApplication.shared.open(url)
         #endif

@@ -79,6 +79,10 @@ struct SimpleDashboard: View {
     /// Requests from links, pages and the node open the right sheet or page
     /// (split from `body` so the type checker stays fast).
     private func routing<V: View>(_ v: V) -> some View {
+        nodeRouting(browserRouting(transactionRouting(v)))
+    }
+
+    private func transactionRouting<V: View>(_ v: V) -> some View {
         v
             .onChange(of: sheet) { _, s in model.sendSheetOpen = Self.isSigningSheet(s) }
             .onChange(of: model.callRequest) { _, r in if r != nil { sheet = .call } }
@@ -88,6 +92,10 @@ struct SimpleDashboard: View {
             // "Send again at the current fee": the normal send sheet, filled in (bug #5).
             .onChange(of: model.resendRequest) { _, r in if r != nil { sheet = .send } }
             .onChange(of: model.agentTransactionHash) { _, hash in if hash != nil { page = .security } }
+    }
+
+    private func browserRouting<V: View>(_ v: V) -> some View {
+        v
             .onChange(of: model.browserLinkRequest) { _, request in
                 if let request {
                     page = .explore
@@ -100,6 +108,10 @@ struct SimpleDashboard: View {
             .onChange(of: model.address) { _, _ in browserSession.environmentDidChange() }
             .onChange(of: model.exploreLocked) { _, _ in browserSession.environmentDidChange() }
             .onChange(of: developerMode) { _, _ in browserSession.environmentDidChange() }
+    }
+
+    private func nodeRouting<V: View>(_ v: V) -> some View {
+        v
             #if os(macOS)
             .onAppear { openRequestedNetwork() }
             .onChange(of: sheet) { _, s in if s == nil { inviteIfReady() } }

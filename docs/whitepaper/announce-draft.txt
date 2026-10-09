@@ -1,0 +1,34 @@
+DRAFT — founder sends; refresh against the verified release before sending.
+Subject: EastSea: a public network experiment on Macs, for critique
+
+I've been working on EastSea, an experiment around one question:
+Can ordinary Macs run and prove a public network with no owner?
+
+The paper describes a drawn Simplex BFT committee, threshold BLS
+certificates, asynchronous Jolt/Akita execution proofs on Metal, certified
+snapshot sync, and prunable history. It records testnet evidence and
+distinguishes implemented rules from proposals. [1]
+
+In a regional-link simulation with 20 Mbps upload per validator and
+approximately 50 KB payloads, 16 seats had empirical p99 finality of
+0.699002 seconds. [2] This is simulation evidence, not a distributed-Mac
+measurement. A recorded M1 Max/Metal warm sample proved 50 transactions
+in 47.2 seconds. [1]
+
+This is early and unproven, without an independent security audit.
+Proofs can lag or be absent; admission and software updates retain
+operating keys. Please do not participate expecting money. [1]
+
+I'd welcome critique of the consensus and proving assumptions, code and
+paper review, reports of what breaks, and measurements from your own Mac.
+
+Join the experiment:
+Repo: https://github.com/eastsea-xyz/eastsea
+Paper/sources [1]: docs/whitepaper/eastsea.md in the repo.
+Run locally (four validators; disposable directory):
+export AETHER_DEVNET_DIR="$(git rev-parse --show-toplevel)/tmp/eastsea-demo"
+scripts/demo.sh
+scripts/devnet.sh stop
+Report results: https://github.com/eastsea-xyz/eastsea/issues
+
+[2] Repo revision 9e033c8, docs/research/committee-scale-2026-10-09.md.

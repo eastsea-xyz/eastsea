@@ -19,6 +19,7 @@ final class BrowserController: NSObject, ObservableObject {
     @Published var addressField = ""
     /// The one-line refusal under the address bar (why a URL did not load).
     @Published var notice: String?
+    @Published private(set) var httpsOffer: URL?
     /// The one-time warning sheet for an external site.
     @Published var warning: SiteWarning?
     /// The confirmation sheet a page's request opened (one at a time).
@@ -527,20 +528,31 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     private func openInput(_ text: String, historyTarget: UUID?) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         cancelContentResolution()
+        notice = nil
+        httpsOffer = nil
         do {
-            switch try SeaURL.browserInput(text, chainID: model?.networkChainId ?? Brand.networkChainId) {
+            switch try SeaURL.browserInput(text, chainID: model?.browserChainID ?? Brand.networkChainId) {
             case .name(let link):
                 navigationTarget = historyTarget
                 guard let url = URL(string: link.canonicalURL), confirmSeaName(url) else { return }
                 openName(link, historyTarget: historyTarget)
             case .web(let url): performLoad(url, historyTarget: historyTarget)
-            case .action(_, let raw):
-                model?.open(link: raw)
+            case .action(let host, let raw):
+                if ["pay", "call", "connect", "tx"].contains(host) { model?.open(link: raw) }
+                else { notice = String(localized: "This wallet action is not available yet.") }
             }
         } catch {
             notice = SeaNameText.message(error)
+            if error as? SeaURL.ParseError == .externalTLD { httpsOffer = SeaURL.suggestedHTTPS(text) }
         }
+    }
+
+    func openOfferedHTTPS() {
+        guard let url = httpsOffer else { return }
+        httpsOffer = nil
+        load(url)
     }
 
     private func openName(_ link: SeaURL.NameLink, historyTarget: UUID?) {
@@ -549,7 +561,7 @@ final class BrowserController: NSObject, ObservableObject {
         discardActiveNavigation()
         invalidateDocument()
         let requestID = navigationID
-        let chain = model?.networkChainId ?? Brand.networkChainId
+        let chain = model?.browserChainID ?? Brand.networkChainId
         let port = model?.nodeRpcPort ?? 18545
         let accountID = model?.accountStore.activeAccount?.id
         let accountAddress = model?.address.lowercased() ?? ""
@@ -584,7 +596,7 @@ final class BrowserController: NSObject, ObservableObject {
                 guard latest == record else { throw SeaNameResolver.Failure.unstable }
                 try Task.checkCancellation()
                 guard !self.suspended, !self.closed, self.navigationID == requestID,
-                      self.model?.networkChainId == chain, self.model?.nodeRpcPort == port,
+                      self.model?.browserChainID == chain, self.model?.nodeRpcPort == port,
                       self.model?.accountStore.activeAccount?.id == accountID,
                       self.model?.address.lowercased() == accountAddress,
                       let registry = pins?.apps.address else { return }
@@ -800,6 +812,7 @@ final class BrowserController: NSObject, ObservableObject {
         cancelContentResolution()
         navigationTarget = historyTarget
         notice = nil
+        httpsOffer = nil
         if Self.isActionLink(url) {
             openInput(url.absoluteString, historyTarget: historyTarget)
             return
@@ -936,6 +949,7 @@ final class BrowserController: NSObject, ObservableObject {
         estimatedProgress = 0
         warning = nil
         notice = nil
+        httpsOffer = nil
         navigationTarget = historyTarget
         recordNavigation(url: nil, title: title)
         refreshSitePermissions()
@@ -1519,6 +1533,10 @@ final class BrowserController: NSObject, ObservableObject {
                 replyHandler(["error": ["code": e.code, "message": e.message]], nil)
             }
         }
+        guard let source = message.webView, source === webView else {
+            reply(.failure(ProviderError(code: ProviderErrorCode.locked, message: "the tab is gone")))
+            return
+        }
         guard let model else {
             reply(.failure(ProviderError(code: ProviderErrorCode.internalError, message: "The wallet is not ready.")))
             return
@@ -1724,6 +1742,10 @@ final class BrowserController: NSObject, ObservableObject {
     fileprivate func handleVerifyMessage(_ message: WKScriptMessage,
                                          replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let reply = Self.envelope(replyHandler)
+        guard let source = message.webView, source === webView else {
+            reply(.failure(ProviderError(code: ProviderErrorCode.locked, message: "the tab is gone")))
+            return
+        }
         guard let model else {
             reply(.failure(ProviderError(code: ProviderErrorCode.internalError, message: "The wallet is not ready.")))
             return

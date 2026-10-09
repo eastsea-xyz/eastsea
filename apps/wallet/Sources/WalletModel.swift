@@ -183,6 +183,7 @@ final class WalletModel: ObservableObject {
     /// The port this Mac's own node serves JSON-RPC on (the dev network gets
     /// its own port). The Explore tab's unverified reads go here.
     var nodeRpcPort: UInt16 { developmentNetwork ? developmentPort : 18545 }
+    var browserChainID: UInt64 { networkChainId == 0 ? Brand.networkChainId : networkChainId }
 
     var dappContext: DappRequestContext? {
         guard !exploreLocked, !address.isEmpty, let chain = try? configuredChainId() else { return nil }
@@ -1240,9 +1241,11 @@ final class WalletModel: ObservableObject {
         open(link: url.absoluteString)
     }
 
+    /// Names go to Explore. Action parameters keep their original bytes and
+    /// enter the existing approval sheets; opening a link never signs it.
     func open(link raw: String) {
         let parsed: SeaURL.Link
-        do { parsed = try SeaURL.parse(raw, chainID: status?.chainId ?? Brand.networkChainId) }
+        do { parsed = try SeaURL.parse(raw, chainID: browserChainID) }
         catch {
             browserLinkRequest = BrowserLinkRequest(raw: raw)
             return

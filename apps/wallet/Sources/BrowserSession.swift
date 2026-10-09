@@ -200,11 +200,32 @@ final class BrowserSession: ObservableObject {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let scheme = URL(string: text)?.scheme?.lowercased() ?? ""
         let host = text.prefix { !"/?#".contains($0) }
-        if ["sea", "eastsea", "aether"].contains(scheme)
-            || (!text.contains("://") && host.hasSuffix(".aeth")) {
-            tab.hasLoaded = true
-            tab.controller.open(text)
-            return
+        do {
+            switch try SeaURL.browserInput(text, chainID: model?.browserChainID ?? Brand.networkChainId) {
+            case .name, .action:
+                tab.hasLoaded = true
+                tab.controller.open(text)
+                return
+            case .web(let url):
+                guard let canonical = BrowserInput.canonicalURL(url) else {
+                    controller.notice = BrowserInput.Failure.invalidAddress.localizedDescription
+                    return
+                }
+                tab.hasLoaded = true
+                tab.controller.load(canonical)
+                return
+            }
+        } catch {
+            let explicitName = !text.contains("://") && !text.contains(where: \.isWhitespace)
+                && (host.lowercased().hasSuffix(".sea") || host.lowercased().hasSuffix(".aeth"))
+            if error as? SeaURL.ParseError == .externalTLD
+                || ["sea", "eastsea", "aether"].contains(scheme) || explicitName {
+                // Invalid names and external TLDs stay with the canonical
+                // parser; an HTTPS offer needs the person's explicit choice.
+                tab.hasLoaded = true
+                tab.controller.open(text)
+                return
+            }
         }
         switch AppSearchInput.destination(for: input) {
         case .empty: return

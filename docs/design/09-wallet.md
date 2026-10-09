@@ -209,7 +209,15 @@ Aether.app (SwiftUI)
 
 창업자(2026-10-05): "지갑에 브라우저가 있어야 하는 것 아닌가?" — 공개 HTTPS 탐색기는 사용자의 로컬 노드를 못 읽는다(Chrome 로컬 네트워크 접근 프롬프트, Safari 혼합 콘텐츠 — [docs/research/public-read-access-2026-10-05.md](../research/public-read-access-2026-10-05.md) §3.4). iOS에는 확장이 없고, dApp(이름 서비스, 이후 DEX·런치패드)에는 사이너가 필요하다. `Sources/ExploreTab.swift`·`BrowserController.swift`.
 
-**탭 구성.** 사이드바(macOS)·하단 탭(iOS)에 Explore가 붙는다. 홈은 큐레이티드 항목 두 개 — 블록 탐색기(번들)와 프로젝트 사이트. 주소창은 스킴 없는 입력을 `https://` 호스트로 취급한다.
+**탭 구성.** 사이드바(macOS)·하단 탭(iOS)에 Explore가 붙는다. 홈은 큐레이티드 항목 두 개 — 블록 탐색기(번들)와 프로젝트 사이트. 주소창은 `harbor`, `harbor.sea`, `sea://harbor/path?q=1`, `eastsea://harbor.sea/path?q=1`를 같은 이름으로 읽고 `sea://harbor.sea/path?q=1`로 표시한다. 이름 문법은 [26-name-service.md](26-name-service.md)의 소문자 DNS LDH 규칙이다. `.aeth`는 체인 7780에서만 읽는 별칭이고 표시에는 `.sea`를 쓴다. HTTPS 웹 주소는 `https://`를 명시해서 연다. 스킴 없는 `.com`·`.xyz`·`.net` 등과 그런 호스트를 가진 `sea://` 링크에는 “웹 주소(.com 등)는 동해 이름이 아니에요. https://로 여세요.”를 표시하고, 사용자가 **HTTPS로 열기**를 선택하면 기존 외부 사이트 경고를 거쳐 브라우저에 연다. 이 문구는 영어·한국어·일본어·중국어 간체·중국어 번체로 제공한다.
+
+**짧은 스킴과 승인 (0.7.4, 2026-10-08).** macOS·iOS는 `sea`, `eastsea`, `aether`를 모두 `CFBundleURLSchemes`에 등록한다. `sea://`와 `eastsea://`의 이름·액션 의미는 같다. 기존 `eastsea://pay|call|connect|tx`와 `aether://` 액션 링크는 쿼리·콜백 바이트를 다시 쓰지 않고 같은 요청 파서로 전달한다. `pay`, `call`, `connect`, `tx`, `app`, `follow`, `name`, `wallet`, `settings`와 `send`, `receive`, `sign`, `deploy`, `open`은 등록할 수 없는 액션 이름이다(주소창에서 액션과 이름이 충돌하지 않게 한다).
+
+`sea`는 짧은 커스텀 스킴이므로 다른 앱도 등록할 수 있고, OS가 어느 앱을 여는지 지갑이 보장할 수 없다. 링크에는 비밀·키·세션을 넣지 않는다. 링크를 열었다는 사실은 승인이나 인증이 아니다. 지갑은 결제·컨트랙트 호출을 요청 상태에만 저장하고 **지갑 자체의 승인 시트와 Touch ID 서명**을 통과해야 전송한다. 연결도 지갑 자체의 승인 시트를 거치며, 예약된 다른 액션은 구현된 승인 흐름이 없으면 실행하지 않는다. 링크 발신자나 웹 페이지가 승인 UI를 대신할 수 없다.
+
+**이름 → 앱 (0.7.4).** `SeaURL.swift`는 Foundation만 쓰는 순수 파서이며 Swift·JavaScript·Rust가 `tests/fixtures/sea-urls.json` 하나를 테스트한다. 이름 조회는 이름 레지스트리의 살아 있는 레코드와 `app` 텍스트를 읽은 뒤 [31-app-registry.md](31-app-registry.md)의 `currentRelease(appId)`를 읽는다. 앱은 활성 릴리스의 식별자와 manifest/bundle 해시만 보여 주고 **“Content delivery comes next.”**로 멈춘다. P2P 전달의 연결점은 `ContentSource` 프로토콜이다. 아직 manifest의 양방향 `name_binding`을 검증하지 않았으므로 이 화면은 앱 실행이나 게시자 인증을 의미하지 않고, 어떤 콘텐츠나 트랜잭션도 실행하지 않는다.
+
+레지스트리는 번들의 `name-sources.json`에 체인별 주소와 런타임 코드 SHA-256을 함께 고정한다. 각 이름 조회는 코드 바이트를 확인한 뒤 같은 확정 블록에서 레코드를 읽는다. 없는 배포를 추측하지 않는다: 현재 번들에는 배포된 이름/앱 레지스트리 핀이 없고 “Name registry is not available on this network.”가 나온다. 코드가 바뀐 불변 계약은 새 주소와 핀을 공표해야 한다(26/A5-8). 이 lane은 공개 배포를 하지 않는다.
 
 **번들 탐색기.** `apps/explorer`를 앱 리소스로 복사해(postBuildScript `Bundle explorer`, test/·package.json·README.md 제외) `eastsea-page://` 개인 스킵으로 서빙한다(`BundledPageScheme`). `file://`에 문을 열지 않고, 경로 탐색(`..`)은 거부하며(`BundledPagePath`), 모든 응답에 CSP가 붙는다 — `default-src 'none'; script-src 'self'; …; connect-src 'self' http://127.0.0.1:18545 http://127.0.0.1:18546`. 탐색기의 노드 엔드포인트(`localStorage` `aether-explorer.node`)는 매 로드마다 이 앱의 노드 포트(통상 18545, 개발망 18546)로 지정된다: 노드가 임의 오리진을 허용하므로 페이지가 직접 fetch한다.
 

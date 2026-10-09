@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity ^0.8.19;
 
-/// The `.aeth` name service (docs/design/26-name-service.md, launch item E18):
+/// The `.sea` name service (docs/design/26-name-service.md, launch item E18):
 /// fixed burn fees, no auction. Immutable, no owner, no admin, no upgrade, no
 /// pause — the same rules for everyone, forever.
 ///
@@ -16,8 +16,8 @@ pragma solidity ^0.8.19;
 ///
 /// The fee is fixed by name length, paid in native DBLN, and BURNED (sent to
 /// BURN_ADDRESS). Nobody receives anything: no fee recipient, no treasury, no
-/// premium or reserved names (12-launch-plan.md 원칙: 비수탁, 수수료 0). The burn
-/// address is 0x…dEaD — the ecosystem's keyless convention; address(0) is
+/// premium names. URI action hosts are reserved to prevent routing ambiguity.
+/// The burn address is 0x…dEaD — the ecosystem's keyless convention; address(0) is
 /// deliberately NOT used because it is the "unset" sentinel all over this
 /// contract. Over-payment is refunded in the same call; state is settled
 /// before either transfer (checks-effects-interactions), so re-entrancy from
@@ -26,9 +26,9 @@ pragma solidity ^0.8.19;
 /// COMMIT_BOND is burned when the commitment is posted, never refunded, and
 /// credited toward the registration fee when the same committer reveals
 /// within the window — an honest self-reveal pays exactly the fee overall.
-/// It exists so this contract is never a free path for permanent state
-/// writes (A5-1); the chain-level state fee is the real defence against
-/// arbitrary storage-writing contracts. An expired, unrevealed commitment
+/// It prevents free blind commitment writes (A5-1); the chain-level state
+/// fee is the real defence against arbitrary storage-writing contracts.
+/// An expired, unrevealed commitment
 /// can be reclaimed by anyone via `clear`.
 ///
 /// Registration lasts REGISTRATION_PERIOD; anyone may renew (a gift to the
@@ -36,6 +36,12 @@ pragma solidity ^0.8.19;
 /// the name is released and free to register again — with no stale resolver
 /// data (the release is lazy: views go quiet immediately, and the next
 /// registration sweeps the old record).
+///
+/// Root owners create and delete free subdomain records. A child records its
+/// parent's generation, and resolution validates every ancestor back to the
+/// root. Root expiry (without grace), transfer, re-registration, or renewal
+/// after expiry invalidates existing children. Ancestor deletion/recreation
+/// never revives descendants; they must be recreated explicitly.
 ///
 /// Owners are addresses, and EastSea accounts are smart accounts, so an owner
 /// may well be a contract. This contract never calls its owners; ownership
@@ -50,6 +56,11 @@ contract EastSeaNames {
         address addr;
         bytes32[] textKeys;
         mapping(bytes32 => string) texts;
+        /// Zero for registrable roots. Children reference a strictly shorter
+        /// hostname and the parent's generation when they were created.
+        bytes32 parent;
+        uint64 generation;
+        uint64 parentGeneration;
     }
 
     error InvalidName();
@@ -84,6 +95,8 @@ contract EastSeaNames {
     event AddrSet(bytes32 indexed node, address indexed addr);
     event TextSet(bytes32 indexed node, string key, string value);
     event ReverseSet(address indexed account, bytes32 indexed node, string name);
+    event SubdomainCreated(string name, bytes32 indexed node, bytes32 indexed parent, address indexed owner);
+    event SubdomainDeleted(bytes32 indexed node, bytes32 indexed parent);
 
     /// Keyless, codeless, nobody's. address(0) is reserved for "unset".
     address payable public constant BURN_ADDRESS = payable(0x000000000000000000000000000000000000dEaD);
@@ -93,8 +106,11 @@ contract EastSeaNames {
     uint256 public constant FEE_5_PLUS = 0.1 ether;
     uint256 public constant MIN_NAME_LENGTH = 3;
     uint256 public constant MAX_NAME_LENGTH = 32;
+    uint256 public constant MAX_LABEL_LENGTH = 63;
+    uint256 public constant MAX_HOSTNAME_LENGTH = 253;
     uint256 public constant REGISTRATION_PERIOD = 365 days;
-    /// After this the name is free again. Views go quiet at expiry+grace.
+    /// After this the root is free again. Root views stop at expiry+grace;
+    /// children stop at expiry.
     uint64 public constant GRACE_PERIOD = 30 days;
     /// Commit must age this long (and no longer than MAX_COMMIT_AGE).
     uint64 public constant MIN_COMMIT_AGE = 60 seconds;
@@ -210,7 +226,7 @@ contract EastSeaNames {
     /// now), by anyone, at the same fixed fee. During grace this means the
     /// lapsed time is the owner's loss.
     function renew(string calldata name) external payable {
-        bytes32 node = nodeFor(name);
+        bytes32 node = _registrationNode(name);
         Record storage r = _records[node];
         if (r.owner == address(0)) revert Unregistered();
         if (!_live(r)) revert Released();
@@ -218,6 +234,9 @@ contract EastSeaNames {
         if (msg.value < fee) revert InsufficientFee(fee);
 
         uint64 newExpires = uint64(uint256(r.expires) + REGISTRATION_PERIOD);
+        // An uninterrupted renewal preserves children. Once the paid year
+        // lapsed, its children expired and must never be revived by grace.
+        if (block.timestamp >= r.expires) r.generation += 1;
         r.expires = newExpires;
         totalBurned += fee;
         emit Renewed(node, newExpires, fee);
@@ -237,7 +256,7 @@ contract EastSeaNames {
     /// Two-step transfer: propose (address(0) cancels), then the new owner
     /// accepts. A mistyped destination can be dropped before it does harm.
     function transferPropose(string calldata name, address to) external {
-        bytes32 node = nodeFor(name);
+        bytes32 node = _registrationNode(name);
         Record storage r = _records[node];
         _requireLiveOwner(r);
         r.pendingOwner = to;
@@ -245,13 +264,50 @@ contract EastSeaNames {
     }
 
     function transferAccept(string calldata name) external {
-        bytes32 node = nodeFor(name);
+        bytes32 node = _registrationNode(name);
         Record storage r = _records[node];
         address previous = r.owner;
         if (!_live(r) || r.pendingOwner == address(0) || msg.sender != r.pendingOwner) revert NotPendingOwner();
         delete r.pendingOwner;
         r.owner = msg.sender;
+        r.generation += 1; // new ownership never inherits stale child records
         emit TransferAccepted(node, previous, msg.sender);
+    }
+
+    // ---- subdomains ----
+
+    /// Create a full `.sea` child hostname for free. All ancestors must
+    /// exist, and only the active root owner may manage children. The
+    /// address record is a recipient, not a delegated child owner.
+    function createSubdomain(string calldata name, address a) external {
+        (bytes32 node, bytes32 parent, bytes32 root) = _subdomainNodes(name);
+        Record storage rootRecord = _records[root];
+        _requireActiveRootOwner(rootRecord);
+        Record storage parentRecord = _records[parent];
+        if (!_live(parentRecord)) revert Unregistered();
+        Record storage r = _records[node];
+        if (_live(r)) revert NameTaken();
+        _sweep(node, r);
+        r.owner = rootRecord.owner;
+        r.name = name;
+        r.expires = rootRecord.expires;
+        r.parent = parent;
+        r.parentGeneration = parentRecord.generation;
+        r.addr = a;
+        emit SubdomainCreated(name, node, parent, r.owner);
+        emit AddrSet(node, a);
+    }
+
+    /// Removing an ancestor increments its generation. Descendants become
+    /// inert immediately without enumerating the subtree, even if the same
+    /// hostname is created again later.
+    function deleteSubdomain(string calldata name) external {
+        (bytes32 node, bytes32 parent, bytes32 root) = _subdomainNodes(name);
+        _requireActiveRootOwner(_records[root]);
+        Record storage r = _records[node];
+        if (!_live(r)) revert Unregistered();
+        _sweep(node, r);
+        emit SubdomainDeleted(node, parent);
     }
 
     // ---- resolver records ----
@@ -306,33 +362,58 @@ contract EastSeaNames {
 
     // ---- pure ----
 
-    /// Lowercase ASCII [a-z0-9-], 3-32 bytes, no leading/trailing hyphen, no
-    /// double hyphen at positions 3-4 (the punycode `xn--` shape — homograph
-    /// hygiene).
-    function isValidName(string calldata name) public pure returns (bool) {
+    /// Registrability: a bare label or `label.sea`, 3-32 lowercase LDH
+    /// bytes, excluding URI action hosts. IDN decoding is not implemented:
+    /// `xn--...` is an ordinary ASCII label, subject to the same rules.
+    function isValidName(string memory name) public pure returns (bool) {
         bytes memory b = bytes(name);
-        if (b.length < MIN_NAME_LENGTH || b.length > MAX_NAME_LENGTH) return false;
-        if (b[0] == 0x2d || b[b.length - 1] == 0x2d) return false;
-        if (b.length >= 4 && b[2] == 0x2d && b[3] == 0x2d) return false;
-        for (uint256 i = 0; i < b.length; i++) {
-            bytes1 c = b[i];
-            bool ok = (c >= 0x61 && c <= 0x7a) || (c >= 0x30 && c <= 0x39) || c == 0x2d;
-            if (!ok) return false;
-        }
-        return true;
+        uint256 end = _hasSeaSuffix(b) ? b.length - 4 : b.length;
+        if (end < MIN_NAME_LENGTH || end > MAX_NAME_LENGTH || !_validLabel(b, 0, end)) return false;
+        return !_reserved(keccak256(_slice(b, 0, end)));
     }
 
-    /// The fixed fee for a name, by length. Invalid names never reach payment
-    /// (register reverts first), so this simply buckets by length.
-    function feeFor(string calldata name) public pure returns (uint256) {
+    /// Hostname syntax is broader than registrability: each lowercase LDH
+    /// label is 1-63 bytes, the complete name is at most 253 bytes, and the
+    /// TLD must be `.sea`. A trailing dot and external DNS TLDs are invalid.
+    function isValidHostname(string memory name) public pure returns (bool) {
         bytes memory b = bytes(name);
-        if (b.length == 3) return FEE_3;
-        if (b.length == 4) return FEE_4;
+        if (b.length > MAX_HOSTNAME_LENGTH || !_hasSeaSuffix(b)) return false;
+        uint256 end = b.length - 4;
+        uint256 start;
+        uint256 rootStart;
+        for (uint256 i; i <= end; i++) {
+            if (i != end && b[i] != 0x2e) continue;
+            if (!_validLabel(b, start, i)) return false;
+            rootStart = start;
+            start = i + 1;
+        }
+        return !_reserved(keccak256(_slice(b, rootStart, end)));
+    }
+
+    /// Fixed fee by the registrable label's length, excluding `.sea`.
+    /// Subdomains cannot be registered or renewed and have no name fee.
+    function feeFor(string memory name) public pure returns (uint256) {
+        if (!isValidName(name)) revert InvalidName();
+        bytes memory b = bytes(name);
+        uint256 length = _hasSeaSuffix(b) ? b.length - 4 : b.length;
+        if (length == 3) return FEE_3;
+        if (length == 4) return FEE_4;
         return FEE_5_PLUS;
     }
 
-    function nodeFor(string calldata name) public pure returns (bytes32) {
-        return keccak256(abi.encodePacked(name));
+    /// Preserve the legacy root hash: `harbor` and `harbor.sea` both hash
+    /// `harbor`. Children hash their complete canonical hostname. `.aeth`
+    /// remains a legacy-chain client alias, never a new contract input.
+    function nodeFor(string memory name) public pure returns (bytes32) {
+        bytes memory b = bytes(name);
+        if (!_hasSeaSuffix(b)) {
+            if (!_validLabel(b, 0, b.length) || _reserved(keccak256(b))) revert InvalidName();
+            return keccak256(b);
+        }
+        if (!isValidHostname(name)) revert InvalidName();
+        uint256 end = b.length - 4;
+        if (_rootLabelStart(b, end) == 0) return keccak256(_slice(b, 0, end));
+        return keccak256(b);
     }
 
     // ---- views ----
@@ -348,10 +429,11 @@ contract EastSeaNames {
         return _live(r) ? r.pendingOwner : address(0);
     }
 
-    /// Raw expiry (also readable for released names); grace runs to
-    /// expires + GRACE_PERIOD.
+    /// Roots expose raw expiry, including after release. A live child
+    /// inherits the root's current expiry; an invalid child returns zero.
     function expiresOf(bytes32 node) external view returns (uint64) {
-        return _records[node].expires;
+        Record storage r = _records[node];
+        return r.parent == bytes32(0) ? r.expires : _subdomainExpiry(r);
     }
 
     function addrOf(bytes32 node) external view returns (address) {
@@ -377,13 +459,33 @@ contract EastSeaNames {
 
     // ---- internals ----
 
-    /// A record counts while owner is set and now < expires + grace.
+    /// Roots retain their old grace behavior. Children require uninterrupted
+    /// ancestry and expire exactly with the root, without grace.
     function _live(Record storage r) private view returns (bool) {
-        return r.owner != address(0) && block.timestamp < uint256(r.expires) + GRACE_PERIOD;
+        if (r.owner == address(0)) return false;
+        if (r.parent == bytes32(0)) return block.timestamp < uint256(r.expires) + GRACE_PERIOD;
+        return _subdomainExpiry(r) != 0;
+    }
+
+    function _subdomainExpiry(Record storage r) private view returns (uint64) {
+        bytes32 parent = r.parent;
+        uint64 expectedGeneration = r.parentGeneration;
+        while (parent != bytes32(0)) {
+            Record storage p = _records[parent];
+            if (p.owner == address(0) || p.generation != expectedGeneration) return 0;
+            if (p.parent == bytes32(0)) return block.timestamp < p.expires ? p.expires : 0;
+            expectedGeneration = p.parentGeneration;
+            parent = p.parent;
+        }
+        return 0;
     }
 
     function _requireLiveOwner(Record storage r) private view {
         if (!_live(r) || r.owner != msg.sender) revert NotOwner();
+    }
+
+    function _requireActiveRootOwner(Record storage r) private view {
+        if (r.owner != msg.sender || block.timestamp >= r.expires) revert NotOwner();
     }
 
     /// Clear a dead record so the next registration starts fresh: texts,
@@ -396,7 +498,60 @@ contract EastSeaNames {
         delete r.expires;
         delete r.pendingOwner;
         delete r.addr;
+        delete r.parent;
+        delete r.parentGeneration;
+        r.generation += 1; // never reset: otherwise old descendants revive
         // r.name stays; it is overwritten on the next registration.
+    }
+
+    function _registrationNode(string memory name) private pure returns (bytes32) {
+        if (!isValidName(name)) revert InvalidName();
+        return nodeFor(name);
+    }
+
+    function _subdomainNodes(string memory name) private pure returns (bytes32 node, bytes32 parent, bytes32 root) {
+        if (!isValidHostname(name)) revert InvalidName();
+        bytes memory b = bytes(name);
+        uint256 end = b.length - 4;
+        uint256 firstDot;
+        while (b[firstDot] != 0x2e) firstDot++;
+        if (firstDot == end) revert InvalidName(); // registrable root, not a child
+        node = keccak256(b);
+        parent = nodeFor(string(_slice(b, firstDot + 1, b.length)));
+        root = keccak256(_slice(b, _rootLabelStart(b, end), end));
+    }
+
+    function _hasSeaSuffix(bytes memory b) private pure returns (bool) {
+        return b.length > 4 && b[b.length - 4] == 0x2e && b[b.length - 3] == 0x73
+            && b[b.length - 2] == 0x65 && b[b.length - 1] == 0x61;
+    }
+
+    function _validLabel(bytes memory b, uint256 start, uint256 end) private pure returns (bool) {
+        if (end <= start || end - start > MAX_LABEL_LENGTH) return false;
+        if (b[start] == 0x2d || b[end - 1] == 0x2d) return false;
+        for (uint256 i = start; i < end; i++) {
+            bytes1 c = b[i];
+            if (!((c >= 0x61 && c <= 0x7a) || (c >= 0x30 && c <= 0x39) || c == 0x2d)) return false;
+        }
+        return true;
+    }
+
+    function _rootLabelStart(bytes memory b, uint256 end) private pure returns (uint256 start) {
+        start = end;
+        while (start > 0 && b[start - 1] != 0x2e) start--;
+    }
+
+    function _slice(bytes memory b, uint256 start, uint256 end) private pure returns (bytes memory result) {
+        result = new bytes(end - start);
+        for (uint256 i; i < result.length; i++) result[i] = b[start + i];
+    }
+
+    function _reserved(bytes32 label) private pure returns (bool) {
+        return label == keccak256("pay") || label == keccak256("call") || label == keccak256("connect")
+            || label == keccak256("tx") || label == keccak256("app") || label == keccak256("follow")
+            || label == keccak256("name") || label == keccak256("wallet") || label == keccak256("settings")
+            || label == keccak256("send") || label == keccak256("receive") || label == keccak256("sign")
+            || label == keccak256("deploy") || label == keccak256("open");
     }
 
     function _validTextKey(bytes memory b) private pure returns (bool) {

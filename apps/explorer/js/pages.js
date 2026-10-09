@@ -10,6 +10,18 @@ import { looksLikeOfficial, officialTokens, originBadge, tokenInfo, tokenOrigin,
 import { NOT_COMMITTED } from './verify.js';
 import { PRESENCE_REGIONS, PRESENCE_ROLES, readPresence } from './presence.js';
 
+/** A name or action link is handed to the installed wallet. This explorer
+ * neither signs nor claims to have resolved the chain's name/app records. */
+export function seaLinkView(link) {
+  const name = link.kind === 'name';
+  const url = name ? link.canonicalURL : link.raw;
+  return card(name ? link.name : `Wallet action: ${link.host}`,
+    h('p', { class: 'mono wrap' }, url),
+    h('p', {}, name ? 'The wallet checks the name and app records. Content delivery comes next.' :
+      'This link opens the wallet’s own approval screen. Every payment still needs approval there.'),
+    h('a', { href: url }, 'Open in wallet'));
+}
+
 // ---- little shared builders ----
 
 export function blockLink(height) {

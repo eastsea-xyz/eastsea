@@ -55,7 +55,7 @@
 ### 2.2 식별자
 
 ```
-slug  : [a-z0-9-], 3–32바이트, 처음·끝 붙임표 불가, 3–4번째 "--" 불가 (EastSeaNames.isValidName과 같은 규칙)
+slug  : [a-z0-9-], 3–32바이트, 처음·끝 붙임표 불가 (소문자 DNS LDH; 26-name-service.md)
 appId : keccak256(abi.encode(publisherAtCreation, slug))     // bytes32, 게시자를 옮겨도 불변
 appKey: base32(appId) 소문자, 패딩 없음, 52자                  // URL host용 (§5.4)
 ```
@@ -399,7 +399,7 @@ X-Content-Type-Options: nosniff
 
 ### 6.2 쓰임 [정렬 10-06]
 
-- 주소창에 `tidepay` 또는 `@tidepay`를 넣거나 `eastsea://tidepay` 링크를 열면, 결합이 유효할 때 그 앱의 정보 화면을 거쳐 연다. 무효면 "이 이름에 연결된 앱이 없습니다".
+- 주소창에 `tidepay`, `tidepay.sea`를 넣거나 `sea://tidepay.sea` / `eastsea://tidepay.sea` 링크를 열면, 결합이 유효할 때 그 앱의 정보 화면을 거쳐 연다. 무효면 "이 이름에 연결된 앱이 없습니다".
 - 이전 초안의 universal link `https://eastsea.xyz/n/<이름>`은 삭제했다. Pipln 도메인에 앱별 경로를 두지 않는다(§15.3, §16.6).
 - 결합은 정렬에 가중을 주지 않는다. 사실 경고(§8)와 사용자 토글 "이름 결합된 앱만"(§7.3)에만 쓴다.
 
@@ -960,7 +960,7 @@ Pipln은 신고 접수함, 재심, 72시간 대응 목표, 정정 전파 절차�
 
 ### 16.3 `eastsea publish --landing`
 
-- 활성 manifest와 번들에서 정적 랜딩 페이지(HTML·CSS·이미지)를 만든다: 이름, 게시자 설명, 스크린샷, 사실 배지(확인 범위 포함), `eastsea://<name>` 또는 `eastsea://app/<appKey>` 열기 버튼과 QR, 바닥글 고지, 권리자 신고 연락처.
+- 활성 manifest와 번들에서 정적 랜딩 페이지(HTML·CSS·이미지)를 만든다: 이름, 게시자 설명, 스크린샷, 사실 배지(확인 범위 포함), `sea://<name>.sea` 또는 `sea://app/<appKey>` 열기 버튼과 QR, 바닥글 고지, 권리자 신고 연락처.
 - 빌더가 자기 도메인에 올린다. 생성기는 업로드하지 않고, 생성 결과를 어디에도 등록하지 않는다. Pipln 도메인·CDN·하위 도메인을 쓰지 않는다.
 - 생성기 규칙은 §15.3(금지 문구, 금융 분류는 열기 버튼 없음, 도박·공고 대상은 생성 거부)을 따른다. 결과 페이지는 빌더의 것이고 빌더가 책임진다.
 - SEO·홍보는 빌더가 정한다. Pipln은 빌더 페이지 목록을 만들거나 링크 교환을 하지 않는다.
@@ -979,9 +979,9 @@ Pipln은 신고 접수함, 재심, 72시간 대응 목표, 정정 전파 절차�
 - **Laya(기기 안 모델)는 힌트만 낸다.** "이 앱은 거래 기능이 있어 보입니다" 같은 힌트를 사용자에게 보여 주거나 분류 후보로 기록할 수는 있다. 하지만 §15.1 분류를 혼자 정하거나 풀지 못한다. 분류를 엄격하게 만드는 결과도 공개 시그니처나 사용자가 고른 목록과 겹칠 때만 효과를 갖는다. 모델 출력은 기기마다 다를 수 있어 결정적 판정에 쓰지 않는다.
 - 금융·도박 분류 앱은 의미 검색에서도 빠진다(정확한 이름 규칙은 §7.1과 같다).
 
-### 16.6 `eastsea://<name>` 스킴
+### 16.6 `sea://<name>.sea` 스킴
 
-- 형식: `eastsea://<name>`(EastSeaNames 이름), `eastsea://app/<appKey>`, `eastsea://follow/<appKey>`.
+- 형식: `sea://<name>.sea[/path][?query]`(EastSeaNames 이름), `sea://app/<appKey>`, `sea://follow/<appKey>`. `eastsea://`도 같은 의미이며 `sea://tidepay`는 `tidepay.sea`의 축약이다. 문법과 액션 예약어는 [26-name-service.md](26-name-service.md)를 따른다. `.aeth`는 체인 7780의 읽기 별칭만 허용하고 외부 DNS TLD는 거부한다. 0.7.4에서는 이름/앱의 온체인 기록까지만 읽고 콘텐츠 전달과 manifest의 양방향 결합 검증은 `ContentSource`의 다음 lane이다. 앱 실행은 아직 없다.
 - Mac 지갑이 스킴을 등록한다. 열면 §6.1 결합을 확인하고, **앱 정보 화면(사실 경고·분류·라벨)을 먼저 보여 준 뒤** 사용자가 열기를 누른다. QR도 같다(오프라인 QR 피싱 대비).
 - 커스텀 스킴은 다른 앱이 가로챌 수 있다. 그래서 링크에 거래 인자(금액·토큰·주문)나 비밀을 담지 않는다. 지갑은 그런 인자를 무시한다.
 - Pipln 도메인의 universal link(`eastsea.xyz/app/…`, `/n/…`)는 쓰지 않는다(§15.3).

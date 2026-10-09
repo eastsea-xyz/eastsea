@@ -90,7 +90,7 @@ if tool == 'rsync':
                      'apps/wallet/Resources/Localizable.xcstrings', 'apps/wallet/Resources/network.json',
                      'apps/agent/Tests/history/main.swift',
                      'apps/bridge/Tests/bridge-plan/main.swift', 'apps/prover/guest/src/main.rs',
-                     'fuzz/corpus/tx_envelope/empty.json', 'fuzz/target/generated.bin'):
+                     'fuzz/corpus/tx_envelope/empty.json', 'fuzz/target/generated.bin', 'tests/fixtures/sea-urls.json'):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('fixture')
@@ -152,6 +152,7 @@ if tool == 'rsync':
         self.assertIn('apps/wallet/Resources/Localizable.xcstrings', listing)
         self.assertIn('apps/wallet/Resources/network.json', listing)
         self.assertIn('fuzz/corpus/tx_envelope/empty.json', listing)
+        self.assertIn('tests/fixtures/sea-urls.json', listing)
         for excluded in ('crates/types/.env', 'crates/types/secret.key', 'crates/types/src/outside.rs',
                          'apps/agent/credential.json', 'apps/prover/guest/src/main.rs', 'fuzz/target/generated.bin'):
             self.assertNotIn(excluded, listing)

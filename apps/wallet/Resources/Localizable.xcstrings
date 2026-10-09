@@ -14252,7 +14252,7 @@
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "舊 .aeth 名稱僅可用於測試網 7780。"
+            "value": "舊版 .aeth 名稱僅可於測試網 7780 使用。"
           }
         }
       }
@@ -15562,7 +15562,7 @@
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "此網絡尚無名稱註冊表。"
+            "value": "此網路尚無名稱註冊表。"
           }
         }
       }
@@ -16078,7 +16078,7 @@
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "此名稱未關聯應用。"
+            "value": "此名稱未連結應用程式。"
           }
         }
       }
@@ -32035,7 +32035,7 @@
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "此應用已取消登記。"
+            "value": "此應用程式已取消登錄。"
           }
         }
       }
@@ -42527,6 +42527,30 @@
             "state": "translated",
             "value": "동해 %@"
           }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "EastSea %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "EastSea %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "EastSea %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "EastSea %@"
+          }
         }
       }
     },
@@ -42536,6 +42560,30 @@
           "stringUnit": {
             "state": "translated",
             "value": "승인된 업데이트를 아직 다운로드하지 못했어요."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The approved update could not be downloaded yet."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "承認済みのアップデートをまだダウンロードできません。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时无法下载已批准的更新。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暫時無法下載已核准的更新。"
           }
         }
       }
@@ -42547,6 +42595,30 @@
             "state": "translated",
             "value": "다운로드한 업데이트가 승인된 파일과 일치하지 않아요."
           }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The downloaded update does not match the approved file."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ダウンロードしたアップデートが承認済みのファイルと一致しません。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载的更新与已批准的文件不一致。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下載的更新與已核准的檔案不符。"
+          }
         }
       }
     },
@@ -42556,6 +42628,30 @@
           "stringUnit": {
             "state": "translated",
             "value": "이 업데이트는 승인된 재시작 순서가 되기 전에 설치할 수 없어요."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This update cannot install before its approved restart slot."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このアップデートは承認された再起動枠より前にはインストールできません。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此更新无法在已批准的重启时段之前安装。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此更新無法在已核准的重新啟動時段之前安裝。"
           }
         }
       }
@@ -42567,6 +42663,30 @@
             "state": "translated",
             "value": "이 업데이트는 필요한 빌더 승인을 받지 못했어요."
           }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This update does not have the required builder approvals."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このアップデートには必要なビルダーの承認がありません。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此更新尚未获得所需的构建者批准。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此更新尚未取得所需的建置者核准。"
+          }
         }
       }
     },
@@ -42576,6 +42696,380 @@
           "stringUnit": {
             "state": "translated",
             "value": "이 업데이트는 네트워크가 승인한 릴리스와 일치하지 않아요."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This update does not match the release approved by the network."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このアップデートはネットワークが承認したリリースと一致しません。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此更新与网络批准的发布版本不一致。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此更新與網路核准的發行版本不符。"
+          }
+        }
+      }
+    },
+    "The page or network changed.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The page or network changed."
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "페이지 또는 네트워크가 변경됐어요."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ページまたはネットワークが変更されました。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "页面或网络已更改。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "頁面或網路已變更。"
+          }
+        }
+      }
+    },
+    "Back to Developer Mode": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Back to Developer Mode"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "개발자 모드로 돌아가기"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "開発者モードに戻る"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "返回开发者模式"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "返回開發者模式"
+          }
+        }
+      }
+    },
+    "Open with HTTPS": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open with HTTPS"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPS로 열기"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTPS で開く"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 HTTPS 打开"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 HTTPS 開啟"
+          }
+        }
+      }
+    },
+    "Enter a .sea name or https:// address": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a .sea name or https:// address"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ".sea 이름이나 https:// 주소 입력"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ".sea の名前または https:// アドレスを入力"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入 .sea 名称或 https:// 地址"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "輸入 .sea 名稱或 https:// 地址"
+          }
+        }
+      }
+    },
+    "Resolving name…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resolving name…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이름을 찾고 있어요…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名前を解決中…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在解析名称…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在解析名稱…"
+          }
+        }
+      }
+    },
+    "Content delivery comes next.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Content delivery comes next."
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "콘텐츠 전달은 다음 단계예요."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンテンツの配信は次の段階です。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内容传输将在下一阶段推出。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "內容傳輸將於下一階段推出。"
+          }
+        }
+      }
+    },
+    "This wallet action is not available yet.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This wallet action is not available yet."
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 지갑 동작은 아직 준비되지 않았어요."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このウォレット操作はまだ利用できません。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此钱包操作尚未开放。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此錢包操作尚未開放。"
+          }
+        }
+      }
+    },
+    "Name record": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name record"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이름 기록"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名前レコード"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名称记录"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名稱記錄"
+          }
+        }
+      }
+    },
+    "App record": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App record"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "앱 기록"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アプリレコード"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用记录"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "應用程式記錄"
+          }
+        }
+      }
+    },
+    "Name and app records were read from the local node. Content and name binding are not verified yet.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name and app records were read from the local node. Content and name binding are not verified yet."
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "로컬 노드에서 이름과 앱 기록을 읽었어요. 콘텐츠와 이름 결합은 아직 검증하지 않았어요."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名前とアプリのレコードをローカルノードから読み取りました。コンテンツと名前の関連付けはまだ検証されていません。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名称与应用记录已从本地节点读取。内容及名称绑定尚未验证。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名稱與應用程式記錄已從本機節點讀取。內容及名稱綁定尚未驗證。"
           }
         }
       }

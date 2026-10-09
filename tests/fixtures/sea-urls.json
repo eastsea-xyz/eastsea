@@ -1179,6 +1179,498 @@
         "host": "call",
         "raw": "eastsea:call?data=0x1234&callback=https%3A%2F%2Fexample.com%2F%zz#ignored"
       }
+    },
+    {
+      "id": "legacy eastsea pay userinfo",
+      "input": "eastsea://user@pay?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "eastsea://user@pay?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy eastsea pay port",
+      "input": "eastsea://pay:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "eastsea://pay:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy eastsea pay escaped host",
+      "input": "eastsea://%70ay?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "eastsea://%70ay?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy eastsea call userinfo",
+      "input": "eastsea://user@call?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "call",
+        "raw": "eastsea://user@call?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy eastsea call port",
+      "input": "eastsea://call:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "call",
+        "raw": "eastsea://call:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy eastsea call escaped host",
+      "input": "eastsea://%63all?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "call",
+        "raw": "eastsea://%63all?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy eastsea connect userinfo",
+      "input": "eastsea://user@connect?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "connect",
+        "raw": "eastsea://user@connect?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy eastsea connect port",
+      "input": "eastsea://connect:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "connect",
+        "raw": "eastsea://connect:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy eastsea connect escaped host",
+      "input": "eastsea://%63onnect?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "connect",
+        "raw": "eastsea://%63onnect?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy eastsea tx userinfo",
+      "input": "eastsea://user@tx?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "tx",
+        "raw": "eastsea://user@tx?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy eastsea tx port",
+      "input": "eastsea://tx:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "tx",
+        "raw": "eastsea://tx:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy eastsea tx escaped host",
+      "input": "eastsea://%74x?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "tx",
+        "raw": "eastsea://%74x?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy eastsea escaped compact action",
+      "input": "eastsea:%70ay?amount=1&memo=%zz",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "eastsea:%70ay?amount=1&memo=%zz"
+      }
+    },
+    {
+      "id": "legacy aether pay userinfo",
+      "input": "aether://user@pay?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "aether://user@pay?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy aether pay port",
+      "input": "aether://pay:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "aether://pay:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy aether pay escaped host",
+      "input": "aether://%70ay?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "aether://%70ay?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy aether call userinfo",
+      "input": "aether://user@call?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "call",
+        "raw": "aether://user@call?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy aether call port",
+      "input": "aether://call:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "call",
+        "raw": "aether://call:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy aether call escaped host",
+      "input": "aether://%63all?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "call",
+        "raw": "aether://%63all?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy aether connect userinfo",
+      "input": "aether://user@connect?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "connect",
+        "raw": "aether://user@connect?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy aether connect port",
+      "input": "aether://connect:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "connect",
+        "raw": "aether://connect:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy aether connect escaped host",
+      "input": "aether://%63onnect?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "connect",
+        "raw": "aether://%63onnect?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy aether tx userinfo",
+      "input": "aether://user@tx?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "tx",
+        "raw": "aether://user@tx?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy aether tx port",
+      "input": "aether://tx:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "tx",
+        "raw": "aether://tx:443?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy aether tx escaped host",
+      "input": "aether://%74x?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "tx",
+        "raw": "aether://%74x?to=0xabc&amount=1&memo=a%2Fb+z&memo=second#receipt"
+      }
+    },
+    {
+      "id": "legacy aether escaped compact action",
+      "input": "aether:%70ay?amount=1&memo=%zz",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "aether:%70ay?amount=1&memo=%zz"
+      }
+    },
+    {
+      "id": "legacy eastsea combined authority retained",
+      "input": "eastsea://alice:p%40ss@pay:443?amount=1&memo=a+b&memo=second",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "eastsea://alice:p%40ss@pay:443?amount=1&memo=a+b&memo=second"
+      }
+    },
+    {
+      "id": "legacy eastsea numeric port retained",
+      "input": "eastsea://pay:65536?amount=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "eastsea://pay:65536?amount=1"
+      }
+    },
+    {
+      "id": "legacy eastsea rejects slash path",
+      "input": "eastsea:/pay?amount=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "legacy eastsea rejects empty authority",
+      "input": "eastsea:///pay?amount=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "legacy eastsea rejects malformed port",
+      "input": "eastsea://pay:notaport?amount=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "legacy eastsea rejects userinfo is limited to old actions",
+      "input": "eastsea://user@app?value=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "legacy aether combined authority retained",
+      "input": "aether://alice:p%40ss@pay:443?amount=1&memo=a+b&memo=second",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "aether://alice:p%40ss@pay:443?amount=1&memo=a+b&memo=second"
+      }
+    },
+    {
+      "id": "legacy aether numeric port retained",
+      "input": "aether://pay:65536?amount=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "kind": "action",
+        "host": "pay",
+        "raw": "aether://pay:65536?amount=1"
+      }
+    },
+    {
+      "id": "legacy aether rejects slash path",
+      "input": "aether:/pay?amount=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "legacy aether rejects empty authority",
+      "input": "aether:///pay?amount=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "legacy aether rejects malformed port",
+      "input": "aether://pay:notaport?amount=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "legacy aether rejects userinfo is limited to old actions",
+      "input": "aether://user@app?value=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "browser BOM trims like ECMAScript",
+      "input": "﻿harbor﻿",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "browser Unicode spaces trim like ECMAScript",
+      "input": " 　harbor  ",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "browser line endings trimmed",
+      "input": "\r\n\tharbor\r\n",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "kind": "name",
+        "name": "harbor.sea",
+        "canonicalURL": "sea://harbor.sea/",
+        "path": "/",
+        "query": null,
+        "isLegacy": false,
+        "registryName": "harbor.sea"
+      }
+    },
+    {
+      "id": "browser NEL is not ECMAScript trim",
+      "input": "harbor",
+      "operation": "browser",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "new sea rejects legacy userinfo form",
+      "input": "sea://user@pay?amount=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "new sea rejects legacy port form",
+      "input": "sea://pay:443?amount=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
+    },
+    {
+      "id": "new sea rejects legacy escaped action host",
+      "input": "sea://%70ay?amount=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidName"
+      }
+    },
+    {
+      "id": "new sea rejects legacy compact action form",
+      "input": "sea:%70ay?amount=1",
+      "operation": "parse",
+      "chainID": 1,
+      "expected": {
+        "error": "invalidURL"
+      }
     }
   ]
 }

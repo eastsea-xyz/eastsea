@@ -11,11 +11,14 @@ interface IEastSeaNames {
     function renew(string calldata name) external payable;
     function transferPropose(string calldata name, address to) external;
     function transferAccept(string calldata name) external;
+    function createSubdomain(string calldata name, address a) external;
+    function deleteSubdomain(string calldata name) external;
     function setAddr(string calldata name, address a) external;
     function setText(string calldata name, string calldata key, string calldata value) external;
     function setReverse(string calldata name) external;
 
     function isValidName(string calldata name) external pure returns (bool);
+    function isValidHostname(string calldata name) external pure returns (bool);
     function feeFor(string calldata name) external pure returns (uint256);
     function nodeFor(string calldata name) external pure returns (bytes32);
     function ownerOf(bytes32 node) external view returns (address);

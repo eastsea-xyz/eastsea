@@ -13,6 +13,7 @@ import { mergeHistory } from '../src/lib/history.js';
 import { displayTokenName } from '../src/lib/knownTokens.js';
 import { tokenArtSource, tokenFallbackAppearance } from './token-art.js';
 import { t, language } from '../src/lib/i18n.js';
+import { browserInput, externalNameMessage, suggestedHTTPS } from '../src/lib/sea-url.mjs';
 
 const params = new URLSearchParams(location.search);
 const approveId = params.get('approve');
@@ -613,8 +614,27 @@ async function activity() {
 async function sitesView() {
   const s = await op('sites');
   const entries = Object.entries(s);
-  if (!entries.length) return [h('div', { class: 'card' }, h('p', { class: 'muted' }, 'No sites are connected.'))];
-  return [h('div', { class: 'card list' }, entries.map(([origin, e]) => h('div', { class: 'item' },
+  const input = h('input', { placeholder: 'harbor.sea or sea://harbor', spellcheck: 'false' });
+  const out = h('div');
+  const names = h('form', { class: 'card' }, h('h2', {}, 'Open an EastSea name'),
+    h('label', {}, 'Name or link', input), h('button', { type: 'submit' }, 'Check link'), out);
+  names.addEventListener('submit', (event) => {
+    event.preventDefault();
+    out.replaceChildren();
+    try {
+      const link = browserInput(input.value, defaultChainId);
+      const href = link.kind === 'name' ? link.canonicalURL : link.kind === 'action' ? link.raw : link.url;
+      out.append(h('a', { href, target: '_blank', rel: 'noopener noreferrer' }, href));
+      if (link.kind !== 'web') out.append(h('p', { class: 'small muted' },
+        'Open this link in the installed wallet. Payments require its approval screen. Content delivery comes next.'));
+    } catch (error) {
+      out.append(message('error', error.code === 'externalTLD' ? externalNameMessage(navigator.language) : error.message));
+      const https = suggestedHTTPS(input.value);
+      if (https) out.append(h('a', { href: https, target: '_blank', rel: 'noopener noreferrer' }, 'Open with https://'));
+    }
+  });
+  if (!entries.length) return [names, h('div', { class: 'card' }, h('p', { class: 'muted' }, 'No sites are connected.'))];
+  return [names, h('div', { class: 'card list' }, entries.map(([origin, e]) => h('div', { class: 'item' },
     h('div', { class: 'grow' }, h('div', { class: 'mono' }, origin), h('div', { class: 'small muted' }, `since ${new Date(e.at).toLocaleDateString()}`)),
     h('button', { class: 'danger', onclick: async () => { await op('disconnect', { origin }); refresh(); } }, 'Disconnect'))))];
 }

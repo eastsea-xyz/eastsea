@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- eastsea://pay?to=…&amount=… (and the legacy aether:// links): web pages reach the wallet without an extension. -->
+	<!-- sea:// names and actions; eastsea:// and legacy aether:// links remain registered. -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

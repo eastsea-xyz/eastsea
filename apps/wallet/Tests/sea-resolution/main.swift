@@ -100,4 +100,35 @@ await fails(.expired) {
     _ = try await SeaNameResolver.resolve(rootLink, now: 200 + 30 * 24 * 60 * 60,
                                          sources: pins, code: { _ in code }, read: read)
 }
+var snapshots = 0
+var continuallyChanging = false
+var wrongChain = false
+func rpc(_ method: String, _ params: [Any]) async throws -> Any {
+    switch method {
+    case "aether_status":
+        snapshots += 1
+        let height = continuallyChanging ? snapshots : (snapshots == 1 ? 1 : 2)
+        return ["chain_id": wrongChain ? 7780 : 1, "height": height, "state_root": hash,
+                "hash": hash, "timestamp_ms": 150_000] as [String: Any]
+    case "eth_getCode": return code
+    case "eth_call":
+        let call = params[0] as! [String: String]
+        return try read(call["to"]!, call["data"]!)
+    default: fatalError("unexpected RPC method")
+    }
+}
+let coherent = try await SeaRegistryReader.resolve(link, chainID: 1, port: 18545, sources: pins, readRPC: rpc)
+check(coherent.app == result.app && snapshots == 4, "a moving snapshot retries the complete lookup")
+snapshots = 0
+continuallyChanging = true
+await fails(.unstable) {
+    _ = try await SeaRegistryReader.resolve(link, chainID: 1, port: 18545, sources: pins, readRPC: rpc)
+}
+check(snapshots == 6, "snapshot retries are bounded")
+snapshots = 0
+wrongChain = true
+await fails(.unstable) {
+    _ = try await SeaRegistryReader.resolve(link, chainID: 1, port: 18545, sources: pins, readRPC: rpc)
+}
+check(snapshots == 1, "a foreign node is rejected before contract reads")
 print("OK sea-resolution (\(checked) checks)")

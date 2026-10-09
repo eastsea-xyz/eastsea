@@ -39,6 +39,7 @@ enum SeaURL {
         "pay", "call", "connect", "tx", "app", "follow", "name", "wallet", "settings",
         "send", "receive", "sign", "deploy", "open"
     ]
+    private static let legacyActions: Set<String> = ["pay", "call", "connect", "tx"]
 
     // Match JavaScript String.trim, including its BOM handling. Platform
     // whitespace sets differ on NEL and BOM; names must not depend on that.
@@ -56,7 +57,8 @@ enum SeaURL {
         // URLComponents historically accepted aether:pay?… and
         // eastsea:pay?… through the path fallback. Preserve those too.
         guard body.hasPrefix("//") else {
-            let host = String(body.prefix { $0 != "?" && $0 != "#" })
+            let rawHost = String(body.prefix { $0 != "?" && $0 != "#" })
+            let host = scheme == "sea" ? rawHost : legacyActionHost(rawHost, authority: false) ?? rawHost
             if scheme != "sea", reservedHosts.contains(host) {
                 return .action(host: host, raw: raw)
             }
@@ -64,10 +66,35 @@ enum SeaURL {
         }
 
         let authority = String(body.dropFirst(2))
+        if scheme != "sea", let host = legacyActionHost(authority, authority: true) {
+            return .action(host: host, raw: raw)
+        }
         let (host, _) = try authorityParts(authority)
         if reservedHosts.contains(host) { return .action(host: host, raw: raw) }
         guard scheme != "aether" else { throw ParseError.unsupportedScheme }
         return .name(try nameLink(authority, chainID: chainID))
+    }
+
+    /// Preserve URLComponents' interpretation only for the four old actions.
+    /// Names and the new sea scheme still inspect an untouched authority.
+    private static func legacyActionHost(_ raw: String, authority: Bool) -> String? {
+        var host = raw
+        if authority {
+            host = String(raw.prefix { $0 != "/" && $0 != "?" && $0 != "#" })
+            guard validPercentEscapes(host) else { return nil }
+            let fields = host.split(separator: "@", omittingEmptySubsequences: false)
+            guard fields.count <= 2 else { return nil }
+            if fields.count == 2 {
+                guard fields[0].utf8.allSatisfy({ isLetter($0) || isDigit($0) || "!$&'()*+,;=:-._~%".utf8.contains($0) }) else { return nil }
+            }
+            host = String(fields.last ?? "")
+            if let colon = host.firstIndex(of: ":") {
+                guard host[host.index(after: colon)...].utf8.allSatisfy(isDigit) else { return nil }
+                host = String(host[..<colon])
+            }
+        }
+        guard let decoded = host.removingPercentEncoding, legacyActions.contains(decoded) else { return nil }
+        return decoded
     }
 
     static func browserInput(_ raw: String, chainID: UInt64 = 1) throws -> BrowserInput {

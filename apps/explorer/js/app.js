@@ -13,7 +13,8 @@ import { parseTokenSources, tokenInfo, tokenOrigin } from './erc20.js';
 import { resolveSearch, searchRoute, decodeSearchQuery } from './search.js';
 import { appSearchView } from './app-search.js';
 import { resolveSearchLocale, searchText } from './search-catalog.js';
-import { accountView, blockView, errorView, homeView, notFoundView, tokenView, txView } from './pages.js';
+import { accountView, blockView, errorView, homeView, notFoundView, seaLinkView, tokenView, txView } from './pages.js';
+import { parseSeaURL, externalNameMessage, suggestedHTTPS } from './sea-url.mjs';
 import { detectVerifier } from './verify.js';
 import { h, loading, message } from './dom.js';
 import { pollCurrentPage } from './polling.js';
@@ -122,7 +123,16 @@ top.append(
       e.preventDefault();
       searchMsg.replaceChildren();
       if (!String(searchInput.value).trim()) return;
-      const route = await resolveSearch(searchInput.value, ctx.node);
+      let route;
+      try {
+        route = await resolveSearch(searchInput.value, ctx.node, ctx.chainId ?? 1);
+      } catch (error) {
+        const text = error.code === 'externalTLD' ? externalNameMessage(navigator.language) : error.message;
+        searchMsg.append(message('error', text));
+        const https = suggestedHTTPS(searchInput.value);
+        if (https) searchMsg.append(h('a', { href: https, target: '_blank', rel: 'noopener noreferrer' }, 'Open with https://'));
+        return;
+      }
       if (!route) {
         searchMsg.append(message('error', searchText(ctx.locale, 'notFound', { query: String(searchInput.value).trim().slice(0, 80) })));
         return;
@@ -213,6 +223,11 @@ const routes = [
   [/^#\/account\/(0x[0-9a-fA-F]{40})$/, (m) => accountView(ctx, m[1].toLowerCase())],
   [/^#\/token\/(0x[0-9a-fA-F]{40})$/, (m) => tokenView(ctx, m[1].toLowerCase())],
   [/^#\/search\/(.*)$/, (m) => appSearchView(ctx, decodeSearchQuery(m[1]))],
+  [/^#\/name\/(.+)$/, async (m) => {
+    const link = parseSeaURL(decodeURIComponent(m[1]), ctx.chainId ?? 1);
+    if (link.kind === 'action') return seaLinkView(link);
+    return h('div', { class: 'stack' }, seaLinkView(link), await appSearchView(ctx, link.registryName));
+  }],
 ];
 
 // A slow page never overwrites a newer one: only the newest render may paint.

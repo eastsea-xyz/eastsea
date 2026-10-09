@@ -11,6 +11,19 @@ struct ExplorePage: View {
 
     var body: some View {
         BrowserWorkspace(session: session, browser: session.controller, goHome: goHome)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let url = session.controller.httpsOffer {
+                    HStack(spacing: DesignTokens.Space.s3) {
+                        Text(verbatim: url.absoluteString).font(.aeFootnote.monospaced()).lineLimit(1)
+                            .truncationMode(.middle).textSelection(.enabled)
+                        Spacer(minLength: 0)
+                        Button("Open with HTTPS") { session.controller.openOfferedHTTPS() }
+                            .buttonStyle(EastSeaQuietButtonStyle())
+                    }
+                    .padding(DesignTokens.Space.s3)
+                    .background(DesignTokens.Palette.surfaceSunken.color)
+                }
+            }
             .id(session.activeTabID)
     }
 }

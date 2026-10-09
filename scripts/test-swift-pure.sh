@@ -78,7 +78,7 @@ run account-operations WalletOperationGate.swift
 run app-content AppContent.swift
 run app-identity AppBrowserIdentity.swift
 run sea-url SeaURL.swift
-run sea-resolution SeaURL.swift SeaNameResolver.swift
+run sea-resolution SeaURL.swift SeaNameResolver.swift SeaRegistryReader.swift
 run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
 run app-search AppSearch.swift BrowserOriginPolicy.swift

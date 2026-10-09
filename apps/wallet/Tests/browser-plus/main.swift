@@ -57,7 +57,7 @@ if case .search(let url, let query) = try BrowserInput.normalize("  C++   wallet
 } else { check(false, "plain text routes to search") }
 for engine in BrowserSearchEngine.allCases {
     let url = try BrowserInput.normalize("동해 지갑", engine: engine).url
-    check(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems == [URLQueryItem(name: "q", value: "동해 지갑")], "\(engine.rawValue) encodes Unicode query without tracking parameters")
+    check(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems == [URLQueryItem(name: engine == .naver ? "query" : "q", value: "동해 지갑")], "\(engine.rawValue) encodes Unicode query without tracking parameters")
     check(url.scheme == "https", "\(engine.rawValue) search is HTTPS")
 }
 if case .search(_, let query) = try BrowserInput.normalize("site:example.com wallet") {
@@ -254,11 +254,13 @@ check(confusables.warning(for: spoofSubdomain, bookmarks: [paypal], apps: []) !=
 check(confusables.warning(for: paypal.url, bookmarks: [paypal], apps: []) == nil, "exact favorite never gets a warning")
 check(confusables.warning(for: URL(string: "https://app.paypal.com")!, bookmarks: [paypal], apps: []) == nil, "legitimate favorite subdomain never gets a warning")
 check(confusables.warning(for: URL(string: "https://other.example")!, bookmarks: [paypal], apps: []) == nil, "unrelated origin has no favorite warning")
-let registry = PlaceholderBrowserAppRegistry()
-check(registry.apps.count == 3 && Set(registry.apps.map(\.id)).count == 3, "placeholder registry supplies stable toolbox entries")
-let toolboxSpoof = try BrowserInput.normalize("sea://dеx").url
-check(confusables.warning(for: toolboxSpoof, bookmarks: [], apps: registry.apps)?.protectedName == String(localized: "EastSea DEX"), "toolbox sea name participates in skeleton warning")
-check(confusables.warning(for: URL(string: "sea://dex")!, bookmarks: [], apps: registry.apps) == nil, "exact toolbox name does not warn")
+let builtins = BuiltinBrowserApps.apps
+check(builtins.count == 1 && builtins[0].id == "explorer", "only the real bundled explorer is built in")
+check(builtins.allSatisfy { $0.url.scheme == "eastsea-page" }, "built-ins cannot pretend to be registry names")
+let realApp = BrowserToolboxApp(id: "dex", title: "Registered DEX", detail: "", url: URL(string: "sea://dex.sea")!)
+let toolboxSpoof = try BrowserInput.normalize("sea://dеx.sea").url
+check(confusables.warning(for: toolboxSpoof, bookmarks: [], apps: [realApp])?.protectedName == realApp.title, "real app names participate in skeleton warning")
+check(confusables.warning(for: realApp.url, bookmarks: [], apps: [realApp]) == nil, "exact app name does not warn")
 
 let token = "0x00000000000000000000000000000000000000aa"
 let spender = "0x00000000000000000000000000000000000000bb"

@@ -22,7 +22,9 @@ enum WalletScreens {
         let args = CommandLine.arguments
         let out = args.firstIndex(of: "-out").map { args[$0 + 1] } ?? "tmp/screens"
         let only = args.firstIndex(of: "-only").map { args[$0 + 1] }
-        DispatchQueue.main.async {
+        // Nested run-loop waits must be able to service WebKit/MainActor work;
+        // holding a main-queue block throughout renderAll prevents that.
+        _ = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: false) { _ in
             MainActor.assumeIsolated {
                 let r = Renderer(out: URL(fileURLWithPath: out), only: only)
                 r.renderAll()
@@ -114,7 +116,9 @@ final class Renderer {
     }
 
     func renderAll() {
-        for dark in (["en", "ko"].contains(lang) ? [false, true] : [false]) {
+        verifySeaSearchRouting()
+        for dark in ((["en", "ko"].contains(lang) || only?.hasPrefix("sea-search") == true) ? [false, true] : [false]) {
+            renderSeaSearch(dark)
             // Pages, as the detail column shows them (760 pt readable width).
             page("home", dark) { HomePage(sheet: .constant(nil), showActivity: {}, showNetwork: {}) }
             page("home-empty", dark, ["designPreview": "empty"]) { HomePage(sheet: .constant(nil), showActivity: {}, showNetwork: {}) }
@@ -134,7 +138,7 @@ final class Renderer {
             }
             page("network-verifying", dark, ["designPreview": "verifying"]) { NetworkPage() }
             page("security", dark) { SecurityPage() }
-            page("explore", dark) { ExplorePage(goHome: {}).frame(height: 640) }
+            page("explore", dark) { ExplorePage().frame(height: 640) }
             // Real browser components with account-scoped favorites/history,
             // URL-only tab snapshots, and no external page or network load.
             stagePage("browser-start", dark, pad: false, prepare: { s in
@@ -145,12 +149,12 @@ final class Renderer {
             stagePage("browser-tabs", dark, pad: false, prepare: { s in
                 s.browserSession.seedPreview()
             }) { _ in
-                ExplorePage(goHome: {}).frame(height: 640)
+                ExplorePage().frame(height: 640)
             }
             stagePage("browser-tabs-narrow", dark, width: 380, pad: false, prepare: { s in
                 s.browserSession.seedPreview()
             }) { _ in
-                ExplorePage(goHome: {}).frame(height: 640)
+                ExplorePage().frame(height: 640)
             }
             stagePage("browser-permissions", dark, width: 480, pad: false) { s in
                 BrowserSitePermissionsPanel(browser: s.browser, origin: "https://eastsea.xyz", account: s.model.address,
@@ -287,6 +291,85 @@ final class Renderer {
                 a.addButton(withTitle: String(localized: "OK"))
                 return a
             }
+        }
+    }
+
+    /// Real controller/session routing, compiled only in the isolated renderer.
+    /// WALLET_SCREENS records requested navigation and never loads a site.
+    private func verifySeaSearchRouting() {
+        func check(_ value: Bool, _ label: String) {
+            if !value { failed += 1; print("FAIL sea-search controller: \(label)") }
+        }
+        let browser = BrowserController()
+        check(browser.currentURL == SeaSearch.homeURL && browser.addressField == "sea://search", "initial Home")
+        check(browser.webView == nil && browser.searchQuery == "", "Home creates no page")
+        browser.configureScreenFixture(url: URL(string: "https://example.com")!, title: "Example")
+        browser.goHome()
+        check(browser.isSearchHome && browser.searchQuery == "", "Home button")
+        check(browser.webView == nil, "Home releases the old document")
+        browser.load(URL(string: "SEA://SEARCH/")!)
+        check(browser.currentURL == SeaSearch.homeURL, "restored Home URL")
+        let focus = browser.searchFocusRequest
+        browser.focusSearch()
+        check(browser.searchFocusRequest == focus + 1, "native query focus")
+        browser.open("sea://" + String(repeating: "v", count: 51) + "r/")
+        check(browser.screenNavigationRequests.isEmpty && browser.notice != nil, "bad app padding cannot become a name navigation")
+        for query in ["private words", "harbor", "sea://harbor.sea", "https://example.com/path", "42"] {
+            browser.updateSearchQuery(query)
+            check(browser.screenNavigationRequests.isEmpty && browser.webView == nil, "editing \(query) cannot navigate")
+        }
+        browser.updateSearchQuery("private words")
+        browser.submitSearch()
+        check(browser.screenNavigationRequests.isEmpty && browser.isSearchHome, "Enter cannot choose web search")
+        browser.chooseWebSearch(engine: .duckDuckGo)
+        check(browser.screenNavigationRequests == [BrowserSearchEngine.duckDuckGo.searchURL(for: "private words")], "explicit web choice")
+        browser.configureSearchFixture(query: "42")
+        browser.submitSearch()
+        check(browser.screenNavigationRequests.last == SeaSearch.ChainLookup.block(42).explorerURL, "Enter opens the chain result")
+        browser.configureSearchFixture(query: "https://example.com/path")
+        browser.submitSearch()
+        check(browser.screenNavigationRequests.last?.absoluteString == "https://example.com/path", "Enter opens a URL")
+        let session = BrowserSession()
+        session.addTab()
+        check(session.controller.isSearchHome && !session.selectedTab.isPrivate, "new tab Home")
+        session.addTab(isPrivate: true)
+        check(session.controller.isSearchHome && session.selectedTab.isPrivate, "private tab Home")
+        let restoredURL = URL(string: "https://example.com/saved")!
+        let restored = BrowserTab(url: restoredURL, title: "Saved site")
+        check(!restored.hasLoaded && restored.controller.isSearchHome, "background restoration stays unloaded")
+        check(restored.snapshot.url == restoredURL && restored.snapshot.title == "Saved site", "persist preserves unloaded destination and title")
+        restored.hasLoaded = true
+        restored.controller.load(restoredURL)
+        check(restored.snapshot.url == restoredURL && restored.snapshot.title == "Saved site", "uncommitted restoration preserves its destination")
+        restored.controller.close()
+        session.tabs.forEach { $0.controller.close() }
+        browser.close()
+    }
+
+    private func renderSeaSearch(_ dark: Bool) {
+        let address = "0x5397a1c0de4b1b8f6a3cb2d1e0f9c7a6b5d4e502"
+        let examples: [(String, String)] = [
+            ("sea-search-home", ""), ("sea-search-name", "sea://harbor.sea"), ("sea-search-app", "EastSea"),
+            ("sea-search-address", address), ("sea-search-tx", "0x" + String(repeating: "ab", count: 32)),
+            ("sea-search-block", "184210"), ("sea-search-url", "https://eastsea.xyz"), ("sea-search-web", "ocean weather")
+        ]
+        for (kind, query) in examples {
+            stagePage(kind, dark, width: 900, pad: false, prepare: { s in
+                var name: SeaNameResolver.NameRecord?
+                if kind == "sea-search-name", let link = SeaSearch.classify(query).nameLink {
+                    name = SeaNameResolver.NameRecord(link: link, owner: address, address: address)
+                }
+                let records: [AppSearchResult] = kind == "sea-search-app" ? [AppSearchResult(
+                    name: "harbor.sea", title: "EastSea", description: "", category: "", publisher: address,
+                    url: "sea://aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dypq/", verified: true, usage7d: 12, createdAt: 1_791_590_400,
+                    usageComplete: true, lookalike: nil)] : []
+                s.browserSession.controller.configureSearchFixture(query: query, name: name, records: records)
+            }) { s in
+                BrowserWorkspace(session: s.browserSession, browser: s.browserSession.controller).frame(height: 980)
+            }
+        }
+        stagePage("sea-search-home-narrow", dark, width: 380, pad: false) { s in
+            BrowserWorkspace(session: s.browserSession, browser: s.browserSession.controller).frame(height: 900)
         }
     }
 

@@ -7,10 +7,6 @@ struct BrowserToolboxApp: Identifiable, Equatable {
     let url: URL
 }
 
-protocol BrowserAppRegistry {
-    var apps: [BrowserToolboxApp] { get }
-}
-
 /// Requested ERC20 approve arguments, for the per-site panel. This describes
 /// the page's request, never a claim that an on-chain approval already exists.
 struct BrowserTokenAllowance: Identifiable, Equatable {
@@ -45,21 +41,13 @@ struct BrowserTokenAllowance: Identifiable, Equatable {
     }
 }
 
-/// The registry lane replaces this inventory through BrowserAppRegistry.
-/// The bundled explorer is available now; the sea:// entries deliberately go
-/// through the unresolved name seam, rather than inventing trusted websites.
-struct PlaceholderBrowserAppRegistry: BrowserAppRegistry {
-    var apps: [BrowserToolboxApp] {
+/// Bundled tools are separate from the real on-chain aether_search inventory.
+enum BuiltinBrowserApps {
+    static var apps: [BrowserToolboxApp] {
         [
             BrowserToolboxApp(id: "explorer", title: String(localized: "Explorer"),
                               detail: String(localized: "Browse blocks and transactions."),
-                              url: URL(string: "eastsea-page://explorer/index.html")!),
-            BrowserToolboxApp(id: "dex", title: String(localized: "EastSea DEX"),
-                              detail: String(localized: "Discover pools and token prices."),
-                              url: URL(string: "sea://dex")!),
-            BrowserToolboxApp(id: "names", title: String(localized: "EastSea Names"),
-                              detail: String(localized: "Find apps by their sea:// name."),
-                              url: URL(string: "sea://names")!)
+                              url: URL(string: "eastsea-page://explorer/index.html")!)
         ]
     }
 }

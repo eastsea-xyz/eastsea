@@ -60,7 +60,17 @@ function browserHost({ reduced = false, webgl = true, width = 600, height = 600,
       super(); this.tagName = tag; this.children = []; this.attributes = new Map(); this.dataset = {};
       this.hidden = false; this.textContent = ''; this.ownerDocument = doc; this.capture = new Set();
       this.style = { display: '', touchAction: '', setProperty(name, value) { this[name] = value; }, getPropertyValue(name) { return this[name] || ''; } };
-      this.classList = { add: name => { this.className = [this.className, name].filter(Boolean).join(' '); } };
+      this.classList = {
+        add: name => { this.className = [this.className, name].filter(Boolean).join(' '); },
+        contains: name => (this.className || '').split(/\s+/).includes(name),
+        toggle: (name, force) => {
+          const classes = new Set((this.className || '').split(/\s+/).filter(Boolean));
+          const enabled = force ?? !classes.has(name);
+          if (enabled) classes.add(name); else classes.delete(name);
+          this.className = [...classes].join(' ');
+          return enabled;
+        },
+      };
     }
     append(...elements) { for (const el of elements) { el.parentElement = this; this.children.push(el); } }
     after(el) {
@@ -710,6 +720,19 @@ test('wallet entry offers a ready inbound-only API with measured height and loca
   assert.equal(host.find('lg-total').textContent, '—');
   assert.equal(host.timers.size, 0);
   assert.equal(host.frames.size, 0);
+});
+
+test('search home reuses the local globe with compact presentation and no polling', () => {
+  const host = browserHost({ reduced: true });
+  const api = installWalletHost(host.root);
+  assert.equal(api.configure({ searchHome: true, lang: 'ko', theme: 'dark', fixture: true }), true);
+  assert.equal(host.doc.body.classList.contains('search-home'), true);
+  assert.equal(api.update(today), true);
+  assert.equal(host.find('lg-status').dataset.state, 'fixture');
+  assert.equal(host.timers.size, 0);
+  assert.equal(host.frames.size, 0);
+  assert.equal(api.configure({ searchHome: false }), true);
+  assert.equal(host.doc.body.classList.contains('search-home'), false);
 });
 
 function cohortSnapshot(by_region = { '030': 3 }, extras = {}) {

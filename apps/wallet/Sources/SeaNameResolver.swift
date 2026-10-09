@@ -53,6 +53,11 @@ struct PendingContentSource: ContentSource {
 /// Read-only name -> app lookup, injected so it can run without a node or UI.
 enum SeaNameResolver {
     enum Failure: Error, Equatable { case registryUnavailable, wrongCode, badAnswer, unregistered, expired, noApp, unlistedApp, unstable }
+    struct NameRecord: Equatable, Sendable {
+        let link: SeaURL.NameLink
+        let owner: String
+        let address: String
+    }
     struct Resolution: Equatable, Sendable {
         let link: SeaURL.NameLink
         let owner: String
@@ -60,6 +65,55 @@ enum SeaNameResolver {
         let app: SeaAppRecord
     }
     typealias Read = (_ to: String, _ data: String) async throws -> String
+
+    /// Search can resolve a registered name without requiring an app binding.
+    static func lookup(_ link: SeaURL.NameLink, now: UInt64, sources: SeaRegistrySources?, chainID: UInt64 = 1,
+                       code: (_ to: String) async throws -> String, read: Read) async throws -> NameRecord {
+        guard !link.isLegacy || chainID == 7780 else { throw SeaURL.ParseError.legacyNameUnsupported }
+        let raw = "sea://" + link.registryName + link.path + (link.query.map { "?" + $0 } ?? "")
+        guard case .name(let canonical) = try SeaURL.parse(raw, chainID: chainID), canonical == link else {
+            throw SeaURL.ParseError.invalidName
+        }
+        guard let pins = sources, pins.names.valid else { throw Failure.registryUnavailable }
+        let rawCode = try await code(pins.names.address)
+        guard let bytes = decodeBytes(rawCode), !bytes.isEmpty,
+              SHA256.hash(data: bytes).map({ String(format: "%02x", $0) }).joined() == pins.names.codeSHA256 else {
+            throw Failure.wrongCode
+        }
+        let registryName = chainID == 7780 ? String(link.name.dropLast(4)) : link.name
+        let nodeWords = try words(await read(pins.names.address, "0x864ce5e1" + word(32) + stringArgument(registryName)))
+        guard nodeWords.count == 1, !isZero(nodeWords[0]) else { throw Failure.badAnswer }
+        let node = nodeWords[0]
+        let owner = try address(await read(pins.names.address, "0x7dd56411" + node))
+        let expires = try number(await read(pins.names.address, "0x9dfcc616" + node))
+        guard !isZero(owner) else { throw Failure.unregistered }
+        // Match existing root resolution's grace window and child expiry.
+        let grace: UInt64 = link.name.split(separator: ".").count == 2 ? 30 * 24 * 60 * 60 : 0
+        let (liveUntil, overflow) = expires.addingReportingOverflow(grace)
+        guard expires > 0, !overflow, now < liveUntil else { throw Failure.expired }
+        let target = try address(await read(pins.names.address, "0xb25be181" + node))
+        return NameRecord(link: link, owner: owner, address: target)
+    }
+
+    /// Direct registry app links need no name or name-registry deployment.
+    static func resolveApp(appID: String, sources: SeaRegistrySources?,
+                           code: (_ to: String) async throws -> String, read: Read) async throws -> SeaAppRecord {
+        guard validHex(appID, bytes: 32), !isZero(appID) else { throw Failure.noApp }
+        guard let pins = sources, pins.apps.valid else { throw Failure.registryUnavailable }
+        let rawCode = try await code(pins.apps.address)
+        guard let bytes = decodeBytes(rawCode), !bytes.isEmpty,
+              SHA256.hash(data: bytes).map({ String(format: "%02x", $0) }).joined() == pins.apps.codeSHA256 else {
+            throw Failure.wrongCode
+        }
+        let release = try words(await read(pins.apps.address, "0x470d9498" + appID.dropFirst(2)))
+        guard release.count == 4 else { throw Failure.badAnswer }
+        guard release[3] == word(0) || release[3] == word(1) else { throw Failure.badAnswer }
+        guard release[3] == word(1) else { throw Failure.unlistedApp }
+        let seq = try number("0x" + release[0])
+        guard seq > 0, seq <= UInt64(UInt32.max), !isZero(release[1]), !isZero(release[2]) else { throw Failure.badAnswer }
+        return SeaAppRecord(appID: appID, sequence: UInt32(seq),
+                            manifestHash: "0x" + release[1], bundleHash: "0x" + release[2])
+    }
 
     static func resolve(_ link: SeaURL.NameLink, now: UInt64, sources: SeaRegistrySources?, chainID: UInt64 = 1,
                         code: (_ to: String) async throws -> String, read: Read) async throws -> Resolution {

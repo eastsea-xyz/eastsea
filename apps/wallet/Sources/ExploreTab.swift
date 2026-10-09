@@ -5,12 +5,9 @@ import WebKit
 /// `window.aether` bridge through its own origin-checked BrowserController.
 struct ExplorePage: View {
     @EnvironmentObject var session: BrowserSession
-    /// Back to Home, always in the address bar: a page in the full-bleed
-    /// web view must never be a dead end (founder report on 0.7.0).
-    var goHome: (() -> Void)?
 
     var body: some View {
-        BrowserWorkspace(session: session, browser: session.controller, goHome: goHome)
+        BrowserWorkspace(session: session, browser: session.controller)
             .safeAreaInset(edge: .top, spacing: 0) {
                 if let url = session.controller.httpsOffer {
                     HStack(spacing: DesignTokens.Space.s3) {
@@ -25,54 +22,6 @@ struct ExplorePage: View {
                 }
             }
             .id(session.activeTabID)
-    }
-}
-
-/// Results retain the node's ordering. Registered text is displayed verbatim;
-/// it never becomes a WebKit document or a wallet transaction.
-struct AppSearchPage: View {
-    @ObservedObject var browser: BrowserController
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    Text("Search").font(.aeHeadline)
-                    Spacer()
-                    Button("Back to Explore") { browser.dismissSearch() }
-                        .buttonStyle(EastSeaQuietButtonStyle())
-                }
-                Text("Apps and names recorded on chain").font(.aeBody).foregroundStyle(.secondary)
-                DisclosureGroup(String(localized: "How results are ordered")) {
-                    Text("Search reads your own node. Exact names come first, then prefixes and title or description tokens, then distinct contract callers in the last 7 days, then older records. There are no paid placements, publisher boosts or hidden blocklists.")
-                        .font(.aeFootnote).foregroundStyle(.secondary).padding(.top, 6)
-                }
-                if let query = browser.searchQuery, !query.isEmpty {
-                    Text("Results for \(query)").font(.aeBody).textSelection(.enabled)
-                    if !browser.searchBusy && browser.searchFailure == nil {
-                        AppSearchIndexNotice(info: browser.searchInfo)
-                    }
-                    if browser.searchBusy {
-                        ProgressView(String(localized: "Searching the chain…"))
-                    } else if let failure = browser.searchFailure {
-                        Text(failure).font(.aeBody).foregroundStyle(Color.warn)
-                        Button("Try Again") { browser.search(query) }.buttonStyle(EastSeaPrimaryButtonStyle())
-                    } else if browser.searchResults.isEmpty {
-                        Text("No matching apps or names.").font(.aeBody).foregroundStyle(.secondary)
-                    } else {
-                        ForEach(Array(browser.searchResults.enumerated()), id: \.offset) { _, record in
-                            Card { AppSearchRecordDetails(record: record, info: browser.searchInfo) }
-                        }
-                    }
-                } else {
-                    Text("Search by app name, .sea name or description.").font(.aeBody)
-                }
-                Text("The content hash label only reports that a hash is recorded on chain. It does not establish the publisher's identity or the app's safety.")
-                    .font(.aeFootnote).foregroundStyle(.secondary)
-            }
-            .padding(20).frame(maxWidth: 680, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
     }
 }
 

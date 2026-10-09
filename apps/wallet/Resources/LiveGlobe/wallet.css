@@ -6,6 +6,17 @@ body { padding: 12px 20px 20px; color: var(--c-text); }
 .lg-art-caption, .lg-privacy, .lg-interaction { font-size: 12px; }
 .lg-pause { min-height: 32px; padding: 4px 10px; }
 .lg-privacy { margin-top: 16px; }
+/* Search keeps the same local renderer and motion controls in one column. */
+body.search-home { padding: 0; background: var(--c-bg); }
+.search-home .live-globe { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.search-home .lg-figure { position: static; width: 100%; }
+.search-home .lg-stage { max-width: 400px; }
+.search-home .lg-summary { display: none; }
+.search-home .lg-heading { order: 2; text-align: center; }
+.search-home .lg-caption, .search-home .lg-role-summary, .search-home .lg-snapshot-date { display: none; }
+.search-home .lg-controls { justify-content: center; }
+.search-home .lg-interaction, .search-home .lg-art-caption { display: none; }
+.search-home .lg-status { margin: 0; font-size: 12px; }
 @media (max-width: 680px) {
   body { padding-inline: 12px; }
 }

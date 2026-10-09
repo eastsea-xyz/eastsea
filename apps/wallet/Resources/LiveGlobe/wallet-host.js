@@ -13,6 +13,9 @@ export function installWalletHost(root) {
     reset() { return view.reset(); },
     captureFrame() { return view.captureFrame(); },
     configure(options) {
+      if (typeof options?.searchHome === 'boolean') {
+        document.body.classList.toggle('search-home', options.searchHome);
+      }
       const configured = view.configure(options);
       if (configured) {
         document.documentElement.lang = root.lang;

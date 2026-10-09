@@ -24,4 +24,5 @@ test('external DNS names have an explicit HTTPS refusal in five languages', () =
     assert.match(entries[language].stringUnit.value, /https:\/\//);
   }
   assert.equal(entries.ko.stringUnit.value, '일반 웹 주소는 동해 이름이 아니에요. https://로 여세요.');
+  assert.match(entries.en.stringUnit.value, /\.com/);
 });

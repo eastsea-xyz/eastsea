@@ -11,7 +11,6 @@ struct BrowserWorkspace: View {
     @ObservedObject var session: BrowserSession
     @ObservedObject var browser: BrowserController
     @AppStorage("developerMode") private var developerMode = false
-    var goHome: (() -> Void)?
     @FocusState private var addressFocused: Bool
     @State private var showLibrary = false
     @State private var showPermissions = false
@@ -73,7 +72,10 @@ struct BrowserWorkspace: View {
         .sheet(isPresented: $showLibrary) { BrowserLibraryPanel(session: session).frame(idealWidth: 540, idealHeight: 580) }
         .sheet(isPresented: $editingFavorite) { BrowserBookmarkEditor(session: session) }
         #if os(macOS)
-        .focusedSceneValue(\.browserActions, BrowserActions(session: session, focusAddress: { addressFocused = true },
+        .focusedSceneValue(\.browserActions, BrowserActions(session: session, focusAddress: {
+            if browser.isSearchHome { addressFocused = false; browser.focusSearch() }
+            else { addressFocused = true }
+        },
                                                            showFind: { showFind = true }))
         .background(BrowserKeyHandler(closeTab: { session.closeTab() }))
         #endif
@@ -149,12 +151,10 @@ struct BrowserWorkspace: View {
 
     private var navigation: some View {
         HStack(spacing: 12) {
-            if let goHome {
-                Button(action: goHome) { Image(systemName: "house.fill") }
-                    .help("Back to Home").accessibilityLabel("Back to Home")
-            }
+            Button { session.goHome() } label: { Image(systemName: "house.fill") }
+                .help("Search home").accessibilityLabel("Search home")
             Button { browser.goBack() } label: { Image(systemName: "chevron.left") }
-                .disabled(!browser.canGoBack && browser.searchQuery == nil).help("Back").accessibilityLabel("Back")
+                .disabled(!browser.canGoBack).help("Back").accessibilityLabel("Back")
                 .onLongPressGesture { showBackHistory = true }
                 .popover(isPresented: $showBackHistory) { navigationHistory(browser.backHistory) }
                 .contextMenu { historyButtons(browser.backHistory) }
@@ -168,8 +168,6 @@ struct BrowserWorkspace: View {
             }.disabled(browser.webView == nil && browser.currentURL == nil && browser.searchQuery == nil)
                 .help(browser.isLoading || browser.contentLoading || browser.searchBusy ? String(localized: "Stop loading") : String(localized: "Reload"))
                 .accessibilityLabel(browser.isLoading || browser.contentLoading || browser.searchBusy ? String(localized: "Stop loading") : String(localized: "Reload"))
-            Button { session.goHome() } label: { Image(systemName: "square.grid.2x2") }
-                .help("Start page").accessibilityLabel("Start page")
         }.buttonStyle(.plain).fixedSize()
     }
 
@@ -269,8 +267,7 @@ struct BrowserWorkspace: View {
         HStack(spacing: 12) {
             Button {
                 addressFocused = false
-                if case .search(let query) = AppSearchInput.destination(for: browser.addressField) { browser.search(query) }
-                else { browser.search() }
+                session.goHome()
             } label: { Image(systemName: "magnifyingglass") }
                 .help("Search").accessibilityLabel("Search")
             #if os(macOS)
@@ -298,7 +295,7 @@ struct BrowserWorkspace: View {
                     Button("Copy link", systemImage: "link") { BrowserExternal.copy(url) }
                 }
                 Divider()
-                Picker("Search engine", selection: Binding(get: { session.profile.searchEngine }, set: session.setSearchEngine)) {
+                Picker("Search engine", selection: Binding(get: { session.searchEngine }, set: session.setSearchEngine)) {
                     ForEach(BrowserSearchEngine.allCases, id: \.self) { engine in Text(engine.title).tag(engine) }
                 }
                 Button("Add a favorite", systemImage: "star.badge.plus") { editingFavorite = true }
@@ -308,8 +305,8 @@ struct BrowserWorkspace: View {
     }
 
     @ViewBuilder private var content: some View {
-        if browser.searchQuery != nil {
-            AppSearchPage(browser: browser)
+        if browser.isSearchHome {
+            SeaSearchPage(session: session, browser: browser)
         } else if browser.contentLoading {
             Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let webView = browser.webView {
@@ -323,7 +320,7 @@ struct BrowserWorkspace: View {
                 Button("Reload") { browser.reload() }.buttonStyle(EastSeaPrimaryButtonStyle())
             }
         } else {
-            BrowserStartPage(session: session)
+            SeaSearchPage(session: session, browser: browser)
         }
     }
 
@@ -368,83 +365,10 @@ struct BrowserTabStrip: View {
     }
 }
 
+/// Retained for existing renderer entry points; product Home uses SeaSearchPage.
 struct BrowserStartPage: View {
     @ObservedObject var session: BrowserSession
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Explore", systemImage: "safari").font(.system(size: 28, weight: .semibold, design: .serif))
-                    Text("Your favorites, recent sites, and EastSea apps.").font(.aeBody).foregroundStyle(.secondary)
-                    if session.selectedTab.isPrivate {
-                        Label("Private browsing keeps no history or cookies after this tab closes.", systemImage: "eye.slash")
-                            .font(.aeFootnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Favorites").font(.aeHeadline)
-                    if session.profile.bookmarks.isEmpty {
-                        Text("Add a favorite with the star in the address bar.").font(.aeBody).foregroundStyle(.secondary)
-                    }
-                    ForEach(session.profile.bookmarks) { bookmark in
-                        siteRow(title: bookmark.title, url: bookmark.url, icon: "star") { session.open(bookmark.url.absoluteString) }
-                            .contextMenu {
-                                Button("Move up") { session.moveBookmark(bookmark.id, by: -1) }
-                                Button("Move down") { session.moveBookmark(bookmark.id, by: 1) }
-                                Button("Remove favorite", role: .destructive) { session.removeBookmark(bookmark.id) }
-                            }
-                    }
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Recent sites").font(.aeHeadline)
-                    if session.selectedTab.isPrivate || session.recentSites.isEmpty {
-                        Text("Sites you visit appear here.").font(.aeBody).foregroundStyle(.secondary)
-                    } else {
-                        ForEach(session.recentSites) { entry in
-                            siteRow(title: entry.title, url: entry.url, icon: "clock") { session.open(entry.url.absoluteString) }
-                        }
-                    }
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    Button { session.controller.search() } label: {
-                        VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
-                            Label("Search", systemImage: "magnifyingglass").font(.aeHeadline)
-                            Text("Find apps and .sea names using your own node.")
-                                .font(.aeBody).foregroundStyle(.secondary)
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                    }.buttonStyle(.plain)
-                    Divider()
-                    Text("EastSea apps").font(.aeHeadline)
-                    Text("The app list will update when the registry is available.").font(.aeFootnote).foregroundStyle(.secondary)
-                    ForEach(session.registry.apps) { app in
-                        siteRow(title: app.title, url: app.url, icon: "square.grid.2x2", detail: app.detail) { session.open(app.url.absoluteString) }
-                    }
-                }
-            }
-            .frame(maxWidth: 680, alignment: .leading).frame(maxWidth: .infinity)
-            .padding(24)
-        }
-    }
-
-    private func siteRow(title: String, url: URL, icon: String, detail: String? = nil, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: icon).font(.body).foregroundStyle(Color.accentColor).frame(width: 24)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title.isEmpty ? (url.host ?? url.absoluteString) : title).font(.aeBody).lineLimit(1)
-                    if let detail, !detail.isEmpty {
-                        Text(verbatim: detail).font(.aeFootnote).foregroundStyle(.secondary)
-                    }
-                    Text(verbatim: BrowserCanonicalOrigin.string(for: url) ?? url.absoluteString)
-                        .font(.aeCaption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                }
-                Spacer(minLength: 4)
-                Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.secondary)
-            }
-            .padding(.vertical, 8).contentShape(Rectangle())
-        }.buttonStyle(.plain)
-    }
+    var body: some View { SeaSearchPage(session: session, browser: session.controller) }
 }
 
 struct BrowserFindBar: View {

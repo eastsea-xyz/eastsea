@@ -83,6 +83,7 @@ run sea-resolution SeaURL.swift SeaNameResolver.swift SeaRegistryReader.swift
 run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
 run app-search AppSearch.swift BrowserOriginPolicy.swift
+run sea-search SeaSearch.swift SeaAppLink.swift BrowserInput.swift SeaURL.swift
 run balance-sources Brand.swift EarningsModel.swift ChainActivity.swift BalanceBreakdown.swift EarningsExport.swift
 run balance-history BalanceHistory.swift
 run browser-origin BrowserOriginPolicy.swift

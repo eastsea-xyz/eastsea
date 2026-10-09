@@ -29,13 +29,23 @@ check(app.permissionKey != otherChain.permissionKey && app.storeID != otherChain
 check(app.permissionKey != otherRegistry.permissionKey && app.storeID != otherRegistry.storeID, "registries do not share permissions or data")
 let alias = try AppBrowserIdentity(appID: appID, name: "alias.sea", chainID: 7794, registry: registry)
 check(alias.permissionKey == app.permissionKey && alias.storeID == app.storeID, "app identity survives name aliases")
+let direct = try AppBrowserIdentity(appID: appID, chainID: 7794, registry: registry)
+check(direct.displayOrigin == "sea://" + app.appKey && direct.appKey == app.appKey, "direct app IDs display their computed base32 origin")
+check(direct.permissionKey == app.permissionKey && direct.storeID == app.storeID, "named and direct links to the same registry app share the permission namespace")
+check(!direct.isDeveloper && direct.accepts(scheme: "eastsea-app", host: direct.appKey, port: 0, mainFrame: true,
+                                         currentChainID: 7794, developerMode: false), "a direct app identity authenticates the registered frame")
+let explicitUnnamed = try AppBrowserIdentity(appID: appID, name: nil, chainID: 7794, registry: registry)
+check(explicitUnnamed == direct, "an explicitly absent name produces the same direct app identity")
+let directOtherApp = try AppBrowserIdentity(appID: "0x" + String(repeating: "6", count: 64), chainID: 7794, registry: registry)
+check(directOtherApp.permissionKey != direct.permissionKey && directOtherApp.storeID != direct.storeID,
+      "different direct app IDs retain separate permission and website-data namespaces")
 let dev = AppBrowserIdentity(developerSession: UUID(), chainID: 7777)
 check(!dev.accepts(scheme: "eastsea-app", host: dev.appKey, port: 0, mainFrame: true,
                   currentChainID: 7777, developerMode: false), "turning developer mode off revokes local content")
 check(dev.permitsSigning(developerMode: true) && !dev.permitsSigning(developerMode: false), "development signing requires the explicit mode")
 check(!AppBrowserIdentity(developerSession: UUID(), chainID: 7780).permitsSigning(developerMode: true), "local files cannot sign on the live testnet")
 check(!AppBrowserIdentity(developerSession: UUID(), chainID: 1).permitsSigning(developerMode: true), "local files cannot sign on mainnet")
-for name in ["evil.com", "demo.sea@evil", "../demo.sea", "demo..sea", "Demo.sea", "-demo.sea"] {
+for name in ["", direct.appKey, "evil.com", "demo.sea@evil", "../demo.sea", "demo..sea", "Demo.sea", "-demo.sea"] {
     do { _ = try AppBrowserIdentity(appID: appID, name: name, chainID: 7794, registry: registry); fatalError("unsafe identity accepted") }
     catch AppBrowserIdentity.Failure.invalidIdentity { checks += 1 }
 }

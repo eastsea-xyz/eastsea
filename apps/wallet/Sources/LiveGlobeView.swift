@@ -6,6 +6,7 @@ import WebKit
 /// The canonical local globe. The native wallet is the only presence reader;
 /// WebKit receives aggregate JSON and display preferences as named arguments.
 struct LiveGlobeView: View {
+    var searchHome = false
     @EnvironmentObject private var model: WalletModel
     @EnvironmentObject private var node: NodeController
     @Environment(\.colorScheme) private var colorScheme
@@ -15,6 +16,7 @@ struct LiveGlobeView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if !searchHome {
             LabeledContent("This Mac's local sub-region", value: node.presenceLocalRegionLabel)
                 .font(.aeCaption)
             if let country = node.presenceSelectedCountryLabel {
@@ -22,6 +24,7 @@ struct LiveGlobeView: View {
             }
             Text("Local preference only; this Mac is not added to published counts.")
                 .font(.aeCaption).foregroundStyle(.secondary)
+            }
             globeContent
         }
     }
@@ -29,7 +32,7 @@ struct LiveGlobeView: View {
     private var globeContent: some View {
         LiveGlobeWebContent(presence: model.liveGlobePresence,
                             state: model.liveGlobeState.rawValue,
-                            dark: colorScheme == .dark, reduceMotion: reduceMotion,
+                            dark: colorScheme == .dark, reduceMotion: reduceMotion, searchHome: searchHome,
                             height: $height, loadFailed: $loadFailed)
             .frame(height: height)
             .overlay {
@@ -53,6 +56,7 @@ private struct LiveGlobeWebContent: NSViewRepresentable {
     let state: String
     let dark: Bool
     let reduceMotion: Bool
+    let searchHome: Bool
     @Binding var height: CGFloat
     @Binding var loadFailed: Bool
 
@@ -94,8 +98,10 @@ private struct LiveGlobeWebContent: NSViewRepresentable {
         private var state = "loading"
         private var dark = false
         private var reduceMotion = false
+        private var searchHome = false
         private var loaded = false
         private var stopped = false
+        private var bootstrapTask: Task<Void, Never>?
         private var lastSent: LiveGlobeRenderingPolicy.Update?
         private var pushGeneration = 0
 
@@ -124,6 +130,8 @@ private struct LiveGlobeWebContent: NSViewRepresentable {
             state = content.state
             dark = content.dark
             reduceMotion = content.reduceMotion
+            if searchHome != content.searchHome { lastSent = nil }
+            searchHome = content.searchHome
             push()
         }
 
@@ -151,6 +159,8 @@ private struct LiveGlobeWebContent: NSViewRepresentable {
             lastSent = update
             pushGeneration += 1
             let generation = pushGeneration
+            var settings = update.settings
+            settings["searchHome"] = searchHome
             view.callAsyncJavaScript("""
                 if (!globalThis.eastseaGlobe?.ready) return null;
                 globalThis.eastseaGlobe.configure(settings);
@@ -158,7 +168,7 @@ private struct LiveGlobeWebContent: NSViewRepresentable {
                 else globalThis.eastseaGlobe.reset();
                 if (state !== 'ready') globalThis.eastseaGlobe.configure({state});
                 return globalThis.eastseaGlobe.height();
-                """, arguments: ["settings": update.settings, "aggregate": update.aggregate as Any? ?? NSNull(), "state": state],
+                """, arguments: ["settings": settings, "aggregate": update.aggregate as Any? ?? NSNull(), "state": state],
                 in: nil, in: .page) { [weak self] result in
                     guard let self, !self.stopped, self.pushGeneration == generation else { return }
                     switch result {
@@ -176,6 +186,8 @@ private struct LiveGlobeWebContent: NSViewRepresentable {
 
         func stop() {
             stopped = true
+            bootstrapTask?.cancel()
+            bootstrapTask = nil
             NotificationCenter.default.removeObserver(self)
             NSWorkspace.shared.notificationCenter.removeObserver(self)
             view?.callAsyncJavaScript("globalThis.eastseaGlobe?.configure({paused:true});", arguments: [:], in: nil, in: .page)
@@ -188,10 +200,29 @@ private struct LiveGlobeWebContent: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            loaded = true
-            lastSent = nil
-            loadFailed.wrappedValue = false
-            push()
+            bootstrapTask?.cancel()
+            // didFinish can precede the bundled ES modules' ready API. A
+            // one-shot push then loses the initial aggregate and preferences.
+            loaded = false
+            bootstrapTask = Task { [weak self, weak webView] in
+                for _ in 0..<80 {
+                    guard !Task.isCancelled, let self, !self.stopped, let webView else { return }
+                    let ready = (try? await webView.evaluateJavaScript("Boolean(globalThis.eastseaGlobe?.ready)")) as? Bool == true
+                    guard !Task.isCancelled, !self.stopped else { return }
+                    if ready {
+                        self.loaded = true
+                        self.lastSent = nil
+                        self.loadFailed.wrappedValue = false
+                        self.push()
+                        self.bootstrapTask = nil
+                        return
+                    }
+                    do { try await Task.sleep(nanoseconds: 50_000_000) }
+                    catch { return }
+                }
+                self?.loadFailed.wrappedValue = true
+                self?.bootstrapTask = nil
+            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -203,6 +234,8 @@ private struct LiveGlobeWebContent: NSViewRepresentable {
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            bootstrapTask?.cancel()
+            bootstrapTask = nil
             loaded = false
             lastSent = nil
             webView.load(URLRequest(url: LiveGlobeBundlePolicy.entry))

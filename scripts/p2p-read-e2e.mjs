@@ -18,13 +18,14 @@ const binary = process.env.AETHER_BIN || path.join(root, 'tmp/p2p-read/target/de
 const examples = path.join(path.dirname(binary), 'examples');
 const networkBinary = process.env.AETHER_READ_NETWORK_BIN || path.join(examples, 'public_read_network');
 const forgedBinary = process.env.AETHER_FORGED_READ_BIN || path.join(examples, 'public_read_forged');
-const relayBinary = process.env.IROH_RELAY_BIN || path.join(root, 'tmp/p2p-read/relay-target/debug/iroh-relay');
+const relayBinary = process.env.IROH_RELAY_BIN || path.join(path.dirname(binary), 'iroh-relay');
 const playwrightPath = process.env.PLAYWRIGHT_MODULE || '/Users/kjaylee/.codex/skills/develop-web-game/node_modules/playwright-core/index.mjs';
 for (const file of [binary, networkBinary, forgedBinary, relayBinary, playwrightPath]) await access(file);
 const { chromium } = await import(pathToFileURL(playwrightPath).href);
 const chrome = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const network = JSON.parse(execFileSync(networkBinary, ['3'], { cwd: root, encoding: 'utf8', timeout: 60_000 }));
 const children = []; const logs = []; let server; let browser;
+const browserEvents = [];
 const ports = { relay: 19440, p2p: 19100, rpc: 19500 };
 const relay = `http://127.0.0.1:${ports.relay}/`;
 const environment = { ...process.env, TMPDIR: task, AETHER_IROH_NO_DHT: '1', AETHER_IROH_RELAY_URL: relay,
@@ -61,20 +62,24 @@ async function openPage(origin, attempted, pageErrors) {
   const context = await browser.newContext();
   await context.route('**/*', async route => {
     const u = new URL(route.request().url()); attempted.add(`${u.protocol}//${u.host}`);
-    if (u.origin === origin) return route.continue();
+    if (u.origin === origin || (u.origin === new URL(relay).origin && u.pathname === '/ping')) return route.continue();
     return route.abort('blockedbyclient');
   });
-  await context.routeWebSocket('**/*', socket => {
+  await context.routeWebSocket(url => url.host !== new URL(relay).host, socket => {
     const u = new URL(socket.url()); attempted.add(`${u.protocol}//${u.host}`);
-    if (u.host === new URL(relay).host) socket.connectToServer();
-    else socket.close({ code: 1008, reason: 'Only the local test relay is allowed' });
+    socket.close({ code: 1008, reason: 'Only the local test relay is allowed' });
   });
   await context.addInitScript(url => {
     localStorage.setItem('aether-explorer.relays', JSON.stringify([url]));
     localStorage.setItem('aether-explorer.gateway', '');
   }, relay);
   const page = await context.newPage();
+  page.on('websocket', socket => {
+    const u = new URL(socket.url()); attempted.add(`${u.protocol}//${u.host}`);
+  });
   page.on('pageerror', error => pageErrors.push(error.message));
+  page.on('console', message => browserEvents.push({ type: message.type(), text: message.text() }));
+  page.on('requestfailed', request => browserEvents.push({ type: 'requestfailed', url: request.url(), error: request.failure() }));
   return { context, page };
 }
 
@@ -175,6 +180,19 @@ try {
   await writeFile(path.join(task, 'result.json'), JSON.stringify(result, null, 2));
   await writeFile(path.join(root, 'tmp/p2p-read/browser-result.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result, null, 2));
+} catch (error) {
+  await writeFile(path.join(task, 'browser-events.json'), JSON.stringify(browserEvents, null, 2));
+  const page = browser?.contexts().flatMap(context => context.pages())[0];
+  if (page) {
+    await page.screenshot({ path: path.join(task, 'failure.png'), fullPage: true }).catch(() => {});
+    await writeFile(path.join(task, 'failure.html'), await page.content().catch(() => ''));
+    const diagnostics = await page.evaluate(() => ({
+      text: document.body.textContent, read: window.aetherReadDiagnostics?.(),
+    })).catch(e => ({ error: e.message }));
+    await writeFile(path.join(task, 'failure-diagnostics.json'), JSON.stringify(diagnostics, null, 2));
+    console.error(JSON.stringify(diagnostics, null, 2));
+  }
+  throw error;
 } finally {
   await browser?.close();
   if (server) await new Promise(resolve => server.close(resolve));

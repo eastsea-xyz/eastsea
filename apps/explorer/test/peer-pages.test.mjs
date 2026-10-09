@@ -12,6 +12,7 @@ class El {
   setAttribute() {}
   addEventListener() {}
   append(...children) { this.children.push(...children.flat()); }
+  replaceChildren(...children) { this.children = children.flat(); }
 }
 globalThis.Node = El;
 globalThis.document = { createElement: (tag) => new El(tag) };
@@ -22,6 +23,34 @@ const network = { chain_id: 7780, identity: 'pinned' };
 const header = (height) => ({ height, chain_id: 7780, hash: 'ab'.repeat(32), parent: 'cd'.repeat(32),
   proposer: `0x${'12'.repeat(20)}`, parent_state_root: 'ef'.repeat(32), timestamp_ms: 1000,
   protocol: 4, gas_used: 0, prove_gas: 0, txs: [] });
+
+test('a verified head paints before slow history and concurrent views share the history request', async () => {
+  const pool = new PublicPeerPool({ network, peers: ids, now: () => 1000,
+    mod: { verifyBlock: (_n, _s, _c, height) => JSON.stringify(header(Number(height))) },
+    transport: { call: async (_peer, method, params) => JSON.stringify(method === 'aether_status'
+      ? header(3) : method === 'aether_getBlock' ? header(JSON.parse(params)[0])
+        : method === 'aether_readPeers' ? ids : { height: JSON.parse(params)[0], block: 'bytes', finalization: 'signed' }),
+      closePeer() {}, close() {} } });
+  const head = await pool.call('aether_status');
+  const block = await pool.call('aether_getBlock', [2]);
+  let release, requests = 0;
+  const history = new Promise(resolve => { release = resolve; });
+  const node = { call: async method => method === 'aether_status' ? head
+    : method === 'aether_recentBlocks' ? (requests++, history) : null };
+  const first = homeView({ node });
+  try {
+    const page = await Promise.race([first, new Promise(resolve => setTimeout(() => resolve(null), 30))]);
+    assert.ok(page, 'slow history must not hide a verified head');
+    assert.match(text(page), /Finalized height/);
+    assert.match(text(page), /Loading verified blocks/);
+    await homeView({ node });
+    assert.equal(requests, 1, 'polling shares the unfinished certified history read');
+    release([block]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.match(text(page), /abababab/);
+    assert.doesNotMatch(text(page), /Loading verified blocks/);
+  } finally { release([block]); await first; pool.close(); }
+});
 
 test('peer-only home and block pages render verified fields and omit poisoned metrics', async () => {
   const mod = { default: async () => {}, verifyAccount() {},

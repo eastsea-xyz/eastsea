@@ -83,14 +83,34 @@ function sortableLogs(logs) {
 
 // ---- home ----
 
+const recentPeerBlocks = new WeakMap();
+
+function peerHistory(node, height) {
+  let entry = recentPeerBlocks.get(node);
+  if (!entry) {
+    entry = { blocks: [], height: -1, task: null, error: null };
+    recentPeerBlocks.set(node, entry);
+  }
+  if (!entry.task && (height > entry.height || entry.error)) {
+    entry.height = height;
+    entry.task = node.call('aether_recentBlocks', [30]).then(blocks => {
+      if (!Array.isArray(blocks) || blocks.some(block => !readVerdict(block))) throw new Error('History has no verified certificate');
+      entry.blocks = blocks;
+      entry.error = null;
+    }).catch(error => { entry.error = error.message; }).finally(() => { entry.task = null; });
+  }
+  return entry;
+}
+
 export async function homeView(ctx) {
-  const [status, blocks, candidates, prover] = await Promise.all([
+  const [status, candidates, prover] = await Promise.all([
     ctx.node.call('aether_status'),
-    ctx.node.call('aether_recentBlocks', [30]),
     ctx.node.call('aether_candidates').catch(() => null),
     ctx.node.call('aether_proverStatus').catch(() => null),
   ]);
   const verifiedHead = !!readVerdict(status);
+  const history = verifiedHead ? peerHistory(ctx.node, status.height) : null;
+  const blocks = history ? history.blocks : await ctx.node.call('aether_recentBlocks', [30]);
   const rate = txRate(blocks);
   const outdated = status.node_protocol < status.newest_scheduled;
 
@@ -115,7 +135,21 @@ export async function homeView(ctx) {
     ['Prover escrow', status.prover_escrow == null ? '— · state proof unavailable' : `${formatAeth(status.prover_escrow)} ${coinTicker(status.chain_id)}`],
   ]));
 
-  const list = card(`Latest blocks`, table(
+  const listBody = h('div', {}, recentBlockTable(blocks));
+  if (history?.task) {
+    listBody.append(message('plain', 'Loading verified blocks…'));
+    history.task.then(() => listBody.replaceChildren(recentBlockTable(history.blocks),
+      ...(history.error ? [message('warn', `Verified history is unavailable: ${history.error}`)] : [])));
+  }
+  const list = card('Latest blocks', listBody);
+
+  return h('div', { class: 'stack' },
+    sourceLine(ctx.node, `chain ${status.chain_id} · finalized height ${formatInt(status.height)}`, status),
+    tiles, list, chain);
+}
+
+function recentBlockTable(blocks) {
+  return table(
     ['Height', 'Hash', 'Proposer', 'Txs', 'Gas used', 'Age'],
     (blocks || []).map((b) => [
       blockLink(b.height),
@@ -124,11 +158,7 @@ export async function homeView(ctx) {
       formatInt(b.txs.length),
       formatInt(b.gas_used),
       timeAgo(b.timestamp_ms),
-    ])));
-
-  return h('div', { class: 'stack' },
-    sourceLine(ctx.node, `chain ${status.chain_id} · finalized height ${formatInt(status.height)}`, status),
-    tiles, list, chain);
+    ]));
 }
 
 function tile(label, value, sub, extra = '') {

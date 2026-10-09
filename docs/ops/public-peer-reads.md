@@ -62,6 +62,12 @@ Unverifiable peers are dropped. Live head floors survive storage when available
 and remain monotonic in memory when it is unavailable. Historical blocks
 remain readable without a live-head freshness requirement.
 
+Admission checks each peer's own previously certified head and freshness;
+a slightly lagging honest peer remains available for history. Live head and
+current account answers must meet the shared verified-height floor before
+display. Concurrent head refreshes share one request, and secondary errors
+from a closed connection cannot extend a temporary peer quarantine.
+
 Browser admission respects the service's four concurrent streams per peer and
 the WASM transport's 32-call limit. A JavaScript timeout keeps its permit until
 the underlying transport call settles, and queued reads retain their deadlines.
@@ -99,6 +105,14 @@ rejects an actual iroh peer with a forged header, and stops every process in
 First certificate timing uses the navigation's monotonic performance clock.
 Direct block-page timings launch a separate fresh browser, with empty caches;
 warm navigation and full home-page rendering are recorded separately.
+The verified head paints before the historical block table finishes; polls
+share an outstanding history request and display only certified rows.
+
+Measured on this Mac with three local devnet peers and a local relay,
+2026-10-09, three fresh-browser samples: median first verified certificate
+3.08 seconds, full home page 17.31 seconds, direct cold block page 15.65 seconds,
+warm block navigation 1.36 seconds. The WASM is 3,763,973 bytes (1,508,464 gzip).
+These are local-relay observations, not public Internet relay measurements.
 
 For local-only tests, `AETHER_IROH_RELAY_URL=http://127.0.0.1:<port>/` explicitly
 replaces native relays and `AETHER_IROH_NO_DHT=1` disables public DHT activity.

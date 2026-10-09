@@ -57,6 +57,7 @@ const ctx = {
     return this.originCache.get(a);
   },
 };
+const peerEvents = [];
 
 // ---- header ----
 
@@ -171,7 +172,12 @@ async function setupPeers(relays = []) {
   ctx.peerPool = null;
   relayInput.value = relays.join(', ');
   try {
-    ctx.peerPool = await loadPublicPeerPool({ env: ctx.verifier?.env, relays });
+    ctx.peerPool = await loadPublicPeerPool({ env: ctx.verifier?.env, relays, onPeer: event => {
+      if (event.dropped) {
+        peerEvents.push({ ...event, at: performance.now() });
+        if (peerEvents.length > 64) peerEvents.shift();
+      }
+    } });
   } catch (e) {
     nodeMsg.replaceChildren(message('warn', `Public peer reads are unavailable: ${e?.message || e}`));
   }
@@ -213,8 +219,10 @@ const routes = [
 
 // A slow page never overwrites a newer one: only the newest render may paint.
 let renderSeq = 0;
+let activeRenders = 0;
 
 async function render() {
+  activeRenders++;
   ctx.pollNow = false;
   const mine = ++renderSeq;
   const hash = location.hash || '#/';
@@ -227,6 +235,7 @@ async function render() {
     out = errorView(ctx, e);
   }
   if (mine === renderSeq) view.replaceChildren(out);
+  activeRenders--;
 }
 
 window.addEventListener('hashchange', render);
@@ -234,7 +243,7 @@ window.addEventListener('hashchange', render);
 // Keep the home page and a pending transaction current while someone watches;
 // a hidden tab or any other page (open disclosure blocks included) is left alone.
 setInterval(() => {
-  if (document.hidden) return;
+  if (document.hidden || activeRenders) return;
   const h0 = location.hash || '#/';
   if (h0 === '#' || h0 === '#/' || ctx.pollNow) render();
 }, 12_000);
@@ -286,5 +295,7 @@ await setupPeers(savedRelays);
 window.addEventListener('pagehide', () => ctx.peerPool?.close());
 // Bounded diagnostics for the devnet browser measurement; no telemetry.
 window.aetherReadDiagnostics = () => ({ source: ctx.node?.source, livePeers: ctx.peerPool?.livePeers || [],
+  peerEvents,
+  droppedPeers: [...(ctx.peerPool?.dropped || [])].map(([node, detail]) => ({ node, ...detail })),
   firstVerifiedHeadAt: ctx.peerPool?.monotonicFirstVerifiedHeadAt ?? null, metrics: ctx.peerPool?.metrics || null });
 connect();

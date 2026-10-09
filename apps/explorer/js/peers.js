@@ -15,6 +15,7 @@ const PEER_BURST = 16;
 const PEER_RATE = 8;
 const PEER_INFLIGHT = 4;
 const TRANSPORT_INFLIGHT = 32;
+const TEMPORARY_PEER_FAILURE = /timed out|busy|rate.*limit|concurrency limit|cap|not finalized|stale|never go back|connection lost|peer was dropped|rotation/i;
 const monotonicNow = () => globalThis.performance?.now?.() ?? Date.now();
 const METHODS = new Set(['aether_status', 'eth_chainId', 'net_version', 'eth_blockNumber',
   'aether_getBlock', 'aether_recentBlocks', 'aether_getAccount', 'eth_getBalance',
@@ -113,6 +114,8 @@ export class PublicPeerPool {
     this.candidates = new Map();
     this.active = new Map();
     this.dropped = new Map();
+    this.peerHeights = new Map();
+    this.headTasks = new Map();
     this.blocks = new Map();
     this.accounts = new Map();
     this.receipts = new Map();
@@ -242,9 +245,9 @@ export class PublicPeerPool {
     integer(height, 'certified height');
     const task = this.floorTask.catch(() => {}).then(async () => {
       if (this.closed) throw new Error('public peer pool is closed');
-      if (height < await this.floor()) throw new Error('finalized blocks never go back');
-      this.minimumHeight = height;
-      await this.floorStore?.set(`verifiedHeight.${this.network.chain_id}`, height);
+      const floor = await this.floor();
+      this.minimumHeight = Math.max(floor, height);
+      if (height > floor) await this.floorStore?.set(`verifiedHeight.${this.network.chain_id}`, height);
     });
     this.floorTask = task;
     await task;
@@ -254,35 +257,56 @@ export class PublicPeerPool {
     const finalized = await this.raw(peer, 'aether_getFinalized', [height]);
     if (!finalized) throw missingProof(`block ${height} not finalized yet`);
     const block = decoded(await this.mod.verifyBlock(JSON.stringify(this.network), JSON.stringify(status),
-      JSON.stringify(finalized), BigInt(height), BigInt(fresh ? await this.floor() : 0), BigInt(this.now()), fresh));
+      JSON.stringify(finalized), BigInt(height), BigInt(fresh ? this.peerHeights.get(peer.node) || 0 : 0), BigInt(this.now()), fresh));
     integer(block?.height, 'certified height');
     if (block.height !== height || block.chain_id !== this.network.chain_id || !Array.isArray(block.txs)) throw new Error('verified block is for another height or chain');
     return block;
   }
 
   async head(peer, force = false) {
+    const pending = this.headTasks.get(peer.node);
+    if (pending) return pending;
     const old = this.active.get(peer.node);
-    if (!force && old && this.now() - old.checkedAt < HEAD_CACHE_MS && old.head.height >= await this.floor()) return old.head;
-    const status = await this.raw(peer, 'aether_status');
-    const height = integer(status?.height, 'head height');
-    const block = await this.verifyBlock(peer, status, height, true);
-    await this.commitHeight(block.height);
-    const head = { chain_id: block.chain_id, height: block.height, hash: block.hash,
-      timestamp_ms: block.timestamp_ms, protocol: block.protocol, hash_function: 'blake3',
-      parent_state_root: block.parent_state_root, state_root: null, mempool: null, base_fee: null,
-      prover_escrow: null, node_protocol: null, newest_scheduled: null, verified: true };
-    this.active.set(peer.node, { peer, head, checkedAt: this.now(), latencyMs: this.now() - (old?.startedAt || this.now()) });
-    certifiedRead(head, block.height, peer);
-    if (this.metrics.firstVerifiedHeadMs === null) {
-      this.monotonicFirstVerifiedHeadAt = this.monotonic();
-      this.metrics.firstVerifiedHeadMs = Math.max(0, this.monotonicFirstVerifiedHeadAt - this.monotonicStartedAt);
-    }
-    return head;
+    if (!force && old && this.now() - old.checkedAt < HEAD_CACHE_MS) return old.head;
+    const task = (async () => {
+      const status = await this.raw(peer, 'aether_status');
+      const height = integer(status?.height, 'head height');
+      // Honest peers can be slightly behind one another. Freshness and the
+      // pinned certificate still apply; each peer's own head cannot go back.
+      const block = await this.verifyBlock(peer, status, height, true);
+      await this.commitHeight(block.height);
+      if (this.closed || this.dropped.get(peer.node)?.until > this.now()) throw missingProof('public read peer was dropped');
+      this.peerHeights.set(peer.node, block.height);
+      const head = { chain_id: block.chain_id, height: block.height, hash: block.hash,
+        timestamp_ms: block.timestamp_ms, protocol: block.protocol, hash_function: 'blake3',
+        parent_state_root: block.parent_state_root, state_root: null, mempool: null, base_fee: null,
+        prover_escrow: null, node_protocol: null, newest_scheduled: null, verified: true };
+      this.active.set(peer.node, { peer, head, checkedAt: this.now(), latencyMs: this.now() - (old?.startedAt || this.now()) });
+      certifiedRead(head, block.height, peer);
+      if (this.metrics.firstVerifiedHeadMs === null) {
+        this.monotonicFirstVerifiedHeadAt = this.monotonic();
+        this.metrics.firstVerifiedHeadMs = Math.max(0, this.monotonicFirstVerifiedHeadAt - this.monotonicStartedAt);
+      }
+      return head;
+    })();
+    this.headTasks.set(peer.node, task);
+    try { return await task; }
+    finally { if (this.headTasks.get(peer.node) === task) this.headTasks.delete(peer.node); }
   }
 
   drop(peer, reason) {
+    const now = this.now();
+    const previous = this.dropped.get(peer.node);
+    const temporary = TEMPORARY_PEER_FAILURE.test(reason);
+    const until = now + (temporary ? 60_000 : 24 * 60 * 60_000);
+    if (previous?.until > now) {
+      // Closing one connection rejects sibling streams too. Those failures
+      // must not repeatedly close the peer or turn a timeout into a day ban.
+      if (!temporary && TEMPORARY_PEER_FAILURE.test(previous.reason)) this.dropped.set(peer.node, { until, reason });
+      return;
+    }
     this.active.delete(peer.node);
-    this.dropped.set(peer.node, { until: this.now() + (/timed out|busy|rate limit|cap|not finalized|stale|never go back/i.test(reason) ? 60_000 : 24 * 60 * 60_000), reason });
+    this.dropped.set(peer.node, { until, reason });
     this.transport.closePeer?.(peer.node);
     this.metrics.rejectedPeers++;
     this.onPeer?.({ node: peer.node, reason, dropped: true });
@@ -325,7 +349,7 @@ export class PublicPeerPool {
     return this.readyTask;
   }
 
-  async attempt(fn) {
+  async attempt(fn, live = false) {
     await this.maintain();
     const peers = this.livePeers;
     const start = peers.length ? this.cursor++ % peers.length : 0;
@@ -337,6 +361,7 @@ export class PublicPeerPool {
         const result = await fn(p);
         this.lastPeer = p;
         if (this.active.size < this.target) await this.maintain();
+        if (live && result.height < Math.max(await this.floor(), this.minimumHeight)) throw missingProof('finalized blocks never go back: peer is behind verified height');
         this.onPeer?.({ node: p.node, verified: true });
         return result;
       } catch (e) {
@@ -389,6 +414,7 @@ export class PublicPeerPool {
     const trusted = decoded(await this.mod.verifyAccount(JSON.stringify(this.network), JSON.stringify(status),
       JSON.stringify(answer), JSON.stringify(finalized), address, BigInt(await this.floor()), BigInt(this.now())));
     await this.commitHeight(Number(trusted.certified_block));
+    if (Number(trusted.certified_block) < Math.max(await this.floor(), this.minimumHeight)) throw missingProof('account certificate is behind verified height');
     // The account proof authenticates balance and nonce, not code_size.
     const result = { address: trusted.address, balance: trusted.balance_wei, nonce: trusted.nonce,
       height: trusted.state_height, state_root: answer.state_root, code_size: null, verified: true,
@@ -429,20 +455,23 @@ export class PublicPeerPool {
       return result;
     }
     const started = this.now();
+    const live = ['aether_status', 'eth_chainId', 'net_version', 'eth_blockNumber'].includes(method);
     const result = await this.attempt(async (peer) => {
-      if (method === 'aether_status') return this.head(peer);
-      if (method === 'eth_chainId' || method === 'net_version') {
-        await this.head(peer);
-        return method === 'eth_chainId' ? `0x${this.network.chain_id.toString(16)}` : String(this.network.chain_id);
+      if (live) {
+        const cached = this.active.get(peer.node)?.head;
+        return this.head(peer, !!cached && cached.height < await this.floor());
       }
-      if (method === 'eth_blockNumber') return `0x${(await this.head(peer)).height.toString(16)}`;
       if (method === 'aether_getBlock') return this.block(peer, params[0]);
       if (['aether_getReceipt', 'aether_getReceiptProof'].includes(method)) return this.receipt(peer, params[0]);
       const a = await this.account(peer, params[0]);
       if (method === 'eth_getBalance') return `0x${BigInt(a.balance).toString(16)}`;
       if (method === 'eth_getTransactionCount') return `0x${BigInt(a.nonce).toString(16)}`;
       return a;
-    });
+    }, live);
+    if (live && result.height < Math.max(await this.floor(), this.minimumHeight)) throw missingProof('finalized blocks never go back: peer is behind verified height');
+    if (method === 'eth_chainId') return `0x${result.chain_id.toString(16)}`;
+    if (method === 'net_version') return String(result.chain_id);
+    if (method === 'eth_blockNumber') return `0x${result.height.toString(16)}`;
     if (method === 'aether_getBlock' && this.metrics.blockPageMs === null) this.metrics.blockPageMs = Math.max(0, this.now() - started);
     return result;
   }
@@ -457,6 +486,8 @@ export class PublicPeerPool {
     for (const wake of this.slotWaiters) wake();
     this.active.clear();
     this.pacing.clear();
+    this.peerHeights.clear();
+    this.headTasks.clear();
     return this.transport.close?.();
   }
 }

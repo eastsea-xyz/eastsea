@@ -8,14 +8,14 @@ const header = (height = 8) => ({ chain_id: 7780, height, hash: 'ab'.repeat(32),
   timestamp_ms: 1_000, proposer: `0x${'12'.repeat(20)}`, parent_state_root: 'ef'.repeat(32),
   txs: [], gas_used: 0, prove_gas: 0, protocol: 4 });
 
-function setup({ bad = new Set(), slow = new Set(), peers = ids.slice(0, 3).map((node) => ({ node })), timeoutMs = 50, monotonic, sleep } = {}) {
+function setup({ bad = new Set(), slow = new Set(), heights = new Map(), peers = ids.slice(0, 3).map((node) => ({ node })), timeoutMs = 50, monotonic, sleep } = {}) {
   const calls = [], closed = [], stored = new Map();
   const transport = {
     async call(peerJson, method, paramsJson) {
       const peer = JSON.parse(peerJson), params = JSON.parse(paramsJson);
       calls.push([peer.node, method, params]);
       if (slow.has(peer.node)) return new Promise(() => {});
-      if (method === 'aether_status') return JSON.stringify({ ...header(), chain_id: 7780, hash: bad.has(peer.node) ? '00'.repeat(32) : header().hash, mempool: 999999, prover_escrow: '999999' });
+      if (method === 'aether_status') return JSON.stringify({ ...header(heights.get(peer.node) ?? 8), chain_id: 7780, hash: bad.has(peer.node) ? '00'.repeat(32) : header().hash, mempool: 999999, prover_escrow: '999999' });
       if (method === 'aether_getFinalized') return JSON.stringify({ height: params[0], block: 'encoded', finalization: 'signed', links: [] });
       if (method === 'aether_getBlock') return JSON.stringify(header(params[0]));
       if (method === 'aether_readPeers') return JSON.stringify(ids);
@@ -59,6 +59,122 @@ test('a cold peer-only read keeps three certified peers and exposes only certifi
   assert.ok(pool.metrics.firstVerifiedHeadMs >= 0);
   assert.equal(await pool.call('eth_blockNumber'), '0x8');
   pool.close();
+});
+
+test('slightly behind certified peers stay admitted and serve history without lowering live height', async () => {
+  const heights = new Map([[ids[0], 9], [ids[1], 8], [ids[2], 7]]);
+  const { pool, mod, closed, stored } = setup({ heights, timeoutMs: 1000 });
+  const original = mod.verifyBlock;
+  const freshChecks = [];
+  mod.verifyBlock = (...args) => {
+    if (args[6]) freshChecks.push({ height: args[3], floor: args[4] });
+    return original(...args);
+  };
+  try {
+    assert.equal((await pool.call('aether_status')).height, 9);
+    assert.equal(pool.livePeers.length, 3);
+    assert.deepEqual(freshChecks.slice(0, 3), [
+      { height: 9n, floor: 0n }, { height: 8n, floor: 0n }, { height: 7n, floor: 0n },
+    ], 'each peer still gets a fresh, pinned certificate check');
+    assert.equal((await pool.call('aether_status')).height, 9);
+    assert.equal(await pool.call('eth_blockNumber'), '0x9');
+    const lagging = pool.livePeers.find((peer) => peer.node === ids[2]);
+    const block = await pool.block(lagging, 6);
+    assert.equal(block.height, 6);
+    assert.equal(readVerdict(block)?.height, 6);
+    assert.equal(stored.get('verifiedHeight.7780'), 9);
+    assert.equal(closed.length, 0);
+    heights.set(ids[2], 6);
+    await assert.rejects(pool.head(lagging, true), /never go back/,
+      'a peer may lag other peers but cannot replay its own older head');
+  } finally { pool.close(); }
+});
+
+test('a persisted head floor retains fresh lagging peers for history while refusing lower live status', async () => {
+  const { pool, closed, stored } = setup({ timeoutMs: 1000 });
+  stored.set('verifiedHeight.7780', 9);
+  try {
+    await assert.rejects(pool.call('aether_status'), /never go back|behind verified/i);
+    assert.equal(pool.livePeers.length, 3);
+    assert.equal(closed.length, 0);
+    await assert.rejects(pool.call('eth_blockNumber'), /never go back|behind verified/i);
+    const block = await pool.call('aether_getBlock', [7]);
+    assert.equal(readVerdict(block)?.height, 7);
+    assert.equal(await pool.floor(), 9);
+    assert.equal(closed.length, 0);
+  } finally { pool.close(); }
+});
+
+test('concurrent peer head refreshes can finish below a newly advanced global floor', async () => {
+  const heights = new Map();
+  const { pool, transport, closed, stored } = setup({ heights, timeoutMs: 1000 });
+  await pool.call('aether_status');
+  pool.now = () => 10_000;
+  heights.set(ids[0], 9);
+  heights.set(ids[1], 10);
+  let release;
+  const certificate = new Promise((resolve) => { release = resolve; });
+  const original = transport.call.bind(transport);
+  transport.call = async (peer, method, params) => {
+    if (method === 'aether_getFinalized' && JSON.parse(peer).node === ids[0]) await certificate;
+    return original(peer, method, params);
+  };
+  const older = pool.head({ node: ids[0] }, true);
+  older.catch(() => {});
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal((await pool.head({ node: ids[1] }, true)).height, 10);
+    release();
+    assert.equal((await older).height, 9);
+    assert.equal(pool.livePeers.length, 3);
+    assert.equal(stored.get('verifiedHeight.7780'), 10);
+    pool.cursor = 0;
+    assert.equal((await pool.call('aether_status')).height, 10);
+    assert.equal(closed.length, 0);
+  } finally { release(); pool.close(); await older.catch(() => {}); }
+});
+
+test('concurrent refreshes of one peer share the status and certificate requests', async () => {
+  const { pool, transport, calls } = setup({ timeoutMs: 1000 });
+  await pool.call('aether_status');
+  pool.now = () => 10_000;
+  calls.length = 0;
+  let release;
+  const response = new Promise((resolve) => { release = resolve; });
+  const original = transport.call.bind(transport);
+  transport.call = async (peer, method, params) => {
+    const value = await original(peer, method, params);
+    if (method === 'aether_status') await response;
+    return value;
+  };
+  const refreshed = Promise.all([pool.head({ node: ids[0] }, true), pool.head({ node: ids[0] }, true)]);
+  refreshed.catch(() => {});
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    release();
+    assert.deepEqual((await refreshed).map((head) => head.height), [8, 8]);
+    assert.equal(calls.filter(([, method]) => method === 'aether_status').length, 1);
+    assert.equal(calls.filter(([, method]) => method === 'aether_getFinalized').length, 1);
+  } finally { release(); pool.close(); await refreshed.catch(() => {}); }
+});
+
+test('late sibling errors preserve a temporary quarantine and close the peer only once', async () => {
+  const { pool, closed } = setup();
+  await pool.call('aether_status');
+  try {
+    const peer = { node: ids[0] };
+    pool.drop(peer, 'public peer timed out');
+    const first = { ...pool.dropped.get(peer.node) };
+    pool.drop(peer, 'read error: connection lost');
+    pool.drop(peer, 'public read peer was dropped');
+    assert.deepEqual(pool.dropped.get(peer.node), first);
+    assert.equal(closed.filter((node) => node === peer.node).length, 1);
+    assert.equal(pool.metrics.rejectedPeers, 1);
+    pool.drop(peer, 'header differs from certificate');
+    assert.equal(pool.dropped.get(peer.node).reason, 'header differs from certificate');
+    assert.equal(pool.dropped.get(peer.node).until, 1000 + 24 * 60 * 60_000);
+    assert.equal(closed.filter((node) => node === peer.node).length, 1, 'proof failure can escalate without closing again');
+  } finally { pool.close(); }
 });
 
 test('a forged header drops its peer and a fourth peer refills the set', async () => {
@@ -152,6 +268,38 @@ test('account balances use a next-block proof and never copy unproved code size'
   assert.equal(readVerdict(account)?.height, 9);
   assert.ok(closed.includes(ids[0]));
   pool.close();
+});
+
+test('a current account proof overtaken by a concurrent head remains unavailable without evicting its peer', async () => {
+  const heights = new Map();
+  const { pool, transport, mod, stored, closed } = setup({ heights, timeoutMs: 1000 });
+  const address = `0x${'12'.repeat(20)}`;
+  await pool.call('aether_status');
+  const original = transport.call.bind(transport);
+  transport.call = async (peer, method, params) => method === 'aether_getAccount'
+    ? JSON.stringify({ address, height: 8, state_root: header().parent_state_root, proof: {} })
+    : original(peer, method, params);
+  let release;
+  const verified = new Promise((resolve) => { release = resolve; });
+  mod.verifyAccount = async (_network, _status, _answer, certificate, _address, floor) => {
+    assert.equal(JSON.parse(certificate).height, 9);
+    assert.equal(floor, 8n);
+    await verified;
+    return JSON.stringify({ address, balance_wei: '5', nonce: 3, state_height: 8, certified_block: 9, timestamp_ms: 1000 });
+  };
+  const account = pool.account({ node: ids[0] }, address);
+  account.catch(() => {});
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    heights.set(ids[1], 10);
+    assert.equal((await pool.head({ node: ids[1] }, true)).height, 10);
+    release();
+    await assert.rejects(account, (error) => error.unavailable && /behind verified|never go back/i.test(error.message));
+    assert.equal(stored.get('verifiedHeight.7780'), 10);
+    assert.equal(pool.accounts.has(address), false);
+    assert.equal(pool.livePeers.length, 3);
+    assert.equal(closed.length, 0);
+  } finally { release(); pool.close(); await account.catch(() => {}); }
 });
 
 test('receipt proof responses bind the requested hash and reject forged receipt data', async () => {

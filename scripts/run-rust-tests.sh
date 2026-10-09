@@ -16,8 +16,39 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 root = Path(os.environ['AETHER_TEST_ROOT'])
+started = time.monotonic()
+build_elapsed = run_elapsed = 0.0
+exit_code = 0
+cache_hit = False
+gate_file = os.environ.get('AETHER_COMPILE_TIMING_FILE')
+if gate_file:
+    Path(gate_file).resolve().relative_to((root / 'tmp').resolve())
+    Path(gate_file).unlink(missing_ok=True)
+
+
+def timing():
+    filename = os.environ.get('AETHER_DEV_TIMING_FILE')
+    if not filename:
+        return
+    path = Path(filename).resolve()
+    path.relative_to((root / 'tmp').resolve())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    gate = json.loads(Path(gate_file).read_text()) if gate_file and Path(gate_file).exists() else {}
+    queue = gate.get('queue_seconds', 0.0)
+    cleanup = gate.get('cleanup_seconds', 0.0)
+    compilation = gate.get('compile_seconds', build_elapsed)
+    wall = time.monotonic() - started
+    record = dict(schema_version=1, kind='rust', wall_seconds=wall,
+                  queue_seconds=queue, compile_seconds=compilation,
+                  run_seconds=run_elapsed, cleanup_seconds=cleanup,
+                  overhead_seconds=max(0, wall - queue - compilation - run_elapsed - cleanup),
+                  cache_hit=cache_hit, exit_code=exit_code, gate_status=gate.get('status'))
+    staged = path.with_name(path.name + f'.{os.getpid()}.new')
+    staged.write_text(json.dumps(record) + '\n')
+    os.replace(staged, path)
 
 class Uncacheable(ValueError):
     pass
@@ -117,12 +148,12 @@ def target_lease(target, env):
 
 def run_runtime(command, env, lease_fd):
     child = subprocess.Popen(command, cwd=root, env=env, pass_fds=(lease_fd,), start_new_session=True)
+    stopping = False
     def stop(signum, frame):
-        try:
-            os.killpg(child.pid, signum)
-        except ProcessLookupError:
-            pass
-        child.wait()
+        nonlocal stopping
+        global exit_code
+        stopping = True
+        exit_code = 128 + signum
         raise SystemExit(128 + signum)
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
     try:
@@ -130,6 +161,19 @@ def run_runtime(command, env, lease_fd):
         if code:
             raise subprocess.CalledProcessError(code if code > 0 else 128 - code, command)
     finally:
+        if stopping:
+            # Signal handlers must unwind wait() before waiting again: Popen's
+            # waitpid lock is not reentrant.
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+                child.wait(timeout=5)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                pass
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait()
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 
@@ -215,10 +259,14 @@ try:
             if not valid:
                 binaries = directory / 'binaries.json'
                 metadata = directory / 'cargo.json'
+                build_started = time.monotonic()
                 with binaries.open('w') as output:
-                    subprocess.run([str(root / 'scripts/dev-cargo.sh'), 'nextest', 'list',
-                                    '--list-type', 'binaries-only', '--message-format', 'json', '--locked', *build],
-                                   cwd=root, env=env, stdout=output, check=True)
+                    try:
+                        subprocess.run([str(root / 'scripts/dev-cargo.sh'), 'nextest', 'list',
+                                        '--list-type', 'binaries-only', '--message-format', 'json', '--locked', *build],
+                                       cwd=root, env=env, stdout=output, check=True)
+                    finally:
+                        build_elapsed = time.monotonic() - build_started
                 # Graph retrieval only; every compilation goes through dev-cargo.
                 with metadata.open('w') as output:
                     subprocess.run(['cargo', 'metadata', '--format-version', '1', '--locked', '--offline'],
@@ -242,6 +290,7 @@ try:
                             shutil.rmtree(staged)
                     binaries, metadata = cached / 'binaries.json', cached / 'cargo.json'
             else:
+                cache_hit = True
                 print('reuse verified test binaries (no compile gate)', file=sys.stderr)
             # Hold the cache lock and target lease throughout execution. Validation
             # inside the pruning lock closes the lookup/deletion race.
@@ -250,6 +299,7 @@ try:
                     raise ValueError('test artifacts changed before execution; rerun to rebuild')
                 command = ['cargo', 'nextest', 'run', '--binaries-metadata', str(binaries),
                            '--cargo-metadata', str(metadata), *runtime]
+                run_started = time.monotonic()
                 if ram:
                     env.pop('TMPDIR', None)
                     env.pop('TMP', None)
@@ -257,12 +307,21 @@ try:
                     if os.environ.get('AETHER_TEST_TMPDIR'):
                         env['TMPDIR'] = os.environ['AETHER_TEST_TMPDIR']
                     command.insert(0, str(root / 'scripts/test-tmpdir.sh'))
-                    run_runtime(command, env, lease_fd)
+                    try:
+                        run_runtime(command, env, lease_fd)
+                    finally:
+                        run_elapsed = time.monotonic() - run_started
                 else:
                     with tempfile.TemporaryDirectory(prefix='runtime-', dir=directory) as work:
                         env.update(TMPDIR=work, TMP=work, TEMP=work)
-                        run_runtime(command, env, lease_fd)
+                        try:
+                            run_runtime(command, env, lease_fd)
+                        finally:
+                            run_elapsed = time.monotonic() - run_started
 except (ValueError, OSError, subprocess.CalledProcessError) as error:
     print(f'run-rust-tests: {error}', file=sys.stderr)
-    sys.exit(getattr(error, 'returncode', 2))
+    exit_code = getattr(error, 'returncode', 2)
+    sys.exit(exit_code)
+finally:
+    timing()
 PY

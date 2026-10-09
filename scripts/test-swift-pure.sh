@@ -5,13 +5,29 @@
 set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root" || exit 1
-mkdir -p "$root/tmp/swift-module-cache"
+mkdir -p "$root/tmp"
 export TMPDIR="$root/tmp"
-localizations="$root/tmp/wallet-languages/WalletLocalizations.bundle"
-/usr/bin/python3 scripts/wallet-l10n.py prepare-tests --out "$localizations" || exit 1
-# Optional positional test names select a subset; no arguments still runs every test.
-selected="$*"
-manifest=$(mktemp "$root/tmp/swift-tests.XXXXXX")
+# Optional names retain the original subset interface. A path list selects from
+# the same source table; --list reads it without preparing bundles or compiling.
+selected=""; affected_file=""; list_only=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --affected-file)
+      if [ "$#" -lt 2 ]; then echo "--affected-file requires a newline path-list file" >&2; exit 2; fi
+      affected_file="$2"; shift 2 ;;
+    --list) list_only=1; shift ;;
+    --help|-h)
+      echo "usage: scripts/test-swift-pure.sh [--list] [--affected-file PATH_LIST] [TEST ...]"
+      exit 0 ;;
+    --) shift; if [ "$#" -gt 0 ]; then selected="$selected $*"; fi; break ;;
+    --*) echo "unknown Swift test option: $1" >&2; exit 2 ;;
+    *) selected="$selected $1"; shift ;;
+  esac
+done
+if [ -n "$affected_file" ] && [ -n "$selected" ]; then
+  echo "select Swift tests with either --affected-file or positional names" >&2; exit 2
+fi
+manifest=$(mktemp "$root/tmp/swift-tests.XXXXXX") || exit 1
 trap 'rm -f "$manifest"' EXIT
 W=apps/wallet/Sources; T=apps/wallet/Tests; known=""
 run() {
@@ -107,5 +123,8 @@ fi
 for requested in $selected; do
   if [[ " $known " != *" $requested "* ]]; then echo "unknown Swift test: $requested" >&2; exit 2; fi
 done
-python3 scripts/swift-test-cache.py --manifest "$manifest"
+cache_command=(python3 scripts/swift-test-cache.py --manifest "$manifest")
+if [ -n "$affected_file" ]; then cache_command+=(--affected-file "$affected_file"); fi
+if [ "$list_only" -eq 1 ]; then cache_command+=(--list); fi
+"${cache_command[@]}"
 exit $?

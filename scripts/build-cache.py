@@ -119,17 +119,11 @@ def main():
     print(f"dev target: {target}", file=sys.stderr)
     child = subprocess.Popen(command, cwd=ROOT, env=environment, start_new_session=True, pass_fds=(lease.fileno(),))
     previous_handlers = {}
+    stopping = False
 
     def stop(signum, _frame):
-        try:
-            os.killpg(child.pid, signum)
-            child.wait(timeout=10)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            child.wait()
+        nonlocal stopping
+        stopping = True
         raise SystemExit(128 + signum)
 
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -137,6 +131,18 @@ def main():
     try:
         code = child.wait()
     finally:
+        if stopping:
+            # Cleanup after wait() unwinds, never from inside its signal handler.
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+                child.wait(timeout=10)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                pass
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait()
         (target / ".last-used").touch()
         lease.close()
         for signum, handler in previous_handlers.items():

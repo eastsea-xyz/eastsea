@@ -55,11 +55,32 @@ def select(root, metadata, paths):
     return sorted(packages[pid]["name"] for pid in selected)
 
 
+def test_targets(root, metadata, paths, names):
+    """Restrict direct integration-test edits; library/shared fixture edits stay broad."""
+    if any(Path(path).name in {'Cargo.toml', 'Cargo.lock', 'rust-toolchain', 'rust-toolchain.toml'}
+           or path.startswith(('.cargo/', '.config/nextest', 'vendor/'))
+           or ('/' not in path and path.endswith('.rs')) for path in paths):
+        return {}
+    targets = {}
+    for package in metadata['packages']:
+        if package['name'] not in names:
+            continue
+        directory = Path(package['manifest_path']).parent.relative_to(root).as_posix()
+        touched = {path for path in paths if path.startswith(directory + '/')}
+        by_source = {Path(target['src_path']).relative_to(root).as_posix(): target['name']
+                     for target in package.get('targets', []) if 'test' in target['kind']}
+        if touched and touched <= by_source.keys():
+            targets[package['name']] = sorted({by_source[path] for path in touched})
+    return targets
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", help="base ref (default: lead-merge or origin/lead-merge)")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--metadata-file", type=Path, help="read precomputed cargo metadata (for tests)")
+    parser.add_argument("--paths-file", type=Path, help="select an explicit newline-separated set of changed paths")
+    parser.add_argument("--json", action='store_true', help="include safe integration-test target selection")
     args = parser.parse_args()
     root = args.root.resolve()
     base = args.base
@@ -71,7 +92,10 @@ def main():
                 break
         if base is None:
             parser.error("lead-merge ref not found; supply --base <ref>")
-    paths = changed_paths(root, base)
+    paths = set(args.paths_file.read_text().splitlines()) if args.paths_file else changed_paths(root, base)
+    for path in paths:
+        if Path(path).is_absolute() or '..' in Path(path).parts:
+            parser.error('changed paths must be repository-relative without traversal')
     if args.metadata_file:
         metadata = json.loads(args.metadata_file.read_text())
     else:
@@ -80,10 +104,12 @@ def main():
     names = select(root, metadata, paths)
     if "aether-ffi" in names:
         print("affected-crates: skipping aether-ffi; staticlib verification requires the lead's release gate", file=sys.stderr)
-    for name in names:
-        if name == "aether-ffi":
-            continue
-        print(name)
+    names = [name for name in names if name != 'aether-ffi']
+    if args.json:
+        print(json.dumps(dict(packages=names, tests=test_targets(root, metadata, paths, names))))
+    else:
+        for name in names:
+            print(name)
 
 
 if __name__ == "__main__":

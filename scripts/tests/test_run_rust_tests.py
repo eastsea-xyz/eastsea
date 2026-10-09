@@ -4,8 +4,10 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,6 +50,9 @@ if os.path.basename(sys.argv[0]) == 'dev-cargo.sh':
     print(json.dumps({'rust-build-meta': {'target-directory': str(target), 'non-test-binaries': {}},
                       'rust-binaries': {'types': {'binary-path': str(binary)}}}))
 else:
+    if os.environ.get('FIXTURE_RUNTIME_HANG') and sys.argv[1:3] == ['nextest','run']:
+        pathlib.Path(os.environ['FIXTURE_RUNTIME_HANG']).write_text(str(os.getpid()))
+        time.sleep(60)
     print('{}')
 '''
         for path in (scripts / 'dev-cargo.sh', self.bin / 'cargo', self.bin / 'cargo-nextest'):
@@ -193,6 +198,35 @@ sys.exit(subprocess.call(sys.argv[1:], env=env))
         result = self.run_helper('--', '-p', 'aether-types')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sum(c['exe'] == 'dev-cargo.sh' for c in self.calls()), 2)
+
+    def test_signal_status_is_recorded_and_runtime_is_stopped(self):
+        ready = self.root / 'runtime-pid'
+        timing = self.root / 'tmp/timing.json'
+        self.env.update(FIXTURE_RUNTIME_HANG=str(ready), AETHER_DEV_TIMING_FILE=str(timing))
+        process = subprocess.Popen(['bash', str(self.root / 'scripts/run-rust-tests.sh'), '--', '-p', 'aether-types'],
+                                   env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        runtime_pid = None
+        try:
+            deadline = time.monotonic() + 15
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertTrue(ready.exists())
+            runtime_pid = int(ready.read_text())
+            process.send_signal(signal.SIGTERM)
+            output, error = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 143, error.decode() + output.decode())
+            self.assertEqual(json.loads(timing.read_text())['exit_code'], 143)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(runtime_pid, 0)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+            if runtime_pid:
+                try:
+                    os.killpg(runtime_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
 
 if __name__ == '__main__':

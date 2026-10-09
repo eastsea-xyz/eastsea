@@ -95,7 +95,8 @@ class DevCache(unittest.TestCase):
                 self.assertIn('dev-cargo', result.stderr)
                 self.assertEqual(list(self.cache.iterdir()), [])
     def gate_driver(self, gate, command, timeout, ready, ignore_term=False):
-        env = dict(os.environ, AETHER_COMPILE_GATE=str(gate), AETHER_COMPILE_WAIT_SECONDS=str(timeout))
+        env = dict(os.environ, AETHER_COMPILE_GATE=str(gate), AETHER_COMPILE_WAIT_SECONDS=str(timeout),
+                   AETHER_COMPILE_TIMING_FILE=str(self.directory / 'gate-timing.json'))
         env.pop('AETHER_COMPILE_GATE_HELD', None)
         env.pop('AETHER_CACHE_LEASE_FD', None)
         groups = self.directory / 'owned-groups'
@@ -166,7 +167,11 @@ runpy.run_path(sys.argv.pop(1), run_name='__main__')
         process, started = self.gate_driver(gate, ['/usr/bin/true'], 3, ready=ready, ignore_term=True)
         self.wait_file(started, process)
         out, err = process.communicate(timeout=12)
-        elapsed = time.monotonic() - float(started.read_text())
+        # Queue timing starts before Popen. Under load the fixture's startup wait
+        # can consume part of the queue; its observer marker is not the gate clock.
+        import json
+        timing = json.loads((self.directory / 'gate-timing.json').read_text())
+        elapsed = timing['wall_seconds']
         self.assertEqual(process.returncode, 75, err)
         self.assertGreaterEqual(elapsed, 8)
         self.assertLess(elapsed, 11.5)

@@ -72,6 +72,15 @@ class SelectionTests(unittest.TestCase):
     def test_docs_and_guest_do_not_select_workspace(self):
         self.assertEqual(affected.select(self.root, self.metadata, {"docs/readme.md", "apps/prover/src/main.rs"}), [])
 
+    def test_direct_integration_edits_narrow_but_shared_sources_and_config_stay_broad(self):
+        package = self.metadata['packages'][1]
+        package['targets'] = [{'kind':['test'], 'name':'example',
+                               'src_path':str(self.root/'crates/node/tests/example.rs')}]
+        direct = {'crates/node/tests/example.rs'}
+        self.assertEqual(affected.test_targets(self.root, self.metadata, direct, ['node']), {'node':['example']})
+        for extra in ('crates/node/lib.rs', 'crates/node/tests/common/mod.rs', 'Cargo.toml', '.cargo/config.toml'):
+            self.assertEqual(affected.test_targets(self.root, self.metadata, direct | {extra}, ['node']), {})
+
     def test_cli_reads_metadata_without_cargo(self):
         metadata_file = self.root / "metadata.json"
         metadata_file.write_text(json.dumps(self.metadata))

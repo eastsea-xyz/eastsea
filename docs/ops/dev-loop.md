@@ -21,6 +21,8 @@ sccache --version
 
 scripts/test-affected.sh --base lead-merge --list
 scripts/test-affected.sh --base lead-merge
+scripts/dev-test.sh
+scripts/dev-test.sh --remote
 scripts/run-rust-tests.sh -- -p aether-hash -p aether-crypto
 scripts/test-swift-pure.sh
 scripts/test-swift-pure.sh earnings token-send
@@ -37,6 +39,25 @@ selection broadly. Documentation-only changes skip Rust compilation. Use
 staticlib gate, which must run without sccache. Apps/prover and guest workspaces
 are excluded. Affected selection supplements the whole-tree integration gate.
 
+`dev-test.sh` defaults to changes since `HEAD`, including staged, unstaged and
+untracked paths. `--base REF` also includes committed changes since that ref.
+It uses `affected-crates.py` for Rust dependency selection and the existing Swift
+source table for pure-test selection. An edit to a registered Rust integration
+test selects that binary; library, shared fixture and Cargo configuration edits
+keep the broader package selection. Swift shared sources fan out to every
+registered consumer; UI sources without pure coverage print the missing coverage.
+`--dry-run` prints the selection and commands. `--changed-file PATH` scopes a
+focused sample explicitly, and `--rust-test NAME` selects an integration gate for
+a source-edit sample. Those scoped samples do not establish whole-crate coverage.
+
+On a cache miss the fast path tries the normal local counting semaphore with a
+60-second queue limit. It offloads only when the gate's timing record confirms a
+queue timeout; an ordinary test failure, even exit 75, is returned. This is a
+measured bounded wait, not a predicted queue duration. `--remote` skips that local
+attempt entirely. Unchanged cached binaries still run their tests without a slot.
+Timing records under `tmp/dev-test-*/timing.json` include command wall time,
+selection, queue, compilation, test execution and remaining orchestration time.
+
 `run-rust-tests.sh` builds with nextest once, then runs with the saved binary and
 Cargo metadata. Its content cache reuses those build records when sources,
 compiler, flags and build options match and the binaries still exist unchanged.
@@ -50,6 +71,14 @@ the lead run remaining gates when that limit is reached. Builds keep inherited
 `RUSTC_WRAPPER`, or discover sccache if it was absent. `dev-cargo.sh` requires
 explicit packages and rejects release, alternate Cargo profiles/manifests,
 whole-workspace and staticlib/guest entry points.
+
+The wrapper releases only the semaphore slot whose recorded PID and worktree
+match its completed child. The semaphore's two-minute orphan grace remains for
+unknown owners; a verified completed build does not impose that delay on the
+next edit. The wrapper records queue and gated-command time separately.
+Signal handlers unwind Python's subprocess wait before cleanup waits again;
+cancelled builds and runtime tests reap owned process groups and preserve their
+signal exit status in timing records.
 
 Nextest runs four tests concurrently. Node integration tests share a one-thread
 group because process-per-test execution cannot reuse in-process locks. Hung
@@ -117,35 +146,184 @@ and detaching its owned device. Disk utilities have thirty-second timeouts and
 bounded cleanup. Persistent daemon/key operations in `scripts/devnet.sh` retain
 their separate lifecycle; use the test commands above for test scenarios.
 
-## Linux offload
+## poc-m3 offload
 
-Only `poc-cuda` is authorized. SSH and system `/usr/bin/rsync` are bound to its
-Tailscale address `100.121.197.74`, retaining the alias's user/key settings. A
-read-only Linux/storage preflight precedes writes. Neither poc-m3, poc-nas nor
-arbitrary hosts are accepted.
+The authorized builder is the `poc-m3` SSH alias, account `kjaylee`, macOS M3 with
+24 GiB RAM and preinstalled Rust 1.98.1. All remote work stays in
+`~/eastsea-lab/dev-speed`. A read-only preflight checks the account, platform,
+owned paths, free/speculative RAM and disk before any remote write.
 
 ```bash
 scripts/remote-test.sh --dry-run -p aether-crypto
 scripts/remote-test.sh --setup
 scripts/remote-test.sh -p aether-hash -p aether-crypto
+scripts/remote-test.sh -p aether-node --test rpc_alias
+scripts/remote-test.sh --swift tx-status-text
 ```
 
-Setup checks/installs user-local rustup, nextest and sccache, using official
-installers and snapshot-owned compiler temporary files. The source-only snapshot
-includes uncommitted Rust changes while excluding credentials, private keys,
-symlinks, app data, `.git`, guest projects, targets and temporary files. It lives
-under `/mnt/ssd1/aether-dev/lanes/<unique-name>`. Targets share a flat family key
-under `/mnt/ssd1/aether-dev/targets`, sccache uses `/mnt/ssd1/aether-dev/sccache`,
-and Cargo uses twelve build jobs. Tests run through the same metadata/RAM helper.
-Logs remain in local and remote snapshot `tmp/` directories.
+Setup validates the installed toolchain and downloads official prebuilt nextest
+and sccache 0.18.0 only when absent. Tools and Cargo/sccache state stay in the
+lane's `tmp/`; setup never compiles a tool or installs globally. The source-only
+snapshot includes uncommitted Rust and pure Swift inputs while excluding
+credentials, private keys, symlinks, app data, `.git`, guest projects and targets.
+System `/usr/bin/rsync` synchronizes the stable `source/` directory and removes
+deleted sources there. It preserves `source/tmp/` and the sibling warm targets.
+A snapshot lease prevents simultaneous transfers/builds from mixing sources.
+The target family includes the base commit, compiler and profile/config inputs.
 
-The conservative package allowlist is types, hash, crypto, state, consensus, DA
-and execution. Node, FFI and other unverified/platform-dependent packages stay
-local. Snapshots are retained for diagnosis; the target LRU does not delete source
-snapshots. On 2026-10-09 the authorized peer was offline, and the SSH alias also
-named an older offline IP. No remote builds or setup mutations were performed.
+Every remote build and test runs at `nice -n 15`, with four Cargo workers and two
+Swift workers. The guard samples owned processes every 0.5 seconds, including its
+private foreground sccache server. It stops if aggregate owned RSS exceeds
+12 GiB, free plus speculative RAM drops below 4 GiB, or free disk drops below
+30 GiB. It never counts inactive/reclaimable pages as free. Signals, lost command
+ownership, resource stops and normal completion clean up only owned processes.
+Failed process discovery also stops the run; cleanup signals recorded private
+groups and reaps direct children without requiring another successful `ps` query.
+Warm build artifacts remain for the next run. Remote builds bypass the local
+gate only in the exact guarded `kjaylee` snapshot; they never take this Mac's slot.
+
+Explicit normal workspace packages and registered pure Swift tests are accepted;
+FFI/staticlib, alternate manifests/profiles, release and Jolt guest entry points
+are rejected. The runner does not access the v4 validator/port 8604,
+`~/aether-testnet`, its LaunchAgent or `/Applications/EastSea.app`.
 
 ## Measurements, 2026-10-09
+
+### Round 2: edits while lanes were active
+
+These are wall-clock measurements on this Mac with other Rust/Swift work,
+validators and background CPU work running. The test probes append one comment
+line and restore the source after execution. The initial dependency-population
+probe added a comment plus a separating blank line; it is not a warm one-line
+sample. Every local compile used the existing semaphore and four Cargo jobs.
+No local queue reached the 20-minute stop limit in this round.
+
+| Actual workload | Command wall | Semaphore queue | Compile | Test launch + run | Other time | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Populate node dependencies; supervisor source probe → `wake_signal` | 255.81 s | 0.28 s | 248.20 s | 3.96 s | 3.37 s | exit 100; startup/signal test failed |
+| Warm dependencies; one-line supervisor edit → `wake_signal` | 90.34 s | 0.21 s | 83.64 s | 3.73 s | 2.77 s | exit 100; same test failed |
+| One-line `crates/node/tests/rpc_alias.rs` edit → affected integration binary | 98.24 s | 0.40 s | 55.54 s | 33.41 s | 8.89 s | three tests passed |
+| One-line `apps/wallet/Sources/TxStatusText.swift` edit → affected pure test | 3.49 s | 0.02 s | 1.86 s | 0.43 s | 1.18 s | passed |
+| Full pure Swift suite, 52 fresh builds | 67.17 s | 0.23 s | 22.78 s | 40.82 s | 3.34 s | all 52 passed |
+| Full pure Swift suite, 52 cache hits | 23.44 s | 0.00 s | 0.00 s | 22.37 s | 1.07 s | all 52 passed; no compile slot |
+
+Rust compilation above is the complete gated Cargo command, including Cargo
+setup/linking and any Cargo artifact-lock wait; the saved logs do not establish
+an independent artifact-lock split. Swift compilation is the measured compiler
+batch. Test time includes process startup and nextest setup. The `rpc_alias`
+test bodies took only 0.056 s according to nextest, despite 33.41 s for that whole
+runtime stage. The difference is measured startup/orchestration time; its cause
+was not profiled. Whole command wall also includes selection and cache/metadata
+work. Components are independently rounded; the wall column is authoritative.
+
+The source edit in the table uses an explicit `--rust-test wake_signal` scope;
+it does not represent all node tests. The integration edit selects `rpc_alias`
+automatically from Cargo's registered target source path. Cargo/shared fixture
+edits retain the wider gate. The Swift edit uses the exact existing source table,
+and an `EarningsModel.swift` edit selects all eleven registered consumers.
+
+Round 1 measured 930.10 s of Rust queue and 895.67 s of Swift queue on a different
+busy-host sample. This round observed sub-second queues for the listed edits.
+Those are different load/cache samples, not matched before/after speedup ratios.
+The pure Swift edit is near real-time in the measured subset. The measured Rust
+source and integration edits remain above one minute; no whole-node real-time
+claim is supported. Initial dependency population is not comparable to a warm
+edit. Remote speedup and warm remote target reuse have not been measured.
+
+Real remote preflight reached `poc-m3` and refused the run before transferring
+sources or creating lane artifacts: free plus speculative RAM was 0.14 GiB,
+below the 4 GiB floor; free disk was 106.31 GiB. Earlier read-only RAM samples
+were about 2.5–3.3 GiB. Existing machine workloads were left untouched. No remote
+build/test or setup was started, and no other remote host was used. The remote
+path, warm target reuse, 60-second fallback, resource stops and owned-process
+cleanup are tested with fixtures; fixture delays are not performance measurements.
+
+The two `wake_signal` failures are retained. Its supervisor test sleeps exactly
+two seconds, checks only that the process is alive, then sends SIGUSR1; it has
+no startup-readiness check. The observed default SIGUSR1 exit is consistent with
+the handler not being installed yet. A later safe `aether --help` probe took
+0.0264 s, which cannot prove the failed launch's startup latency. No retry was
+used to convert these failures to a passing measurement, and no node/guest
+source change is included in this round.
+
+The original Swift clean rerun's 1,215.43-second wall and exit 75 were an intentional
+1,200-second semaphore queue timeout. Its log contains no compiler diagnostic or
+test result, and the saved report records zero compiled artifacts. A 0.25-second
+blocked-gate fixture reproduced exit 75 through the real Swift wrapper with zero
+compiler calls/test bodies, taking 1.2757 s. The extra 15.43 s in round 1 cannot be
+split retrospectively from saved evidence. The separate earlier Bash exit 1 came
+after editing a live runner while it waited; it is a different failure. Final
+round-2 Swift measurements used frozen runner inputs. The timeout stays intact;
+`dev-test.sh` limits its local attempt to 60 seconds before guarded offload.
+
+Raw measurements, timing JSON, source snapshots, the Swift diagnosis and the
+remote resource refusal are under `tmp/dev-speed-round2/`; per-command fast-path
+timing records are under `tmp/dev-test-*/timing.json`.
+
+### Release and guest isolation proof
+
+Compared round-1 parent `fc75af2c969af9884d997e60bcc2abf2f40e5489`, round 1
+`234cb0f49124917a2a1d84a65d572421dd359e7d`, and this round's working manifest.
+Parsing each root manifest with `tomllib` and removing only `profile.dev` and
+`profile.test` gives identical documents. The release family is unchanged:
+
+```json
+{"bench":{"debug":true,"inherits":"release"},"release":{"codegen-units":1,"lto":"fat"}}
+```
+
+Normalized sorted-key compact JSON plus a trailing newline hashes to
+`aafb884c8bc4a342ba650243e36f2e8c234229806612872fb209b31537e38e2a` in all three
+versions. Original release-table bytes hash to
+`2ef5db72cb6395749e05265dc7fa8671d061e9c994849eb538d6ade7cd2f88be` in all three.
+The complete manifest after removing dev/test profiles hashes identically to
+`0adaeae6480bd77a777c2af35ac2de05672a41940ec96251c5b78b24e2b340e9`.
+There are no additional custom profiles inheriting dev for release, no ancestor
+or user Cargo config files, and no `CARGO_PROFILE_*` environment overrides in the
+checked session. The inherited wrapper environment was preserved.
+
+Both read-only metadata commands succeeded; neither compiles or runs build scripts:
+
+```bash
+PATH="$HOME/.cargo/bin:$PATH" cargo +1.98.1 metadata --manifest-path Cargo.toml --no-deps --locked --offline --format-version 1
+PATH="$HOME/.cargo/bin:$PATH" cargo +1.98.1 metadata --manifest-path apps/prover/Cargo.toml --no-deps --locked --offline --format-version 1
+```
+
+Root metadata reports 17 members, excluding prover and guest. The separate
+`apps/prover` workspace reports exactly prover and guest, and owns its unchanged
+release profile (`debug = false`, `codegen-units = 1`). Its `build-guest.sh` clears
+host Cargo/profile environment and passes `--release` to Jolt. Shared Aether path
+dependencies inherit unchanged workspace package/dependency/lint tables;
+root dev/test package overrides do not supply that workspace's guest profile.
+Cargo selects release independently of dev; test inherits dev and bench inherits
+release. See [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html)
+and [workspace profile ownership](https://doc.rust-lang.org/cargo/reference/workspaces.html).
+
+All 110 protected tracked files match the round-1 parent byte for byte, covering
+guest-compiled crates, prover/guest orchestration, locks/toolchains and release
+scripts. Their sorted SHA-256 listing hashes to
+`4ce11ad4da4b6862be6d46c0cb4914630e74d29c6466ced341f01e3ac763edbb`.
+The existing guest-input function reports 644 entries and identical input digest
+`f88608b2c6d0e1ea042c5af21c635d4bbd8089c3c8363b32b62c396d0e244c8e` for all three
+root manifests with the installed guest toolchain, rustc 1.95.0. That function
+hashes workspace inheritance tables, excluding dev/test profile tables. This is
+an input digest, not a newly built guest ELF/program id. Metadata proves workspace
+membership, not release binary equivalence. Configuration/input evidence proves
+the profile additions cannot affect the checked release or guest build paths;
+no release or guest build was performed.
+
+Exact commands, normalized documents, metadata, protected hashes and the
+non-compiling reproduction checker are in `tmp/dev-speed-round2/profile-*`.
+
+Verification for round 2: all 52 real Swift tests pass from fresh builds and again
+from 52 cache hits; the three real Rust `rpc_alias` tests pass. Workflow regression
+fixtures (62 unittest cases plus the Swift cache/registration harness) cover
+selection, content-cache reuse, gate ownership/timing, cancellation,
+remote path/resource/transfer safety and default Swift registrations. ShellCheck,
+Python parsing/static checks and diff whitespace checks pass. The `wake_signal`
+failure, whole-node edit latency and missing remote performance measurements are
+remaining limitations; this report does not mark the full Rust suite green.
+
+### Round 1 historical measurements
 
 Measurements use this busy Mac, pinned Rust, four build jobs and the existing
 shared sccache. “Cold” means a fresh target/binary directory, not an emptied global

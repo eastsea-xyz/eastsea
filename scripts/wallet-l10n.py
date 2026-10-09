@@ -1,341 +1,493 @@
 #!/usr/bin/env python3
-"""The Mac wallet's one-language rule, checked (founder review of 0.7.0, 2026-10-07).
+"""Validate the wallet's English-base String Catalog and every supported language.
 
-  wallet-l10n.py check --stringsdata DIR   fail unless every string the compiler extracted is in
-                                           Resources/Localizable.xcstrings with a Korean translation
-                                           whose placeholders match the English key
-  wallet-l10n.py sync --stringsdata DIR    add newly extracted keys to the catalog (untranslated),
-                                           drop keys no source uses any more
-  wallet-l10n.py lint                      fail on English sentences in Swift sources that never
-                                           reach the catalog (a String a screen shows unlocalized)
-  wallet-l10n.py missing                   list catalog keys still without Korean
+check [--stringsdata DIR]   catalog coverage, Swift localized keys, compiler keys
+lint                       sentences bypassing localization and old language switches
+sync --stringsdata DIR     add extracted keys (preserve all existing translations)
+missing                    list absent or unusable translations by language
+prepare-tests --out DIR    generate locale bundles FROM the catalog under root/tmp
+self-test                  parser, placeholder and missing-translation regressions
 
-The compiler's .stringsdata files (SWIFT_EMIT_LOC_STRINGS) are the source of truth for what
-is localizable: every Text/Label/Button literal and every String(localized:). `lint` catches
-the rest - an English sentence kept in a plain String and shown on screen.
+The Swift scanner understands comments, raw/multiline literals and nested
+interpolations. The compiler's stringsdata supplies the definitive format types.
 """
+import importlib.util
 import json
-import os
+import plistlib
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+
+sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
 WALLET = ROOT / "apps" / "wallet"
 CATALOG = WALLET / "Resources" / "Localizable.xcstrings"
 SOURCES = WALLET / "Sources"
-ALLOW = Path(__file__).resolve().parent / "wallet-l10n-allow.txt"
-
-# printf-style specifiers as the compiler writes them into keys.
+ALLOW = ROOT / "scripts" / "wallet-l10n-allow.txt"
+LANGUAGES = ("en", "ko", "ja", "zh-Hans", "zh-Hant")
 SPEC = re.compile(r"%(?:(\d+)\$)?([-+ #0]*\d*(?:\.\d+)?)(lld|llu|ld|lu|@|d|u|f|g|e|s|c|x|X|%)")
 
 
-def load_catalog():
-    with open(CATALOG, encoding="utf-8") as f:
-        return json.load(f)
+def option(args, name, default=None):
+    if name not in args:
+        return default
+    i = args.index(name)
+    if i + 1 == len(args):
+        raise ValueError(f"missing value for {name}")
+    return args[i + 1]
+
+
+def load_catalog(path=CATALOG):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
 def save_catalog(cat):
-    # Xcode's own layout (" : ", two-space indent, sorted keys) so its edits diff cleanly.
-    text = json.dumps(cat, ensure_ascii=False, indent=2, sort_keys=True, separators=(",", " : "))
-    with open(CATALOG, "w", encoding="utf-8") as f:
-        f.write(text + "\n")
+    # Match Xcode's own JSON style to keep catalog edits reviewable.
+    CATALOG.write_text(json.dumps(cat, ensure_ascii=False, indent=2, sort_keys=True,
+                                  separators=(",", " : ")) + "\n", encoding="utf-8")
 
 
-def extracted_keys(stringsdata_dir):
-    keys = {}
-    paths = list(Path(stringsdata_dir).rglob("*.stringsdata"))
-    for p in paths:
+def extracted_keys(directory):
+    keys, bad = {}, []
+    paths = sorted(Path(directory).rglob("*.stringsdata"))
+    for path in paths:
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            bad.append(f"cannot read {path}: {exc}")
             continue
         for table, entries in data.get("tables", {}).items():
-            if table != "Localizable":
-                continue
-            for e in entries:
-                keys.setdefault(e["key"], set()).add(Path(data.get("source", p.name)).name)
-    return keys, len(paths)
+            if table == "Localizable":
+                for entry in entries:
+                    keys.setdefault(entry["key"], set()).add(Path(data.get("source", path.name)).name)
+    return keys, len(paths), bad
 
 
-def specs(s):
-    """The placeholders of a format string: [(position or None, kind)], %% ignored."""
-    out = []
-    for m in SPEC.finditer(s):
-        kind = m.group(3)
-        if kind == "%":
-            continue
-        kind = {"lld": "int", "ld": "int", "d": "int", "llu": "int", "lu": "int", "u": "int", "x": "int", "X": "int",
-                "@": "obj", "s": "obj", "f": "dbl", "g": "dbl", "e": "dbl", "c": "chr"}[kind]
-        out.append((int(m.group(1)) if m.group(1) else None, kind))
-    return out
+def specs(value):
+    """Printf arguments, with explicit positions retained; %% is not an argument."""
+    kinds = {"lld": "int", "ld": "int", "d": "int", "llu": "int", "lu": "int", "u": "int",
+             "x": "int", "X": "int", "@": "obj", "s": "obj", "f": "dbl", "g": "dbl",
+             "e": "dbl", "c": "chr"}
+    return [(int(m.group(1)) if m.group(1) else None, kinds[m.group(3)])
+            for m in SPEC.finditer(value) if m.group(3) != "%"]
 
 
 def placeholders_match(key, value):
-    want = [k for _, k in specs(key)]
+    want = [kind for _, kind in specs(key)]
     got = specs(value)
-    if not got:
-        return not want
-    if all(p is None for p, _ in got):
-        return [k for _, k in got] == want
-    if any(p is None for p, _ in got):
-        return False  # mixing positional and sequential is undefined
-    try:
-        return sorted(got) == sorted((i + 1, want[i]) for i in range(len(want))) or \
-            all(want[p - 1] == k for p, k in got) and len({p for p, _ in got}) == len(want)
-    except IndexError:
+    if all(position is None for position, _ in got):
+        return [kind for _, kind in got] == want
+    if any(position is None for position, _ in got):
         return False
+    if any(position < 1 or position > len(want) for position, _ in got):
+        return False
+    return (all(want[position - 1] == kind for position, kind in got)
+            and {position for position, _ in got} == set(range(1, len(want) + 1)))
 
 
-def has_letters(s):
-    return re.search(r"[A-Za-z가-힣]", SPEC.sub("", s)) is not None
+def string_units(localization):
+    """Catalog leaves, including plural/device/substitution variations."""
+    if not isinstance(localization, dict):
+        return []
+    if "stringUnit" in localization:
+        return [localization["stringUnit"]]
+    result = []
+    for name, value in localization.items():
+        if isinstance(value, dict):
+            result.extend(string_units(value))
+    return result
 
 
-def ko_values(entry):
-    """Every Korean string of a catalog entry (plural variants included)."""
-    ko = entry.get("localizations", {}).get("ko")
-    if not ko:
+def values_for(key, entry, language):
+    local = entry.get("localizations", {}).get(language)
+    if local is None and language == "en":
+        return [key]  # English is the key language, including empty/punctuation keys.
+    units = string_units(local)
+    if not units or any(unit.get("state") != "translated" or "value" not in unit
+                        or (key and not unit["value"]) for unit in units):
         return None
-    vals = []
-    if "stringUnit" in ko:
-        u = ko["stringUnit"]
-        if u.get("state") not in ("translated",) or not u.get("value"):
-            return None
-        vals.append(u["value"])
-    for var in ko.get("variations", {}).values():
-        for v in var.values():
-            u = v.get("stringUnit", {})
-            if u.get("state") != "translated" or not u.get("value"):
-                return None
-            vals.append(u["value"])
-    return vals or None
+    return [unit["value"] for unit in units]
 
 
-def problems_for(key, entry):
-    vals = ko_values(entry or {})
-    if vals is None:
-        return "no Korean translation"
-    for v in vals:
-        if not placeholders_match(key, v):
-            return f"placeholders differ from the key: {v!r}"
-    # An English word left as is in Korean is only fine for names and units
-    # (DBLN, GB, Touch ID, CSV): a key with an ordinary English word needs Hangul.
-    if re.search(r"\b[a-z]{3,}", SPEC.sub("", key)) and not any(re.search(r"[가-힣]", v) for v in vals):
-        return f"the Korean has no Korean in it: {vals[0]!r}"
+def language_rules():
+    name = "wallet_language_rules"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, ROOT / "scripts/check-wallet-screens-language.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+def catalog_problems(cat):
+    problems = []
+    if cat.get("sourceLanguage") != "en":
+        problems.append("sourceLanguage must be en")
+    for key, entry in sorted(cat["strings"].items()):
+        for language in LANGUAGES:
+            values = values_for(key, entry, language)
+            if values is None:
+                problems.append(f"{key!r}: no {language} translation")
+            elif language != "en":
+                for value in values:
+                    if not placeholders_match(key, value):
+                        problems.append(f"{key!r}: {language} placeholders differ: {value!r}")
+    return problems + language_rules().catalog_script_problems(cat)
+
+
+@dataclass
+class SwiftLiteral:
+    start: int
+    end: int
+    value: str
+    line: int
+
+
+def literal_open(code, start):
+    i = start
+    while i < len(code) and code[i] == "#":
+        i += 1
+    if i < len(code) and code[i] == '"':
+        width = 3 if code.startswith('"""', i) else 1
+        return i - start, width, i + width
     return None
 
 
+def skip_comment(code, start):
+    if code.startswith("//", start):
+        end = code.find("\n", start)
+        return len(code) if end < 0 else end
+    if code.startswith("/*", start):
+        depth, i = 1, start + 2
+        while i < len(code) and depth:
+            if code.startswith("/*", i):
+                depth += 1
+                i += 2
+            elif code.startswith("*/", i):
+                depth -= 1
+                i += 2
+            else:
+                i += 1
+        return i
+    return start
+
+
+def skip_expression(code, start):
+    """Skip a Swift interpolation, including nested strings and comments."""
+    depth, i = 1, start
+    while i < len(code) and depth:
+        end = skip_comment(code, i)
+        if end != i:
+            i = end
+            continue
+        opening = literal_open(code, i)
+        if opening:
+            i = read_literal(code, i)[0].end
+        elif code[i] == "(":
+            depth += 1
+            i += 1
+        elif code[i] == ")":
+            depth -= 1
+            i += 1
+        else:
+            i += 1
+    return i
+
+
+def read_literal(code, start):
+    hashes, width, i = literal_open(code, start)
+    close = '"' * width + "#" * hashes
+    escape = "\\" + "#" * hashes
+    result, nested = [], []
+    while i < len(code) and not code.startswith(close, i):
+        if code.startswith(escape + "(", i):
+            begin = i + len(escape) + 1
+            end = skip_expression(code, begin)
+            nested.extend(swift_literals(code[begin:end - 1], offset=begin, full_code=code))
+            result.append("\u0001")  # type supplied by stringsdata, not guessed from the expression
+            i = end
+        elif code.startswith(escape, i):
+            j = i + len(escape)
+            if j == len(code):
+                break
+            char = code[j]
+            if char == "u" and j + 1 < len(code) and code[j + 1] == "{":
+                end = code.find("}", j + 2)
+                if end >= 0:
+                    try:
+                        result.append(chr(int(code[j + 2:end], 16)))
+                    except ValueError:
+                        result.append(code[i:end + 1])
+                    i = end + 1
+                    continue
+            result.append({"n": "\n", "r": "\r", "t": "\t", "0": "\0",
+                           '"': '"', "'": "'", "\\": "\\"}.get(char, char))
+            i = j + 1
+        else:
+            result.append(code[i])
+            i += 1
+    value = "".join(result)
+    if width == 3:
+        # Swift drops the opening newline and the closing delimiter's indent.
+        value = value.removeprefix("\n")
+        indent = re.search(r"\n([ \t]*)$", value)
+        if indent:
+            padding = indent.group(1)
+            value = value[:indent.start()]
+            if padding:
+                value = "\n".join(line[len(padding):] if line.startswith(padding) else line
+                                   for line in value.split("\n"))
+    return SwiftLiteral(start, i + len(close), value, code.count("\n", 0, start) + 1), nested
+
+
+def swift_literals(code, offset=0, full_code=None):
+    """All Swift literals, including literals inside interpolation expressions."""
+    result, i = [], 0
+    while i < len(code):
+        end = skip_comment(code, i)
+        if end != i:
+            i = end
+        elif literal_open(code, i):
+            literal, nested = read_literal(code, i)
+            if offset:
+                literal = SwiftLiteral(literal.start + offset, literal.end + offset, literal.value,
+                                       full_code.count("\n", 0, literal.start + offset) + 1)
+                nested = [SwiftLiteral(n.start + offset, n.end + offset, n.value,
+                                       full_code.count("\n", 0, n.start + offset) + 1) for n in nested]
+            result.extend([literal, *nested])
+            i = literal.end - offset
+        else:
+            i += 1
+    return result
+
+
+def uncomment(code):
+    """Mask comments, preserving offsets and source line numbers."""
+    chars, i = list(code), 0
+    while i < len(code):
+        end = skip_comment(code, i)
+        if end != i:
+            for j in range(i, end):
+                if chars[j] != "\n":
+                    chars[j] = " "
+            i = end
+        elif literal_open(code, i):
+            i = read_literal(code, i)[0].end
+        else:
+            i += 1
+    return "".join(chars)
+
+
+def normalize_key(key):
+    return SPEC.sub(lambda m: "%" if m.group(3) == "%" else "\u0001", key)
+
+
+LOCALIZED_CALL = re.compile(r"(?:\bString\s*\(\s*localized\s*:|\bLocalizedStringResource\s*\()\s*$")
+
+
+def localized_keys(path):
+    code = uncomment(path.read_text(encoding="utf-8"))
+    return [(literal.value, literal.line) for literal in swift_literals(code)
+            if LOCALIZED_CALL.search(code[:literal.start])]
+
+
+def source_key_problems(cat, sources=SOURCES):
+    known = {normalize_key(key) for key in cat["strings"]}
+    problems = []
+    for path in sorted(Path(sources).rglob("*.swift")):
+        for key, line in localized_keys(path):
+            if key not in known:
+                problems.append(f"{path.name}:{line}: localized key {key!r} is not in the catalog")
+    return problems
+
+
 def cmd_check(args):
-    d = arg(args, "--stringsdata")
-    keys, n = extracted_keys(d)
-    if n == 0:
-        print(f"check-wallet-l10n: no .stringsdata under {d} (SWIFT_EMIT_LOC_STRINGS off?)", file=sys.stderr)
+    cat = load_catalog(option(args, "--catalog", CATALOG))
+    problems = catalog_problems(cat) + source_key_problems(cat, option(args, "--sources", SOURCES))
+    directory = option(args, "--stringsdata")
+    extracted = 0
+    if directory:
+        keys, count, failures = extracted_keys(directory)
+        problems.extend(failures)
+        if not count:
+            problems.append(f"no .stringsdata under {directory} (SWIFT_EMIT_LOC_STRINGS off?)")
+        extracted = len(keys)
+        for key, files in sorted(keys.items()):
+            if key not in cat["strings"]:
+                problems.append(f"{', '.join(sorted(files))}: {key!r} is not in the catalog")
+    for problem in problems:
+        print(f"error: wallet-l10n: {problem}")
+    if problems:
+        print(f"check-wallet-l10n: FAIL ({len(problems)} problems)", file=sys.stderr)
         return 1
-    cat = load_catalog()["strings"]
-    bad = []
-    for key in sorted(keys):
-        if not has_letters(key):
-            continue  # "%@ · %@", "—", "#%lld": nothing to translate
-        why = "not in the catalog" if key not in cat else problems_for(key, cat[key])
-        if why:
-            bad.append((key, why, sorted(keys[key])))
-    for key, why, files in bad:
-        loc = ", ".join(files)
-        print(f"error: {loc}: \"{key}\" — {why} (apps/wallet/Resources/Localizable.xcstrings)")
-    if bad:
-        print(f"check-wallet-l10n: {len(bad)} user-visible string(s) have no usable Korean. "
-              "Run scripts/check-wallet-l10n.sh --sync, translate them, and build again.", file=sys.stderr)
-        return 1
-    print(f"check-wallet-l10n: {sum(1 for k in keys if has_letters(k))} strings, all with Korean")
+    counts = ", ".join(f"{language}={len(cat['strings'])}" for language in LANGUAGES)
+    suffix = f"; {extracted} compiler keys" if directory else ""
+    print(f"check-wallet-l10n: OK {counts}{suffix}")
     return 0
 
 
 def cmd_sync(args):
-    d = arg(args, "--stringsdata")
-    keys, n = extracted_keys(d)
-    if n == 0:
-        print(f"no .stringsdata under {d}", file=sys.stderr)
-        return 1
+    directory = option(args, "--stringsdata")
+    if not directory:
+        raise ValueError("sync requires --stringsdata DIR")
+    keys, count, problems = extracted_keys(directory)
+    if not count or problems:
+        raise ValueError("no usable compiler stringsdata: " + "; ".join(problems))
     cat = load_catalog()
-    strings = cat["strings"]
-    added = [k for k in keys if k not in strings]
-    for k in added:
-        strings[k] = {}
-        if not has_letters(k):
-            strings[k] = {"localizations": {"ko": {"stringUnit": {"state": "translated", "value": k}}}}
-    stale = [k for k, e in strings.items() if k not in keys and e.get("extractionState") != "manual"]
-    for k in stale:
-        del strings[k]
+    added = [key for key in keys if key not in cat["strings"]]
+    for key in added:
+        cat["strings"][key] = {}
+    # A compiler pass can omit pure-logic/manual resources or another target's
+    # keys. Never destroy reviewed translations from a partial extraction.
     save_catalog(cat)
-    print(f"sync: {len(keys)} keys extracted, {len(added)} added, {len(stale)} stale removed")
+    print(f"sync: {len(keys)} compiler keys, {len(added)} added, existing translations preserved")
     return 0
 
 
-def cmd_missing(_args):
-    for k, e in sorted(load_catalog()["strings"].items()):
-        if has_letters(k) and problems_for(k, e):
-            print(json.dumps(k, ensure_ascii=False))
+def cmd_missing(args):
+    for problem in catalog_problems(load_catalog(option(args, "--catalog", CATALOG))):
+        print(problem)
     return 0
 
 
-# ---------- lint: English sentences that never reach the catalog ----------
-
-def literals(code):
-    """The string literals of one line of Swift, interpolations kept as written
-    (nested literals inside an interpolation are part of it, not literals of
-    their own). Multi-line literals are skipped."""
-    out, i, n = [], 0, len(code)
-    while i < n:
-        c = code[i]
-        if code.startswith('"""', i):
-            return out
-        if c == "/" and code.startswith("//", i):
-            return out
-        if c != '"':
-            i += 1
-            continue
-        j, buf = i + 1, []
-        while j < n and code[j] != '"':
-            if code[j] == "\\" and j + 1 < n and code[j + 1] == "(":
-                depth, k, in_str = 1, j + 2, False
-                while k < n and depth:
-                    ch = code[k]
-                    if in_str:
-                        if ch == "\\":
-                            k += 1
-                        elif ch == '"':
-                            in_str = False
-                    elif ch == '"':
-                        in_str = True
-                    elif ch == "(":
-                        depth += 1
-                    elif ch == ")":
-                        depth -= 1
-                    k += 1
-                buf.append(code[j:k])
-                j = k
-                continue
-            if code[j] == "\\":
-                buf.append(code[j:j + 2])
-                j += 2
-                continue
-            buf.append(code[j])
-            j += 1
-        out.append("".join(buf))
-        i = j + 1
-    return out
-
-
-INTERP = re.compile(r"\\\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)")
-# Calls whose text is for logs, developers or other programs, never a screen.
+# English sentence lint retains documented machine-data exceptions, while
+# localized-key coverage and retired language switches are ALWAYS checked.
 SKIP_CALL = re.compile(r"\b(note|print|NSLog|debugPrint|fatalError|precondition|preconditionFailure|assert|assertionFailure|"
                        r"ProviderError|logger\.\w+|os_log|Logger|URL|URLRequest|setValue|appendingPathComponent|"
                        r"appending|UserDefaults|forKey|DispatchQueue|beginActivity|SleepGuard|IOPM\w*|contains|hasPrefix|"
-                       r"hasSuffix|range|logEvent|NodeStatusLog\.\w+|\w+Log\.(?:notice|info|debug|error|fault|log))\s*\(|\bmessage:\s*\"|\blabel:\s*\"|privacy:")
-
-
-def strip_interp(s):
-    """Interpolations out, whatever their nesting."""
-    out, i = [], 0
-    while i < len(s):
-        if s.startswith("\\(", i):
-            depth, k, in_str = 1, i + 2, False
-            while k < len(s) and depth:
-                ch = s[k]
-                if in_str:
-                    if ch == "\\":
-                        k += 1
-                    elif ch == '"':
-                        in_str = False
-                elif ch == '"':
-                    in_str = True
-                elif ch == "(":
-                    depth += 1
-                elif ch == ")":
-                    depth -= 1
-                k += 1
-            out.append("\u0001")
-            i = k
-            continue
-        out.append(s[i])
-        i += 1
-    return "".join(out)
-
-
-def normalize_key(k):
-    return SPEC.sub(lambda m: "%" if m.group(3) == "%" else "\u0001", k).replace('\\"', '"')
-
-
-def normalize_literal(s):
-    return strip_interp(s).replace('\\"', '"').replace("\\n", "\n")
-
-
-def englishy(s):
-    t = strip_interp(s)
-    if re.search(r"[가-힣]", t) or re.search(r"[;=|{}_]|--|\w/\w|^\w+:\w", t):
-        return False
-    words = re.findall(r"[A-Za-z][a-z']+", t)
-    return " " in t.strip() and len(words) >= 2
+                       r"hasSuffix|range|logEvent|NodeStatusLog\.\w+|\w+Log\.(?:notice|info|debug|error|fault|log))\s*\(|"
+                       r"\bmessage:\s*\"|\blabel:\s*\"|privacy:")
+OLD_LANGUAGE_SWITCH = re.compile(r"\b(?:HealthCheck|AppLanguage)\.korean\b|\b(?:ko|korean)\s*:\s*Bool\b")
 
 
 def load_allow():
-    allow_files, allow_text = set(), set()
+    files, texts = set(), set()
     if ALLOW.exists():
         for line in ALLOW.read_text(encoding="utf-8").splitlines():
             line = line.split("#", 1)[0].strip()
             if line.startswith("file:"):
-                allow_files.add(line[5:].strip())
+                files.add(line[5:].strip())
             elif line.startswith("text:"):
-                allow_text.add(line[5:].strip())
-    return allow_files, allow_text
+                # The historical allowlist spells interpolations, unlike lexer values.
+                value = line[5:].strip()
+                texts.add(swift_literals('"' + value + '"')[0].value)
+    return files, texts
 
 
-def cmd_lint(_args):
+def englishy(value):
+    if re.search(r"[가-힣]|[;=|{}_]|--|\w/\w|^\w+:\w", value):
+        return False
+    return " " in value.strip() and len(re.findall(r"[A-Za-z][a-z']+", value)) >= 2
+
+
+def cmd_lint(args):
     allow_files, allow_text = load_allow()
-    keys = {normalize_key(k) for k in load_catalog()["strings"]}
-    bad = []
-    for path in sorted(SOURCES.glob("*.swift")):
+    cat = load_catalog(option(args, "--catalog", CATALOG))
+    sources = Path(option(args, "--sources", SOURCES))
+    known = {normalize_key(key) for key in cat["strings"]}
+    problems = source_key_problems(cat, sources)
+    for path in sorted(sources.rglob("*.swift")):
+        code = uncomment(path.read_text(encoding="utf-8"))
+        # Do not match names inside comments or string data.
+        masked = list(code)
+        for literal in swift_literals(code):
+            masked[literal.start:literal.end] = " " * (literal.end - literal.start)
+        for match in OLD_LANGUAGE_SWITCH.finditer("".join(masked)):
+            problems.append(f"{path.name}:{code.count(chr(10), 0, match.start()) + 1}: retired boolean language switch")
         if path.name in allow_files:
             continue
-        in_block_comment = False
-        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            code = line
-            if in_block_comment:
-                if "*/" not in code:
-                    continue
-                code = code.split("*/", 1)[1]
-                in_block_comment = False
-            if code.lstrip().startswith("//"):
-                continue
-            if "/*" in code and "*/" not in code:
-                in_block_comment = True
-                code = code.split("/*", 1)[0]
-            if SKIP_CALL.search(code) or re.search(r"\bko\b|\bkorean\b|AppLanguage\.korean|HealthCheck\.korean", code):
-                continue
-            for s in literals(code):
-                if not englishy(s) or normalize_literal(s) in keys or s in allow_text:
-                    continue
-                bad.append(f"{path.relative_to(ROOT)}:{n}: \"{s}\"")
-    for b in bad:
-        print(f"error: {b} — an English sentence that is not localized (wrap it in String(localized:) "
-              f"or add it to scripts/wallet-l10n-allow.txt with the reason it is never shown)")
-    if bad:
-        print(f"lint-wallet-l10n: {len(bad)} unlocalized English sentence(s)", file=sys.stderr)
+        for literal in swift_literals(code):
+            line = code.splitlines()[literal.line - 1]
+            if (englishy(literal.value) and literal.value not in known and literal.value not in allow_text
+                    and not SKIP_CALL.search(line)):
+                problems.append(f"{path.name}:{literal.line}: {literal.value!r} is an unlocalized English sentence")
+    for problem in problems:
+        print(f"error: wallet-l10n: {problem}")
+    if problems:
+        print(f"lint-wallet-l10n: FAIL ({len(problems)} problems)", file=sys.stderr)
         return 1
-    print("lint-wallet-l10n: no unlocalized English sentences")
+    print("lint-wallet-l10n: OK no unlocalized English sentences or boolean language switches")
     return 0
 
 
-def arg(args, name):
-    if name not in args or args.index(name) + 1 >= len(args):
-        print(f"missing {name}", file=sys.stderr)
-        sys.exit(2)
-    return args[args.index(name) + 1]
+def strings_quote(value):
+    # JSON's escaped string syntax is also valid in an Apple .strings file.
+    return json.dumps(value, ensure_ascii=False)
+
+
+def cmd_prepare_tests(args):
+    destination = Path(option(args, "--out", ROOT / "tmp" / "wallet-languages" / "WalletLocalizations.bundle")).resolve()
+    try:
+        destination.relative_to(ROOT / "tmp")
+    except ValueError:
+        raise ValueError("test localization resources must be under this workspace's tmp directory")
+    cat = load_catalog(option(args, "--catalog", CATALOG))
+    destination.mkdir(parents=True, exist_ok=True)
+    info = {"CFBundleIdentifier": "com.pipln.eastsea.localization-tests", "CFBundleDevelopmentRegion": "en",
+            "CFBundleLocalizations": list(LANGUAGES), "CFBundlePackageType": "BNDL"}
+    (destination / "Info.plist").write_bytes(plistlib.dumps(info))
+    for language in LANGUAGES:
+        directory = destination / f"{language}.lproj"
+        directory.mkdir(exist_ok=True)
+        lines, plurals = [], {}
+        for key, entry in sorted(cat["strings"].items()):
+            values = values_for(key, entry, language)
+            if values is None:
+                # Tests must see a missing translation as a fallback, not a fabricated value.
+                continue
+            lines.append(f"{strings_quote(key)} = {strings_quote(values[0])};")
+            variation = entry.get("localizations", {}).get(language, {}).get("variations", {}).get("plural")
+            if variation:
+                count = next((m for m in SPEC.finditer(key) if m.group(3) in ("lld", "llu", "ld", "lu", "d", "u")), None)
+                if count:
+                    rules = {"NSStringFormatSpecTypeKey": "NSStringPluralRuleType",
+                             "NSStringFormatValueTypeKey": count.group(3)}
+                    rules.update({category: leaf["stringUnit"]["value"] for category, leaf in variation.items()})
+                    plurals[key] = {"NSStringLocalizedFormatKey": "%#@count@", "count": rules}
+        (directory / "Localizable.strings").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (directory / "Localizable.stringsdict").write_bytes(plistlib.dumps(plurals))
+    print(f"wallet-test-localizations: {len(cat['strings'])} catalog keys in {destination}")
+    return 0
+
+
+def cmd_self_test(_args):
+    code = r'''// String(localized: "Comment only")
+let a = String(localized: "Ready \(formatter.call("data", inner(2))) now")
+let b = String(localized: #"Raw \#(count) and "quotes""#)
+let c = String(localized: """
+    First line
+    Second line
+    """)
+/* nested /* String(localized: "No") */ comment */
+let d = "Outer \(String(localized: "Inner key"))"
+'''
+    pairs = [(literal.value, literal.line) for literal in swift_literals(uncomment(code))
+             if LOCALIZED_CALL.search(uncomment(code)[:literal.start])]
+    assert pairs == [("Ready \u0001 now", 2), ('Raw \u0001 and "quotes"', 3),
+                     ("First line\nSecond line", 4), ("Inner key", 9)], pairs
+    assert placeholders_match("%lld %@", "%2$@ %1$lld")
+    assert not placeholders_match("%lld %@", "%0$lld %2$@")
+    assert not placeholders_match("%lld %@", "%@ %lld")
+    entry = {"localizations": {language: {"stringUnit": {"state": "translated", "value": value}}
+                               for language, value in {"en": "OK", "ko": "확인", "ja": "確認", "zh-Hans": "好"}.items()}}
+    bad = catalog_problems({"sourceLanguage": "en", "strings": {"OK": entry}})
+    assert bad == ["'OK': no zh-Hant translation"], bad
+    entry["localizations"]["zh-Hant"] = {"stringUnit": {"state": "translated", "value": "好"}}
+    assert not catalog_problems({"sourceLanguage": "en", "strings": {"OK": entry}})
+    print("wallet-l10n self-test: OK Swift literals, interpolation keys, placeholders, missing zh-Hant")
+    return 0
 
 
 if __name__ == "__main__":
-    cmds = {"check": cmd_check, "sync": cmd_sync, "lint": cmd_lint, "missing": cmd_missing}
-    if len(sys.argv) < 2 or sys.argv[1] not in cmds:
+    commands = {"check": cmd_check, "sync": cmd_sync, "lint": cmd_lint, "missing": cmd_missing,
+                "prepare-tests": cmd_prepare_tests, "self-test": cmd_self_test}
+    if len(sys.argv) < 2 or sys.argv[1] not in commands:
         print(__doc__)
         sys.exit(2)
-    sys.exit(cmds[sys.argv[1]](sys.argv[2:]))
+    try:
+        sys.exit(commands[sys.argv[1]](sys.argv[2:]))
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"error: wallet-l10n: {exc}", file=sys.stderr)
+        sys.exit(1)

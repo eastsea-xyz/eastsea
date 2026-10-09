@@ -367,6 +367,7 @@ pub fn registrar_key_check(state: &aether_execution::WorldState, mine: &str) -> 
 mod tests {
     use super::*;
     use crate::registrar_signer::RegistrarSigner as _;
+    use aether_test_support::Port;
 
     /// A devnet file signer (seed 4): the key `<data>/registrar.key` holds on a
     /// local devnet, and the P-256 key these tests verify against.
@@ -416,9 +417,13 @@ mod tests {
             .route("/v1/query_two_bits", axum::routing::post(mock_query))
             .route("/v1/update_two_bits", axum::routing::post(mock_update))
             .with_state(a.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = Port::reserve().expect("reserve mock DeviceCheck port");
+        let listener = port.bind_tcp().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
+            let _port = port;
             let _ = axum::serve(listener, app).await;
         });
         (format!("http://{addr}/v1"), a)
@@ -460,7 +465,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("registrations.json");
         let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
-        let apple = DeviceCheck { key, key_id: "K".into(), team: "T".into(), base: "http://127.0.0.1:9".into(), http: reqwest::Client::new() };
+        let upstream = Port::reserve().expect("reserve unreachable DeviceCheck port");
+        let apple = DeviceCheck { key, key_id: "K".into(), team: "T".into(), base: format!("http://{}", upstream.addr()), http: reqwest::Client::new() };
         let signer = dev_signer();
         let r = Registrar::new(Some(apple), Registry::open(path.clone()), signer, 7);
         let node: [u8; 32] = *aether_net::SecretKey::from_bytes(&[2; 32]).public().as_bytes();
@@ -511,7 +517,8 @@ mod tests {
         aether_crypto::verify(&registrar_pk, &msg, &[r, s].concat()).unwrap();
         // With Apple configured but unreachable, it fails closed.
         let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
-        let apple = DeviceCheck { key, key_id: "K".into(), team: "T".into(), base: "http://127.0.0.1:9".into(), http: reqwest::Client::new() };
+        let upstream = Port::reserve().expect("reserve unreachable DeviceCheck port");
+        let apple = DeviceCheck { key, key_id: "K".into(), team: "T".into(), base: format!("http://{}", upstream.addr()), http: reqwest::Client::new() };
         let live = Registrar { apple: Some(apple), ..dev };
         assert!(live.reattest("tok", vk, 3, &own(&voting, 3)).await.is_err());
         let _ = std::fs::remove_dir_all(&dir);

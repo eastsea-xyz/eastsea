@@ -38,49 +38,57 @@ struct EnclaveAccount {
         }
     }
 
-    private static var storeURL: URL {
-        DataMigration.ensure()
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    static var walletDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("EastSeaWallet", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("enclave-key.dat")
     }
 
-    static func loadOrCreate(requireUserPresence: Bool) throws -> EnclaveAccount {
+    /// Legacy preferences must arrive before the model chooses a network or
+    /// assigns recovery/history to an account. Also used by direct index loads.
+    static func prepareWalletLoad() throws {
+        let outcome = DataMigration.ensure()
+        if case .waitingForUnlock = outcome { throw AccountStore.Failure.waitingForUnlock }
+        if let why = DataMigration.mayCreateFreshWalletKey() { throw KeyError.migrationPending(why) }
+    }
+
+    /// Opening an indexed key is deliberately separate from generating one.
+    /// Missing, protected, or invalid handles always fail closed.
+    static func load(handleURL: URL, requireUserPresence: Bool) throws -> EnclaveAccount {
         #if WALLET_SCREENS
         fatalError("the screens renderer never opens the keychain")
         #endif
-        let settledStoreURL = storeURL
-        if let why = DataMigration.mayCreateFreshWalletKey() { throw KeyError.migrationPending(why) }
+        try prepareWalletLoad()
+        let data: Data
+        do { data = try Data(contentsOf: handleURL) }
+        catch { throw KeyError.keyUnavailable(error.localizedDescription) }
         #if targetEnvironment(simulator)
-        let url = settledStoreURL.deletingLastPathComponent().appendingPathComponent("simulator-software-key.dat")
-        if FileManager.default.fileExists(atPath: url.path) {
-            guard let data = try? Data(contentsOf: url), let k = try? P256.Signing.PrivateKey(rawRepresentation: data) else {
-                throw KeyError.keyUnavailable("unreadable simulator key")
-            }
-            return EnclaveAccount(key: .software(k), requiresUserPresence: false)
+        guard let key = try? P256.Signing.PrivateKey(rawRepresentation: data) else {
+            throw KeyError.keyUnavailable("unreadable simulator key")
         }
-        if let why = DataMigration.mayCreateFreshWalletKey() { throw KeyError.migrationPending(why) }
-        let k = P256.Signing.PrivateKey()
-        try k.rawRepresentation.write(to: url, options: [.withoutOverwriting, .completeFileProtection])
-        return EnclaveAccount(key: .software(k), requiresUserPresence: false)
+        return EnclaveAccount(key: .software(key), requiresUserPresence: false)
         #else
         guard SecureEnclave.isAvailable else { throw KeyError.enclaveUnavailable }
-        // An existing handle is the wallet: if it cannot be read or restored
-        // now, fail and let the caller retry — never fall through to making a
-        // new key, which would overwrite the handle and orphan the address
-        // (red team 2026-09-29, self-healing review #8).
-        if FileManager.default.fileExists(atPath: settledStoreURL.path) {
-            let data: Data
-            do { data = try Data(contentsOf: settledStoreURL) } catch { throw KeyError.keyUnavailable(error.localizedDescription) }
-            do {
-                let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: data)
-                return EnclaveAccount(key: .enclave(key), requiresUserPresence: requireUserPresence)
-            } catch {
-                throw KeyError.keyUnavailable(error.localizedDescription)
-            }
+        do {
+            let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: data)
+            return EnclaveAccount(key: .enclave(key), requiresUserPresence: requireUserPresence)
+        } catch {
+            throw KeyError.keyUnavailable(error.localizedDescription)
         }
+        #endif
+    }
+
+    static func create(handleURL: URL, requireUserPresence: Bool) throws -> EnclaveAccount {
+        #if WALLET_SCREENS
+        fatalError("the screens renderer never opens the keychain")
+        #endif
+        DataMigration.ensure()
         if let why = DataMigration.mayCreateFreshWalletKey() { throw KeyError.migrationPending(why) }
+        #if targetEnvironment(simulator)
+        let key = P256.Signing.PrivateKey()
+        try AccountHandleFile.writeNew(key.rawRepresentation, to: handleURL)
+        return EnclaveAccount(key: .software(key), requiresUserPresence: false)
+        #else
+        guard SecureEnclave.isAvailable else { throw KeyError.enclaveUnavailable }
         var flags: SecAccessControlCreateFlags = [.privateKeyUsage]
         if requireUserPresence { flags.insert(.userPresence) }
         var error: Unmanaged<CFError>?
@@ -89,7 +97,7 @@ struct EnclaveAccount {
         }
         let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: access)
         // First key only: refuse to replace a handle that appeared meanwhile.
-        try key.dataRepresentation.write(to: settledStoreURL, options: [.withoutOverwriting, .completeFileProtection])
+        try AccountHandleFile.writeNew(key.dataRepresentation, to: handleURL)
         return EnclaveAccount(key: .enclave(key), requiresUserPresence: requireUserPresence)
         #endif
     }
@@ -108,5 +116,40 @@ struct EnclaveAccount {
         case .enclave(let k): return try k.signature(for: message).rawRepresentation
         case .software(let k): return try k.signature(for: message).rawRepresentation
         }
+    }
+}
+
+extension AccountStore {
+    /// Lazy: constructing the model does not open a key or start migration.
+    /// WalletScreens/design previews never call load(). Each numbered handle
+    /// uses the same P-256 address derivation and 7702 transaction paths.
+    static func wallet() -> AccountStore {
+        sharedWallet
+    }
+
+    private static let sharedWallet = makeWallet()
+
+    private static func makeWallet() -> AccountStore {
+        #if targetEnvironment(simulator)
+        let legacy = "simulator-software-key.dat", prefix = "simulator-software-key"
+        #else
+        let legacy = "enclave-key.dat", prefix = "enclave-key"
+        #endif
+        return AccountStore(directory: EnclaveAccount.walletDirectory, keys: .init(open: { url in
+            do {
+                return try accountAddress(p256PublicKey: EnclaveAccount.load(handleURL: url, requireUserPresence: true).publicKey)
+            } catch EnclaveAccount.KeyError.keyUnavailable {
+                throw Failure.waitingForUnlock
+            }
+        }, create: { url in
+            do {
+                return try accountAddress(p256PublicKey: EnclaveAccount.create(handleURL: url, requireUserPresence: true).publicKey)
+            } catch {
+                if (error as NSError).code == Int(errSecInteractionNotAllowed) { throw Failure.waitingForUnlock }
+                throw error
+            }
+        }), legacyHandleName: legacy, handlePrefix: prefix,
+           legacyPayoutAddress: { UserDefaults.standard.string(forKey: "proveAddress") },
+           prepare: EnclaveAccount.prepareWalletLoad)
     }
 }

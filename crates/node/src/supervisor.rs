@@ -59,11 +59,21 @@ pub const EXIT_CHAIN_DATA_MISSING: i32 = 13;
 /// key directory) on a removable or network volume. "keys must stay on this
 /// Mac": the node refuses to start and never reads keys from there.
 pub const EXIT_KEYS_ON_CHAIN_DATA: i32 = 14;
+pub use crate::key_binding::EXIT_KEY_ELSEWHERE;
+
+/// Publish the hardware binding before the key, so a newly copied key cannot
+/// arrive without its binding. Legacy keys are bound once when loaded.
+pub fn create_key_binding(data: &Path, public: &crate::block::PublicKey) -> Result<(), String> {
+    if crate::key_binding::check(data, public)? == crate::key_binding::Checked::Created {
+        tracing::info!(path = %data.join(crate::key_binding::BINDING_FILE).display(), "created node key hardware binding");
+    }
+    Ok(())
+}
 
 /// Files that are this Mac's identity: they live in `--data` (the key
 /// directory, the internal disk) and nowhere else.
-pub const KEY_FILES: [&str; 6] = [
-    "validator.key", "validator.pub.json", "node-account.key", "threshold.json", "wallet-node.key", "key-binding.json",
+pub const KEY_FILES: [&str; 7] = [
+    "validator.key", "validator.pub.json", "node-account.key", "threshold.json", "wallet-node.key", "key-binding.json", "key-creation.json",
 ];
 
 /// Key files at the top level of the chain-data directory or of its
@@ -86,6 +96,14 @@ pub fn keys_on_external_data(data: &Path, external: bool) -> bool {
 
 /// macOS: a path under /Volumes/ or on a volume statfs does not call local.
 pub fn volume_is_external(path: &Path) -> bool {
+    // Integration fixtures live under the workspace's ./tmp even when that
+    // workspace is mounted under /Volumes. Only an explicitly selected test
+    // subtree may simulate the internal key volume; shipped binaries ignore it.
+    #[cfg(all(feature = "test-seam", debug_assertions))]
+    if let Some(dir) = std::env::var_os("AETHER_TEST_INTERNAL_KEY_DIR") {
+        let dir = PathBuf::from(dir);
+        if dir.is_absolute() && path.starts_with(dir) { return false; }
+    }
     if path.starts_with("/Volumes/") { return true; }
     let Ok(c) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else { return false };
     let mut st: libc::statfs = unsafe { std::mem::zeroed() };
@@ -744,7 +762,7 @@ const MAX_BACKOFF_MS: u64 = 60_000;
 pub fn next_restart(exits: &[ExitNote], now_ms: u64) -> Next {
     let Some(last) = exits.last() else { return Next::Again(Duration::from_millis(FIRST_BACKOFF_MS)) };
     match last.code {
-        Some(code @ (EXIT_UPGRADE_REQUIRED | crate::store::EXIT_STORAGE | EXIT_NO_VERIFIER | crate::candidate::EXIT_IDENTITY | EXIT_LOCKED)) => {
+        Some(code @ (EXIT_UPGRADE_REQUIRED | crate::store::EXIT_STORAGE | EXIT_NO_VERIFIER | crate::candidate::EXIT_IDENTITY | EXIT_LOCKED | EXIT_KEY_ELSEWHERE)) => {
             return Next::Stop(code);
         }
         _ => {}
@@ -923,6 +941,7 @@ impl Supervisor {
         match crate::candidate::CandidateKeys::load_or_create(&self.data) {
             Ok(keys) => Some(hex::encode(keys.validator_key())),
             Err(e) => {
+                crate::key_binding::exit_if_refusal(&e);
                 tracing::error!(
                     %e,
                     role = "follower",
@@ -1088,6 +1107,12 @@ impl Supervisor {
                     let _ = std::fs::remove_file(self.data.join("run-state.json"));
                 }
                 Watched::Exited(status) => {
+                    // A terminal mismatch must reach the outer daemon even
+                    // when restart-history persistence or disk reads fail.
+                    if status.code() == Some(EXIT_KEY_ELSEWHERE) {
+                        tracing::error!("key binding refused (exit 15); owner recovery required");
+                        std::process::exit(EXIT_KEY_ELSEWHERE);
+                    }
                     // A sudden ENOSPC can beat the two-second resource sample.
                     // Storage exit 4 is retryable once this volume has room;
                     // other storage failures retain the existing stop policy.
@@ -1203,10 +1228,14 @@ impl Supervisor {
                 stop(&mut reshare);
                 return Watched::Exited(status);
             }
-            if role == Role::Keyless
-                && crate::candidate::CandidateKeys::load_or_create(&self.data).is_ok() {
-                tracing::info!("aether run: restored identity is readable; re-evaluating the role");
-                return Watched::Switched;
+            if role == Role::Keyless {
+                match crate::candidate::CandidateKeys::load_or_create(&self.data) {
+                    Ok(_) => {
+                        tracing::info!("aether run: restored identity is readable; re-evaluating the role");
+                        return Watched::Switched;
+                    }
+                    Err(e) => crate::key_binding::exit_if_refusal(&e),
+                }
             }
             // 1. A proposed voting set: reshare to it in the background, once per finalized draw.
             if reshare.is_none() {
@@ -1779,6 +1808,21 @@ pub fn lock_data_dir(data: &Path) -> Result<std::fs::File, String> {
     }
 }
 
+/// Reuse only the validated writer lease for this exact key directory.
+/// Direct CLI writers acquire their own lock; child writers use the parent's
+/// open-file description transferred by the existing no-fork spawn path.
+pub fn lock_or_inherit_data_dir(data: &Path, lease: Option<&WriterLease>) -> Result<std::fs::File, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let Some(lease) = lease else { return lock_data_dir(data) };
+    let saved = std::fs::symlink_metadata(data.join("run.lock")).map_err(|e| e.to_string())?;
+    let inherited = lease._file.metadata().map_err(|e| e.to_string())?;
+    if !saved.is_file() || saved.file_type().is_symlink()
+        || saved.dev() != inherited.dev() || saved.ino() != inherited.ino() {
+        return Err("writer lease is not this data directory's run.lock".into());
+    }
+    lease._file.try_clone().map_err(|e| e.to_string())
+}
+
 /// Overwrite a secret file, then remove it.
 fn erase(path: &Path) -> Result<(), String> {
     let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else {
@@ -1795,8 +1839,9 @@ fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// This Mac's identities, lock, and authoritative storage choice survive resets.
-const KEEP_ACROSS_NETWORKS: [&str; 6] = [
+const KEEP_ACROSS_NETWORKS: [&str; 10] = [
     "validator.key", "validator.pub.json", "node-account.key", "wallet-node.key", "run.lock", "block-data-move.json",
+    "key-binding.json", "key-creation.json", "key-rebind.log", "key-binding-refused",
 ];
 
 const NETWORK_ADOPTION: &str = ".network-adoption.json";
@@ -2408,6 +2453,14 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
         }
         let lease = adoption.expect("the real writer spawn delivers a valid lease");
         let lease = lease.expect("every supervisor writer receives its lease");
+        let inherited = lock_or_inherit_data_dir(&dir.join("node"), Some(&lease))
+            .expect("a supervised key writer reuses this directory's validated lease");
+        assert!(lock_data_dir(&dir.join("node")).is_err(), "owner rebind cannot race a supervised writer");
+        let other = lock_data_dir(&dir.join("other-node")).unwrap();
+        assert!(lock_or_inherit_data_dir(&dir.join("other-node"), Some(&lease)).is_err(),
+            "a lease never authorizes another key directory");
+        drop(other);
+        drop(inherited);
         if mode == "capability" {
             assert_eq!(crate::rpc::writer_lease_status_for_test()["writer_lease_protocol"], json!(1),
                 "R11 actual adopted guard attests the live writer contract");
@@ -3220,14 +3273,14 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
         let mut net = file(1, "aa");
         std::fs::write(&src, serde_json::to_vec(&net).unwrap()).unwrap();
         adopt_network_with_chain_data(&data, Some(&chain), Some(&src)).unwrap();
-        for k in ["validator.key", "validator.pub.json", "node-account.key"] {
+        for k in ["validator.key", "validator.pub.json", "node-account.key", "key-binding.json", "key-creation.json", "key-rebind.log", "key-binding-refused"] {
             std::fs::write(data.join(k), b"k").unwrap();
         }
         std::fs::write(chain.join("follow/state.redb"), b"blocks").unwrap();
         net.identity = Some("bb".into());
         std::fs::write(&src, serde_json::to_vec(&net).unwrap()).unwrap();
         adopt_network_with_chain_data(&data, Some(&chain), Some(&src)).unwrap();
-        for k in ["validator.key", "validator.pub.json", "node-account.key"] {
+        for k in ["validator.key", "validator.pub.json", "node-account.key", "key-binding.json", "key-creation.json", "key-rebind.log", "key-binding-refused"] {
             assert!(data.join(k).exists(), "{k} stays in the key directory");
             assert!(KEEP_ACROSS_NETWORKS.contains(&k));
         }
@@ -3794,9 +3847,17 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
             EXIT_NO_VERIFIER,
             crate::candidate::EXIT_IDENTITY,
             EXIT_LOCKED,
+            EXIT_KEY_ELSEWHERE,
         ] {
             assert_eq!(next_restart(&[exit(NOW, 1_000, code)], NOW), Next::Stop(code));
         }
+    }
+
+    #[test]
+    fn hardware_mismatch_exit_is_terminal_but_sigterm_is_retryable() {
+        let note = ExitNote { started_ms: 0, at_ms: 1_000, code: Some(EXIT_KEY_ELSEWHERE) };
+        assert_eq!(next_restart(&[note], 1_000), Next::Stop(EXIT_KEY_ELSEWHERE));
+        assert!(matches!(next_restart(&[ExitNote { code: None, ..note }], 1_000), Next::Again(_)));
     }
 
     /// The history persists, and a damaged history file is refused — it can

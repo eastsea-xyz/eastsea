@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 #if os(macOS)
 import AppKit
 #endif
@@ -9,6 +10,56 @@ import DeviceCheck
 
 @MainActor
 final class WalletModel: ObservableObject {
+    let accountStore: AccountStore
+    private var accountSubscription: AnyCancellable?
+    private var operationGate = WalletOperationGate()
+    private struct Operation {
+        let token: WalletOperationGate.Token
+        let generation: UInt64
+        let owner: String
+        let store: AccountDataStore
+    }
+    private func beginOperation() -> Operation? {
+        guard !busy, !address.isEmpty, let token = operationGate.begin() else { return nil }
+        busy = true
+        return Operation(token: token, generation: networkGeneration, owner: address, store: dataStore)
+    }
+    private func releaseOperation(_ operation: Operation) {
+        if operationGate.release(operation.token) { busy = false }
+    }
+    /// The chosen node payout is independent of the wallet's selected row.
+    var payoutAddress: String { accountStore.payoutAddress }
+    @Published private(set) var contacts: [WalletContact] = []
+
+    init(accountStore: AccountStore? = nil) {
+        self.accountStore = accountStore ?? AccountStore.wallet()
+        self.accountStore.canChangeAccount = { [weak self] in
+            guard let self else { return false }
+            return !self.busy && !self.sendSheetOpen && self.paymentRequest == nil
+                && self.callRequest == nil && self.connectRequest == nil && self.registration != .working
+                && !self.operationGate.blocksAccountChange
+        }
+        // No cached zero can destroy a key. A fresh verified native balance
+        // and token read are required; failures leave the handle untouched.
+        self.accountStore.readBalances = { [weak self] candidate in
+            guard let self, !self.busy, let status = self.status,
+                  status.chainId == self.networkChainId, let sources = TokenSources.bundled(chainId: status.chainId) else {
+                throw AccountStore.Failure.balanceUnavailable
+            }
+            let verified = try verifiedAccount(address: candidate.address, validators: self.validators)
+            guard verified.address.lowercased() == candidate.address else { throw AccountStore.Failure.balanceUnavailable }
+            let held = AccountDataStore(chainID: status.chainId, address: candidate.address)
+                .load(.tokenHoldings, as: [TokenHolding].self) ?? []
+            let known = Set(self.tokenCatalog.tokens.keys).union(self.tokenCatalog.rejected)
+                .union(held.map { $0.token.address })
+            let balances = try AccountTokenBalanceCheck.balances(owner: candidate.address, sources: sources,
+                knownTokens: known, read: { try ethCall(to: $0, dataHex: $1) })
+            return AccountStore.Balances(nativeWei: verified.balanceWei, tokenBalances: balances)
+        }
+        accountSubscription = self.accountStore.activeAccountPublisher.map { $0?.id }.removeDuplicates().sink { [weak self] _ in
+            self?.activateAccount()
+        }
+    }
     @Published var connectionInfo = String(localized: "Looking for the network…")
     @Published private(set) var developmentNetwork = false
     @Published private(set) var developmentPort: UInt16 = 18546
@@ -39,7 +90,7 @@ final class WalletModel: ObservableObject {
     @Published var agentTransactionHash: String?
     /// Voting-node registration in progress or failed (nil: idle or done).
     @Published var registration: RegistrationState?
-    @Published var busy = false
+    @Published private(set) var busy = false
     /// The send or contract-call sheet is open: a quiet update waits (UpdateWindow).
     var sendSheetOpen = false
     @Published var log: [String] = []
@@ -182,6 +233,9 @@ final class WalletModel: ObservableObject {
               simulation.result.canSign(extraConfirmation: extraConfirmation) else {
             return (nil, String(localized: "Review the simulation before signing this transaction."))
         }
+        guard let operation = beginOperation() else { return (nil, AccountStore.Failure.operationInProgress.localizedDescription) }
+        var submitted = false
+        defer { if !submitted { releaseOperation(operation) } }
         let pk = enclave.publicKey
         let action = CallDescribe.action(to: tx.to, data: tx.data, ticker: Brand.coinTicker(chainId: simulation.context.chainId))
         let who = tx.to.isEmpty ? "a new contract" : Short.address(tx.to)
@@ -189,8 +243,6 @@ final class WalletModel: ObservableObject {
                                 amount: Double(Wei.format(tx.valueWei)).map { -$0 },
                                 recipients: tx.to.isEmpty ? [] : [tx.to.lowercased()])
         do {
-            busy = true
-            defer { busy = false }
             let prepared = try await Task.detached {
                 try prepareDappTransaction(p256PublicKey: pk, to: tx.to, valueWei: tx.valueWei,
                                            dataHex: tx.data, gasLimit: tx.gas, shownFeeWei: shownFeeWei)
@@ -202,7 +254,8 @@ final class WalletModel: ObservableObject {
             let h = try await Task.detached { try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk) }.value
             note("\(title): \(action) to \(who) submitted \(h.prefix(14))…")
             // The page gets its hash now; finality lands in the activity feed.
-            Task.detached { await self.track(h, label: "\(title): \(action) to \(who)", item: item) }
+            submitted = true
+            Task.detached { await self.track(h, operation: operation, label: "\(title): \(action) to \(who)", item: item) }
             return (h, nil)
         } catch {
             let refusal = WalletModel.ffiMessage(error)
@@ -217,8 +270,8 @@ final class WalletModel: ObservableObject {
         guard let enclave, !busy, stillApproved(), isCurrentDappContext(context, origin: origin) else {
             throw ProviderError(code: ProviderErrorCode.locked, message: String(localized: "This approval is no longer valid. Ask the site to try again."))
         }
-        busy = true
-        defer { busy = false }
+        guard let operation = beginOperation() else { throw AccountStore.Failure.operationInProgress }
+        defer { releaseOperation(operation) }
         let publicKey = enclave.publicKey
         let prepared = try await Task.detached { try prepareTypedMessage(p256PublicKey: publicKey, typedDataJson: reviewed.typedDataJson) }.value
         guard prepared.account.lowercased() == context.account.lowercased(), prepared.chainId == context.chainId,
@@ -258,8 +311,9 @@ final class WalletModel: ObservableObject {
         guard let enclave, !busy, stillApproved(), isCurrentDappContext(context) else {
             return (nil, String(localized: "This approval is no longer valid. Ask the site to try again."))
         }
-        busy = true
-        defer { busy = false }
+        guard let operation = beginOperation() else { return (nil, AccountStore.Failure.operationInProgress.localizedDescription) }
+        var submitted = false
+        defer { if !submitted { releaseOperation(operation) } }
         do {
             let publicKey = enclave.publicKey
             let prepared = try await Task.detached { try prepareAccountRedelegation(p256PublicKey: publicKey) }.value
@@ -268,7 +322,8 @@ final class WalletModel: ObservableObject {
             }
             let signature = try enclave.sign(prepared.signingMessage)
             let hash = try await Task.detached { try submitSigned(envelopeJson: prepared.envelopeJson, signature: signature, p256PublicKey: publicKey) }.value
-            Task.detached { await self.track(hash, label: String(localized: "Account upgrade"),
+            submitted = true
+            Task.detached { await self.track(hash, operation: operation, label: String(localized: "Account upgrade"),
                                              item: ActivityItem(kind: .sent, title: String(localized: "Account upgrade"), amount: nil, recipients: [])) }
             return (hash, nil)
         } catch { return (nil, WalletModel.ffiMessage(error)) }
@@ -324,40 +379,67 @@ final class WalletModel: ObservableObject {
     private func loadKey() {
         lastKeyAttempt = Date()
         do {
-            let acct = try EnclaveAccount.loadOrCreate(requireUserPresence: true)
+            // A deferred rename can deliver preferences after start() pinned
+            // the network. Apply them before account data claims that network.
+            try EnclaveAccount.prepareWalletLoad()
+            let defaults = UserDefaults.standard
+            let development = defaults.bool(forKey: "developerMode") && defaults.bool(forKey: "useDevelopmentNetwork")
+            let port = defaults.integer(forKey: "developmentNetworkPort")
+            selectNetwork(development: development, port: (1024...65535).contains(port) ? UInt16(port) : 18546)
+            try accountStore.load()
+            if enclave == nil { activateAccount() }
+        } catch { reportKeyError(error) }
+    }
+
+    private func activateAccount() {
+        #if DEBUG
+        if DesignPreview.on { loadPreview(); return }
+        #endif
+        guard let selected = accountStore.activeAccount else { return }
+        if !address.isEmpty { save() }
+        networkGeneration &+= 1
+        enclave = nil
+        address = ""
+        recoveryCode = ""
+        clearWalletAccountState()
+        do {
+            let acct = try EnclaveAccount.load(handleURL: accountStore.handleURL(for: selected.id), requireUserPresence: true)
             // Derive every identity value before publishing a replacement.
-            let nextAddress = try accountAddress(p256PublicKey: acct.publicKey)
+            let nextAddress = try accountAddress(p256PublicKey: acct.publicKey).lowercased()
             let nextRecoveryCode = try recoveryKeyCode(p256PublicKey: acct.publicKey)
-            if address != nextAddress {
-                networkGeneration &+= 1
-                clearWalletAccountState()
+            guard nextAddress == selected.address else {
+                throw AccountStore.Failure.handleMismatch
             }
             enclave = acct
             address = nextAddress
             recoveryCode = nextRecoveryCode
             keyError = nil
             loadSaved()
-            outgoingRecovery = PendingRecovery.load()
             loadTokens()
+            loadTokenChoices(chain: networkChainId)
             keyLabel = acct.isSecureEnclave ? String(localized: "Key in the Secure Enclave") : String(localized: "Simulator: software key (no Secure Enclave)")
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
-        } catch {
-            // A failed reload must not retain a signer whose persisted handle
-            // was replaced by migration.
-            invalidateWalletIdentity()
-            let locked = (error as NSError).code == Int(errSecInteractionNotAllowed)
-            if case EnclaveAccount.KeyError.migrationPending = error {
-                // The old handle is still moving (often: waiting for an
-                // unlock, poc-m3 2026-10-07) — not a key failure.
-                keyError = String(localized: "Your wallet is still moving over from Aether. Unlock this Mac to finish — your wallet is safe.")
-            } else if case EnclaveAccount.KeyError.keyUnavailable = error {
-                // The wallet exists but cannot be opened yet; retried from `refresh`.
-                keyError = String(localized: "Unlock this device to open your wallet. Your wallet is safe.")
-            } else {
-                keyError = locked ? String(localized: "Unlock this device to create your wallet key.") : String(localized: "Could not create the wallet key: \(error.localizedDescription)")
-            }
-            note("Key error: \(error.localizedDescription)")
+        } catch { reportKeyError(error) }
+    }
+
+    private func reportKeyError(_ error: Error) {
+        // A failed reload must not retain a signer whose persisted handle
+        // was replaced by migration.
+        invalidateWalletIdentity()
+        let locked = (error as NSError).code == Int(errSecInteractionNotAllowed)
+        if case EnclaveAccount.KeyError.migrationPending = error {
+            // The old handle is still moving; this is not a key failure.
+            keyError = String(localized: "Your wallet is still moving over from Aether. Unlock this Mac to finish — your wallet is safe.")
+        } else if case AccountStore.Failure.waitingForUnlock = error {
+            keyError = String(localized: "Unlock this device to open your wallet. Your wallet is safe.")
+        } else if case EnclaveAccount.KeyError.keyUnavailable = error {
+            keyError = String(localized: "Unlock this device to open your wallet. Your wallet is safe.")
+        } else if let failure = error as? AccountStore.Failure {
+            keyError = failure.errorDescription
+        } else {
+            keyError = locked ? String(localized: "Unlock this device to create your wallet key.") : String(localized: "Could not create the wallet key. Please try again.")
         }
+        note("Key error: \(error.localizedDescription)")
     }
 
 
@@ -367,6 +449,9 @@ final class WalletModel: ObservableObject {
     func migrationFinished(_ outcome: DataMigration.Outcome) {
         switch outcome {
         case .done, .noOldData:
+            // The account index may retain the same selected ID while its
+            // authoritative handle changes. Force its signer to reload.
+            invalidateWalletIdentity()
             loadKey()
             refresh()
         case .deferred, .failed, .waitingForUnlock, .running:
@@ -395,11 +480,13 @@ final class WalletModel: ObservableObject {
         verifyFailingSince = nil
         history = []
         activity = []
+        contacts = []
         linkedWallets = []
         incomingRecovery = nil
         outgoingRecovery = nil
         tokens = []
         sendToken = nil
+        tokenChoices = TokenChoices()
         paymentRequest = nil
         callRequest = nil
         connectRequest = nil
@@ -407,6 +494,12 @@ final class WalletModel: ObservableObject {
         resendRequest = nil
         registration = nil
         paperWords = nil
+        paperWordsInput = ""
+        sendTo = ""
+        sendAmount = "1"
+        guardianInput = ""
+        lostInput = ""
+        lastReconcile = .distantPast
         lastActivityHeight = nil
         activityCursors = [:]
         activityExhausted = []
@@ -469,7 +562,7 @@ final class WalletModel: ObservableObject {
     func selectNetwork(development: Bool, port: UInt16 = 18546) {
         guard !development || UserDefaults.standard.bool(forKey: "developerMode") else { return }
         if development == developmentNetwork && (!development || port == developmentPort) { return }
-        guard !busy else {
+        guard !busy, !operationGate.blocksAccountChange else {
             UserDefaults.standard.set(developmentNetwork, forKey: "useDevelopmentNetwork")
             if developmentNetwork { UserDefaults.standard.set(true, forKey: "developerMode") }
             note("Wait for the pending transaction before switching networks.")
@@ -512,15 +605,15 @@ final class WalletModel: ObservableObject {
     func setRecoveryKey() {
         guard let enclave else { return }
         let code = guardianInput.trimmingCharacters(in: .whitespacesAndNewlines), pk = enclave.publicKey
-        busy = true
+        guard let operation = beginOperation() else { return }
         Task.detached {
             do {
                 // Added next to any existing recovery keys (their threshold and delay stay).
                 let prepared = try prepareAddRecoveryKey(p256PublicKey: pk, recoveryCode: code)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                await self.track(h, label: "Recovery key set to \(code.prefix(12))…", item: ActivityItem(kind: .security, title: String(localized: "Recovery device added"), amount: nil))
-            } catch { await MainActor.run { self.note("Set recovery key failed: \(error)"); self.busy = false } }
+                await self.track(h, operation: operation, label: "Recovery key set to \(code.prefix(12))…", item: ActivityItem(kind: .security, title: String(localized: "Recovery device added"), amount: nil))
+            } catch { await MainActor.run { self.note("Set recovery key failed: \(error)"); self.releaseOperation(operation) } }
         }
     }
 
@@ -534,7 +627,7 @@ final class WalletModel: ObservableObject {
     func registerPaperKey() {
         guard let enclave, let words = paperWords else { return }
         let pk = enclave.publicKey
-        busy = true
+        guard let operation = beginOperation() else { return }
         Task.detached {
             do {
                 let code = try recoveryKeyCode(p256PublicKey: try paperKeyPublic(words: words))
@@ -542,8 +635,8 @@ final class WalletModel: ObservableObject {
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 await MainActor.run { self.paperWords = nil }
-                await self.track(h, label: "Recovery words registered as a recovery key", item: ActivityItem(kind: .security, title: String(localized: "Recovery words added"), amount: nil))
-            } catch { await MainActor.run { self.note("Registering recovery words failed: \(error)"); self.busy = false } }
+                await self.track(h, operation: operation, label: "Recovery words registered as a recovery key", item: ActivityItem(kind: .security, title: String(localized: "Recovery words added"), amount: nil))
+            } catch { await MainActor.run { self.note("Registering recovery words failed: \(error)"); self.releaseOperation(operation) } }
         }
     }
 
@@ -553,7 +646,7 @@ final class WalletModel: ObservableObject {
         guard let enclave else { return }
         let words = paperWordsInput.trimmingCharacters(in: .whitespacesAndNewlines), lost = lostInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let pk = enclave.publicKey, me = address, n = validators
-        busy = true
+        guard let operation = beginOperation() else { return }
         Task.detached {
             do {
                 let request = try prepareRecoveryTo(p256PublicKey: try paperKeyPublic(words: words), lostAccount: lost, to: me, validators: n)
@@ -562,10 +655,13 @@ final class WalletModel: ObservableObject {
                 let sig = try enclave.sign(prepared.signingMessage)                              // this Mac relays
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 let pending = PendingRecovery(request: request, readyAt: Date().addingTimeInterval(TimeInterval(request.delaySeconds)))
-                await MainActor.run { self.outgoingRecovery = pending; pending.save(); self.paperWordsInput = "" }
-                await self.track(h, label: "Recovery of \(lost.prefix(10))… proposed with recovery words; funds can move after \(pending.readyAt.formatted())",
+                await MainActor.run {
+                    pending.save(store: operation.store)
+                    if self.networkGeneration == operation.generation { self.outgoingRecovery = pending; self.paperWordsInput = "" }
+                }
+                await self.track(h, operation: operation, label: "Recovery of \(lost.prefix(10))… proposed with recovery words; funds can move after \(pending.readyAt.formatted())",
                                  item: ActivityItem(kind: .security, title: String(localized: "Recovery started for \(Short.address(lost))"), amount: nil))
-            } catch { await MainActor.run { self.note("Recovery with words failed: \(error)"); self.busy = false } }
+            } catch { await MainActor.run { self.note("Recovery with words failed: \(error)"); self.releaseOperation(operation) } }
         }
     }
 
@@ -575,7 +671,7 @@ final class WalletModel: ObservableObject {
     func recover() {
         guard let enclave else { return }
         let lost = lostInput.trimmingCharacters(in: .whitespacesAndNewlines), pk = enclave.publicKey, n = validators
-        busy = true
+        guard let operation = beginOperation() else { return }
         Task.detached {
             do {
                 let request = try prepareRecovery(p256PublicKey: pk, lostAccount: lost, validators: n)
@@ -584,10 +680,13 @@ final class WalletModel: ObservableObject {
                 let sig = try enclave.sign(prepared.signingMessage)           // relay from this account
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 let pending = PendingRecovery(request: request, readyAt: Date().addingTimeInterval(TimeInterval(request.delaySeconds)))
-                await MainActor.run { self.outgoingRecovery = pending; pending.save() }
-                await self.track(h, label: "Recovery of \(lost.prefix(10))… proposed; funds can move after \(pending.readyAt.formatted())",
+                await MainActor.run {
+                    pending.save(store: operation.store)
+                    if self.networkGeneration == operation.generation { self.outgoingRecovery = pending }
+                }
+                await self.track(h, operation: operation, label: "Recovery of \(lost.prefix(10))… proposed; funds can move after \(pending.readyAt.formatted())",
                                  item: ActivityItem(kind: .security, title: String(localized: "Recovery started for \(Short.address(lost))"), amount: nil))
-            } catch { await MainActor.run { self.note("Recovery failed: \(error)"); self.busy = false } }
+            } catch { await MainActor.run { self.note("Recovery failed: \(error)"); self.releaseOperation(operation) } }
         }
     }
 
@@ -595,7 +694,7 @@ final class WalletModel: ObservableObject {
     func finishRecovery() {
         guard let enclave, let pending = outgoingRecovery else { return }
         let pk = enclave.publicKey
-        busy = true
+        guard let operation = beginOperation() else { return }
         Task.detached {
             do {
                 let prepared = try prepareFinishRecovery(p256PublicKey: pk, request: pending.request)
@@ -603,18 +702,22 @@ final class WalletModel: ObservableObject {
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 // Keep the request until the chain confirms it ran: a revert (e.g. the
                 // delay counted from inclusion, not from submission) can be retried.
-                let ok = await self.track(h, label: "Recovered \(Wei.format(pending.request.valueWei)) \(Brand.networkCoinTicker) from \(pending.request.lost.prefix(10))…",
+                let ok = await self.track(h, operation: operation, label: "Recovered \(Wei.format(pending.request.valueWei)) \(Brand.networkCoinTicker) from \(pending.request.lost.prefix(10))…",
                                  item: ActivityItem(kind: .received, title: String(localized: "Recovered from \(Short.address(pending.request.lost))"),
                                                     amount: Double(Wei.format(pending.request.valueWei))))
                 await MainActor.run {
                     if ok {
-                        self.outgoingRecovery = nil
-                        PendingRecovery.clear()
-                    } else {
+                        if PendingRecovery.load(store: operation.store)?.request == pending.request {
+                            PendingRecovery.clear(store: operation.store)
+                        }
+                        if self.networkGeneration == operation.generation && self.outgoingRecovery?.request == pending.request {
+                            self.outgoingRecovery = nil
+                        }
+                    } else if self.networkGeneration == operation.generation {
                         self.note("The recovery did not run yet (still inside its delay, or cancelled by the owner). You can try again.")
                     }
                 }
-            } catch { await MainActor.run { self.note("Finishing recovery failed: \(error)"); self.busy = false } }
+            } catch { await MainActor.run { self.note("Finishing recovery failed: \(error)"); self.releaseOperation(operation) } }
         }
     }
 
@@ -622,15 +725,15 @@ final class WalletModel: ObservableObject {
     func cancelIncomingRecovery() {
         guard let enclave else { return }
         let pk = enclave.publicKey
-        busy = true
+        guard let operation = beginOperation() else { return }
         Task.detached {
             do {
                 let prepared = try prepareCancelRecovery(p256PublicKey: pk)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 await MainActor.run { self.incomingRecovery = nil }
-                await self.track(h, label: "Cancelled a recovery of this account", item: ActivityItem(kind: .security, title: String(localized: "Recovery cancelled"), amount: nil))
-            } catch { await MainActor.run { self.note("Cancel failed: \(error)"); self.busy = false } }
+                await self.track(h, operation: operation, label: "Cancelled a recovery of this account", item: ActivityItem(kind: .security, title: String(localized: "Recovery cancelled"), amount: nil))
+            } catch { await MainActor.run { self.note("Cancel failed: \(error)"); self.releaseOperation(operation) } }
         }
     }
 
@@ -640,19 +743,35 @@ final class WalletModel: ObservableObject {
     func removeRecoveryKeys() {
         guard let enclave else { return }
         let pk = enclave.publicKey
-        busy = true
+        guard let operation = beginOperation() else { return }
         Task.detached {
             do {
                 let prepared = try prepareRemoveRecoveryKeys(p256PublicKey: pk)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 await MainActor.run { self.incomingRecovery = nil }
-                await self.track(h, label: "Removed every recovery key", item: ActivityItem(kind: .security, title: String(localized: "Recovery keys removed"), amount: nil))
-            } catch { await MainActor.run { self.note("Remove recovery keys failed: \(error)"); self.busy = false } }
+                await self.track(h, operation: operation, label: "Removed every recovery key", item: ActivityItem(kind: .security, title: String(localized: "Recovery keys removed"), amount: nil))
+            } catch { await MainActor.run { self.note("Remove recovery keys failed: \(error)"); self.releaseOperation(operation) } }
         }
     }
 
     #if os(macOS)
+    /// Local node recovery uses the same owner-presence Secure Enclave path
+    /// as wallet actions. The signature stays local and is never a transaction.
+    func authorizeNodeKeyRebind(validatorAddress: String, typedAddress: String,
+                                dataDirectory: String) async throws -> NodeKeyRebind.Approval {
+        guard let enclave, enclave.isSecureEnclave, enclave.requiresUserPresence,
+              keyError == nil, !busy else { throw NodeKeyRebind.Refusal.ownerKeyUnavailable }
+        busy = true
+        defer { busy = false }
+        return try await Task.detached {
+            try NodeKeyRebind.authorize(validatorAddress: validatorAddress, typedAddress: typedAddress,
+                                        dataDirectory: dataDirectory) { message in
+                _ = try enclave.sign(message)
+            }
+        }.value
+    }
+
     /// Register this Mac as a voting node, operated by this wallet (one Touch ID).
     /// Apple's DeviceCheck token proves it is a real Mac that never registered
     /// before: one Mac, one voting node.
@@ -664,7 +783,7 @@ final class WalletModel: ObservableObject {
             return
         }
         let pk = enclave.publicKey
-        busy = true
+        guard let operation = beginOperation() else { return }
         registration = .working
         Task.detached {
             do {
@@ -673,14 +792,17 @@ final class WalletModel: ObservableObject {
                 let prepared = try prepareRegisterNode(p256PublicKey: pk, deviceToken: token, validatorKey: c.validatorKey, nodeId: c.nodeId, beaconer: c.beaconer, ownership: ownership)
                 let sig = try enclave.sign(prepared.signingMessage)
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
-                let ok = await self.track(h, label: "This Mac is registered as a voting node", item: ActivityItem(kind: .security, title: String(localized: "Mac joined as a voting node"), amount: nil))
-                await MainActor.run { self.registration = ok ? nil : .failed(String(localized: "The registration did not go through. Try again.")) }
+                let ok = await self.track(h, operation: operation, label: "This Mac is registered as a voting node", item: ActivityItem(kind: .security, title: String(localized: "Mac joined as a voting node"), amount: nil))
+                await MainActor.run {
+                    guard self.networkGeneration == operation.generation else { return }
+                    self.registration = ok ? nil : .failed(String(localized: "The registration did not go through. Try again."))
+                }
             } catch {
-                let reason = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                let reason = (error as? NodeRegistrationError)?.errorDescription ?? WalletModel.ffiMessage(error)
                 await MainActor.run {
                     self.note("Voting-node registration failed: \(error)")
                     self.registration = .failed(reason)
-                    self.busy = false
+                    self.releaseOperation(operation)
                 }
             }
         }
@@ -810,15 +932,11 @@ final class WalletModel: ObservableObject {
         }
     }
 
-    private var tokensKey: String { "tokenHoldings.\(networkChainId).\(address)" }
+    private var tokensKey: String { dataStore.key(.tokenHoldings) }
 
     /// The last token balances read for this account, shown until the next read.
     private func loadTokens() {
-        if networkChainId == 7780, UserDefaults.standard.object(forKey: tokensKey) == nil,
-           let old = UserDefaults.standard.data(forKey: "tokenHoldings.\(address)") {
-            UserDefaults.standard.set(old, forKey: tokensKey)
-        }
-        tokens = UserDefaults.standard.data(forKey: tokensKey).flatMap { try? JSONDecoder().decode([TokenHolding].self, from: $0) } ?? []
+        tokens = dataStore.load(.tokenHoldings, as: [TokenHolding].self) ?? []
         tokenCatalog = UserDefaults.standard.data(forKey: "tokenCatalog.\(networkChainId)")
             .flatMap { try? JSONDecoder().decode(TokenCatalog.self, from: $0) } ?? TokenCatalog()
     }
@@ -886,14 +1004,16 @@ final class WalletModel: ObservableObject {
 
     private func saveTokenChoices() {
         guard let chain = status?.chainId else { return }
-        UserDefaults.standard.set(try? JSONEncoder().encode(tokenChoices), forKey: "tokenChoices.\(chain)")
+        try? AccountDataStore(chainID: chain, address: address).save(tokenChoices, to: .tokenChoices)
     }
 
     private func loadTokenChoices(chain: UInt64) {
+        guard !address.isEmpty else { return }
         guard tokenChoicesForChain != chain else { return }
         tokenChoicesForChain = chain
-        tokenChoices = UserDefaults.standard.data(forKey: "tokenChoices.\(chain)")
-            .flatMap { try? JSONDecoder().decode(TokenChoices.self, from: $0) } ?? TokenChoices()
+        let store = AccountDataStore(chainID: chain, address: address)
+        store.migrateLegacy(isPrimary: accountStore.activeAccount?.id == 1)
+        tokenChoices = store.load(.tokenChoices, as: TokenChoices.self) ?? TokenChoices()
     }
 
     /// Verification that keeps failing on certificates means the chain moved on
@@ -969,12 +1089,12 @@ final class WalletModel: ObservableObject {
     /// Sign and send a contract call a page asked for (Touch ID), then tell the page.
     func approveCall() {
         guard let enclave, let r = callRequest, let wei = Wei.from(aeth: r.value) else { return }
+        guard let operation = beginOperation() else { return }
         callRequest = nil
         let pk = enclave.publicKey
         // A call to a known token contract (an approval, a mint…) marks it as
         // moved by this wallet's own action, for the display policy.
         let token = r.to.isEmpty ? nil : tokenCatalog.tokens[r.to.lowercased()].map { _ in r.to.lowercased() }
-        busy = true
         Task.detached {
             do {
                 let prepared = try prepareCall(p256PublicKey: pk, to: r.to, valueWei: wei, dataHex: r.data, gasLimit: r.gas)
@@ -983,7 +1103,7 @@ final class WalletModel: ObservableObject {
                 let title = r.to.isEmpty ? String(localized: "Deployed a contract") : String(localized: "Called \(Short.address(r.to))")
                 var item = ActivityItem(kind: .sent, title: title, amount: nil, token: token)
                 item.nonce = prepared.nonce
-                let outcome = await self.follow(h, label: title, item: item)
+                let outcome = await self.follow(h, operation: operation, label: title, item: item)
                 await MainActor.run {
                     if let cb = r.callback {
                         var items = ["tx": h, "status": TxTrack.callbackStatus(outcome)]
@@ -991,7 +1111,7 @@ final class WalletModel: ObservableObject {
                         self.reply(cb, items)
                     }
                 }
-            } catch { await MainActor.run { self.note("Call failed: \(error)"); self.busy = false } }
+            } catch { await MainActor.run { self.note("Call failed: \(error)"); self.releaseOperation(operation) } }
         }
     }
 
@@ -1006,12 +1126,12 @@ final class WalletModel: ObservableObject {
     func faucet() {
         guard developmentNetwork && UserDefaults.standard.bool(forKey: "developerMode") else { return }
         let addr = address
-        busy = true
+        guard let operation = beginOperation() else { return }
         Task.detached {
             do {
                 let h = try devnetFaucet(to: addr, valueWei: Wei.from(aeth: "10")!)
-                await self.track(h, label: "Faucet 10 \(Brand.networkCoinTicker)", item: ActivityItem(kind: .received, title: String(localized: "Test \(Brand.networkCoinTicker) from the faucet"), amount: 10))
-            } catch { await MainActor.run { self.note("Faucet failed: \(error)"); self.busy = false } }
+                await self.track(h, operation: operation, label: "Faucet 10 \(Brand.networkCoinTicker)", item: ActivityItem(kind: .received, title: String(localized: "Test \(Brand.networkCoinTicker) from the faucet"), amount: 10))
+            } catch { await MainActor.run { self.note("Faucet failed: \(error)"); self.releaseOperation(operation) } }
         }
     }
 
@@ -1035,7 +1155,7 @@ final class WalletModel: ObservableObject {
         // Read main-actor state before detaching; the closure only signs.
         let validatorsNow = validators
         let resending = paymentRequest == nil ? resend : nil
-        busy = true
+        guard let operation = beginOperation() else { return AccountStore.Failure.operationInProgress.localizedDescription }
         let refused: String? = await Task.detached { [weak self] () -> String? in
             guard let self else { return nil }
             do {
@@ -1072,7 +1192,7 @@ final class WalletModel: ObservableObject {
                 let tracked = item
                 Task.detached { [weak self] in
                     guard let self else { return }
-                    let outcome = await self.follow(h, label: label, item: tracked)
+                    let outcome = await self.follow(h, operation: operation, label: label, item: tracked)
                     // A web page that asked for this payment hears back (https
                     // only). "failed" only on a chain fact; a drop is
                     // "not_included", worded as not recorded yet (round 2).
@@ -1087,14 +1207,17 @@ final class WalletModel: ObservableObject {
                 }
                 return nil
             } catch {
-                await MainActor.run { self.note("Send failed: \(error)"); self.busy = false }
+                await MainActor.run { self.note("Send failed: \(error)"); self.releaseOperation(operation) }
                 return WalletModel.ffiMessage(error)
             }
         }.value
         if refused == nil {
             // Only a submitted send consumes the payment request; a refusal
             // keeps it so the sheet can ask again under the fresh quote.
-            await MainActor.run { self.paymentRequest = nil; self.resend = nil }
+            await MainActor.run {
+                guard self.networkGeneration == operation.generation else { return }
+                self.paymentRequest = nil; self.resend = nil
+            }
         }
         return refused
     }
@@ -1121,7 +1244,7 @@ final class WalletModel: ObservableObject {
             return e.errorDescription
         } catch {
             note("Not sent — \(error)")
-            return "\(error)"
+            return WalletModel.ffiMessage(error)
         }
         guard let holding = current, WeiMath.compare(intent.baseUnits, holding.balance) <= 0 else {
             note("Not sent — this wallet now holds less than the confirmed amount")
@@ -1133,7 +1256,7 @@ final class WalletModel: ObservableObject {
                                 amount: nil, recipients: [intent.recipient.lowercased()], token: intent.token.address)
         let pk = enclave.publicKey
         sendToken = nil
-        busy = true
+        guard let operation = beginOperation() else { return AccountStore.Failure.operationInProgress.localizedDescription }
         Task.detached {
             do {
                 let prepared = try prepareCall(p256PublicKey: pk, to: intent.token.address, valueWei: "0", dataHex: data, gasLimit: 100_000)
@@ -1141,9 +1264,9 @@ final class WalletModel: ObservableObject {
                 let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
                 var sent = item
                 sent.nonce = prepared.nonce
-                await self.track(h, label: "Sent \(shown) \(symbol) to \(TokenLabel.short(intent.recipient)) (nonce \(prepared.nonce))", item: sent)
+                await self.track(h, operation: operation, label: "Sent \(shown) \(symbol) to \(TokenLabel.short(intent.recipient)) (nonce \(prepared.nonce))", item: sent)
                 await MainActor.run { self.refreshTokens(force: true) }
-            } catch { await MainActor.run { self.note("Token send failed: \(error)"); self.busy = false } }
+            } catch { await MainActor.run { self.note("Token send failed: \(error)"); self.releaseOperation(operation) } }
         }
         return nil
     }
@@ -1167,29 +1290,27 @@ final class WalletModel: ObservableObject {
     /// reflection `WalletError.Network(message: …)` would print).
     nonisolated static func ffiMessage(_ e: Error) -> String {
         switch e {
-        // The core's own words are English and technical: a Korean screen
-        // gets one plain sentence per kind instead of a mixed-language line.
-        case WalletError.Network(let m):
-            return AppLanguage.korean ? "네트워크에 연결하지 못했어요. 잠시 뒤 다시 해 주세요." : m
-        case WalletError.Invalid(let m):
-            return AppLanguage.korean ? "입력한 내용이 올바르지 않아요. 주소와 금액을 다시 확인해 주세요." : m
-        case WalletError.Rejected(let m):
-            return AppLanguage.korean ? "네트워크가 이 거래를 받지 않았어요. 잔액과 수수료를 확인하고 다시 해 주세요." : m
-        case WalletError.Verification(let m):
-            return AppLanguage.korean ? "이 기기에서 확인하지 못했어요. 잠시 뒤 다시 해 주세요." : m
-        case WalletError.FeeChanged(let m):
-            return (AppLanguage.korean
-                ? "네트워크 수수료가 바뀌었어요. 보내지 않았으니 새 수수료를 확인하고 다시 보내 주세요."
-                : "The network fee changed — \(m). Nothing was sent; check the new fee and send again.")
+        // The core's diagnostics stay in logs. Screens use the catalog's
+        // plain sentence for each kind, in the app's selected language.
+        case WalletError.Network:
+            return String(localized: "Could not connect to the network. Please try again shortly.")
+        case WalletError.Invalid:
+            return String(localized: "The details are not valid. Check the address and amount.")
+        case WalletError.Rejected:
+            return String(localized: "The network did not accept this transaction. Check your balance and fee, then try again.")
+        case WalletError.Verification:
+            return String(localized: "This device could not verify it. Please try again shortly.")
+        case WalletError.FeeChanged:
+            return String(localized: "The network fee changed. Nothing was sent; check the new fee and send again.")
         default:
-            return (e as? LocalizedError)?.errorDescription ?? "\(e)"
+            return String(localized: "Could not complete this step. Please try again.")
         }
     }
 
     /// Wait for finality; returns whether the tx succeeded (see `follow`).
     @discardableResult
-    private func track(_ hash: String, label: String, item: ActivityItem) async -> Bool {
-        await follow(hash, label: label, item: item) == .done
+    private func track(_ hash: String, operation: Operation, label: String, item: ActivityItem) async -> Bool {
+        await follow(hash, operation: operation, label: label, item: item) == .done
     }
 
     /// Follow a submitted transaction until a chain fact settles it. While it
@@ -1201,11 +1322,17 @@ final class WalletModel: ObservableObject {
     /// nonce used by another transaction, makes it done or failed. A later
     /// receipt supersedes a drop: polling continues, and the chain-history
     /// refresh and `reconcileUnresolved` pick it up after this returns.
-    private func follow(_ hash: String, label: String, item: ActivityItem) async -> TxTrack.Row {
+    private func follow(_ hash: String, operation: Operation, label: String, item: ActivityItem) async -> TxTrack.Row {
+        let generation = operation.generation
+        let owner = operation.owner
         await MainActor.run {
+            guard self.networkGeneration == generation else { return }
             self.note("\(label) submitted \(hash.prefix(14))…")
-            self.activity.insert(item.with(state: .pending).with(hash: hash), at: 0)
+            var owned = item.with(state: .pending).with(hash: hash)
+            owned.owner = owner
+            self.activity.insert(owned, at: 0)
             self.save()
+            self.operationGate.submitted(operation.token)
         }
         let start = Date()
         var shownWhy: String?
@@ -1213,6 +1340,7 @@ final class WalletModel: ObservableObject {
         var last: TxStatus?
         var lastRow = TxTrack.Row.pending
         while Date().timeIntervalSince(start) < Self.trackLimit {
+            guard networkGeneration == generation else { releaseOperation(operation); return .notIncluded }
             let st = try? txStatus(txHash: hash)
             if st == nil || st?.state == "unknown" { unknownSince = unknownSince ?? Date() } else { unknownSince = nil }
             let row = TxTrack.row(state: st?.state, success: st?.receipt?.success,
@@ -1221,13 +1349,14 @@ final class WalletModel: ObservableObject {
             switch row {
             case .done, .failed:
                 await MainActor.run {
+                    guard self.networkGeneration == generation else { return }
                     self.settle(item.id, state: row == .done ? .done : .failed, why: row == .done ? nil : st.map(TxStatusText.sentence))
                     if let r = st?.receipt {
                         self.note("\(label) finalized in block \(r.height) (\(r.success ? "success" : "failed"), gas \(r.gasUsed)\(r.stateFeeWei != "0" ? ", state fee \(Amount.fee(r.stateFeeWei))" : ""))")
                     } else {
                         self.note("\(label): \(st?.detail ?? "settled on chain")")
                     }
-                    self.busy = false
+                    self.releaseOperation(operation)
                     self.refresh()
                 }
                 return row
@@ -1235,28 +1364,33 @@ final class WalletModel: ObservableObject {
                 if let st, lastRow != .notIncluded || TxStatusText.sentence(st) != shownWhy {
                     shownWhy = TxStatusText.sentence(st)
                     await MainActor.run {
+                        guard self.networkGeneration == generation else { return }
                         self.settle(item.id, state: .notIncluded, why: TxStatusText.sentence(st), canResend: st.canResend)
                         self.note("\(label): not included yet — \(st.detail)")
-                        self.busy = false
+                        self.releaseOperation(operation)
                     }
                 }
             case .pending:
                 if let st, st.state == "pending", st.reason != nil || lastRow == .notIncluded, TxStatusText.sentence(st) != shownWhy {
                     shownWhy = TxStatusText.sentence(st)
-                    await MainActor.run { self.explain(item.id, why: TxStatusText.sentence(st)); self.note("\(label): \(st.detail)") }
+                    await MainActor.run {
+                        guard self.networkGeneration == generation else { return }
+                        self.explain(item.id, why: TxStatusText.sentence(st)); self.note("\(label): \(st.detail)")
+                    }
                 }
             }
             lastRow = row
             let waited = Date().timeIntervalSince(start)
-            if waited > 30 { await MainActor.run { self.busy = false } }
+            if waited > 30 { await MainActor.run { if self.networkGeneration == generation { self.releaseOperation(operation) } } }
             try? await Task.sleep(nanoseconds: waited < 30 ? 500_000_000 : 3_000_000_000)
         }
         // Out of time without a chain fact: not on chain yet — never "failed".
         await MainActor.run {
+            guard self.networkGeneration == generation else { return }
             self.settle(item.id, state: .notIncluded, why: last.map(TxStatusText.sentence) ?? TxTrack.notIncludedNote,
                         canResend: last?.canResend ?? false)
             self.note("\(label): not on chain after \(Int(Self.trackLimit / 60)) minutes; it stays open until the chain settles it")
-            self.busy = false
+            self.releaseOperation(operation)
         }
         return .notIncluded
     }
@@ -1266,6 +1400,7 @@ final class WalletModel: ObservableObject {
     /// row kept them — and settled only on a chain fact. A few per refresh.
     private func reconcileUnresolved() {
         let own = address
+        let generation = networkGeneration
         guard !own.isEmpty, Date().timeIntervalSince(lastReconcile) > 30 else { return }
         lastReconcile = Date()
         let open = activity.filter {
@@ -1279,7 +1414,7 @@ final class WalletModel: ObservableObject {
                 guard let st else { continue }
                 let row = TxTrack.row(state: st.state, success: st.receipt?.success, unknownFor: 0)
                 await MainActor.run {
-                    guard let self else { return }
+                    guard let self, self.networkGeneration == generation else { return }
                     switch row {
                     case .done, .failed: self.settle(id, state: row == .done ? .done : .failed, why: row == .done ? nil : TxStatusText.sentence(st))
                     case .notIncluded: self.settle(id, state: .notIncluded, why: TxStatusText.sentence(st), canResend: st.canResend)
@@ -1312,18 +1447,30 @@ final class WalletModel: ObservableObject {
 
     // MARK: dashboard data (kept per account in UserDefaults)
 
-    private var historyKey: String { "balanceHistory.\(networkChainId).\(address)" }
-    private var activityKey: String { "activity.\(networkChainId).\(address)" }
-    private var linkedKey: String { "linkedWallets.\(address)" }
+    private var dataStore: AccountDataStore { AccountDataStore(chainID: networkChainId, address: address) }
+    private var historyKey: String { dataStore.key(.balanceHistory) }
+    private var activityKey: String { dataStore.key(.activity) }
+    private var linkedKey: String { dataStore.key(.linkedWallets) }
+
+    func saveContact(_ contact: WalletContact) {
+        guard !address.isEmpty else { return }
+        if let row = contacts.firstIndex(where: { $0.id == contact.id }) { contacts[row] = contact }
+        else { contacts.append(contact) }
+        try? dataStore.save(contacts, to: .contacts)
+    }
+
+    func removeContact(_ id: UUID) {
+        contacts.removeAll { $0.id == id }
+        try? dataStore.save(contacts, to: .contacts)
+    }
 
     private func loadSaved() {
+        guard !address.isEmpty else { return }
         let d = UserDefaults.standard
-        if networkChainId == 7780 {
-            if d.object(forKey: historyKey) == nil, let old = d.data(forKey: "balanceHistory.\(address)") { d.set(old, forKey: historyKey) }
-            if d.object(forKey: activityKey) == nil, let old = d.data(forKey: "activity.\(address)") { d.set(old, forKey: activityKey) }
-        }
-        history = d.data(forKey: historyKey).flatMap { try? JSONDecoder().decode([BalancePoint].self, from: $0) } ?? []
-        activity = d.data(forKey: activityKey).flatMap { try? JSONDecoder().decode([ActivityItem].self, from: $0) } ?? []
+        let selected = accountStore.activeDataStore(chainID: networkChainId) ?? dataStore
+        selected.migrateLegacy(isPrimary: accountStore.activeAccount?.id == 1)
+        history = selected.load(.balanceHistory, as: [BalancePoint].self) ?? []
+        activity = selected.load(.activity, as: [ActivityItem].self) ?? []
         // Backups from the 7780 chain carry reward times as seconds where the
         // feed wants milliseconds ("last one 56y ago"): scale those back up so
         // the day a payment happened is the day it happened.
@@ -1331,11 +1478,14 @@ final class WalletModel: ObservableObject {
             let ts = item.date.timeIntervalSince1970
             return (ts > 0 && ts < Double(Timestamp.secondsEraBound) / 1_000) ? item.with(date: Date(timeIntervalSince1970: ts * 1_000)) : item
         }
-        linkedWallets = d.stringArray(forKey: linkedKey) ?? []
+        linkedWallets = selected.object(.linkedWallets) as? [String] ?? []
+        contacts = selected.load(.contacts, as: [WalletContact].self) ?? []
+        outgoingRecovery = PendingRecovery.load(store: selected)
         _ = sitePermissions.load(defaults: d)
     }
 
     private func save() {
+        guard !address.isEmpty else { return }
         let d = UserDefaults.standard
         d.set(try? JSONEncoder().encode(history), forKey: historyKey)
         d.set(try? JSONEncoder().encode(Array(activity.prefix(500))), forKey: activityKey)
@@ -1396,7 +1546,8 @@ final class WalletModel: ObservableObject {
                 } catch {
                     // Keep the last successful view on screen, but say why the
                     // list may be incomplete (an old node, a node that is gone).
-                    failures.append(HistoryFailure.classify(message: WalletModel.ffiMessage(error)))
+                    // Classify the backend fact before turning it into display copy.
+                    failures.append(HistoryFailure.classify(message: String(describing: error)))
                 }
             }
             let fetchedPages = pages
@@ -1418,7 +1569,7 @@ final class WalletModel: ObservableObject {
                     }
                     self.activityHistoryStart = max(self.activityHistoryStart ?? 0, page.historyStart)
                     if !older {
-                        let noticeKey = "incomingNotice.\(self.networkChainId).\(key)"
+                        let noticeKey = self.dataStore.key(.incomingNotice) + (key == own.lowercased() ? "" : ".\(key)")
                         var notice = UserDefaults.standard.data(forKey: noticeKey).flatMap { try? JSONDecoder().decode(IncomingNoticeState.self, from: $0) }
                         if notice == nil {
                             notice = IncomingNoticeState(height: page.entries.map(\.height).max() ?? page.indexedHeight,
@@ -1667,17 +1818,15 @@ struct PendingRecovery {
 
     var isReady: Bool { Date() >= readyAt }
 
-    private static let key = "pendingRecovery"
-
-    func save() {
+    func save(store: AccountDataStore) {
         let r = request
         let d: [String: Any] = ["lost": r.lost, "to": r.to, "value": r.valueWei, "nonce": r.guardianNonce, "index": Int(r.guardianIndex),
                                 "delay": r.delaySeconds, "message": r.message.base64EncodedString(), "readyAt": readyAt.timeIntervalSince1970]
-        UserDefaults.standard.set(d, forKey: Self.key)
+        store.set(d, for: .pendingRecovery)
     }
 
-    static func load() -> PendingRecovery? {
-        guard let d = UserDefaults.standard.dictionary(forKey: key), let lost = d["lost"] as? String, let to = d["to"] as? String,
+    static func load(store: AccountDataStore) -> PendingRecovery? {
+        guard let d = store.object(.pendingRecovery) as? [String: Any], let lost = d["lost"] as? String, let to = d["to"] as? String,
               let value = d["value"] as? String, let nonce = d["nonce"] as? UInt64, let index = d["index"] as? Int,
               let delay = d["delay"] as? UInt64, let msg = (d["message"] as? String).flatMap({ Data(base64Encoded: $0) }),
               let ready = d["readyAt"] as? Double else { return nil }
@@ -1685,7 +1834,7 @@ struct PendingRecovery {
         return PendingRecovery(request: r, readyAt: Date(timeIntervalSince1970: ready))
     }
 
-    static func clear() { UserDefaults.standard.removeObject(forKey: key) }
+    static func clear(store: AccountDataStore) { store.remove(.pendingRecovery) }
 }
 
 extension TxStatusText {
@@ -1746,12 +1895,23 @@ extension WalletModel {
     /// Design preview only (DesignPreview.loadPreview): the sample state whose
     /// setters are private to this file.
     func loadPreviewExtras() {
-        breakdown = try? BalanceBreakdown.decode("""
+        let secondary = accountStore.activeAccount?.id == 2
+        let primaryBreakdown = """
             {"proof_rewards_wei":"2500000000000000000","node_rewards_wei":"0","faucet_wei":"10000000000000000000",
              "received_wei":"0","unwrapped_wei":"0","sent_wei":"0","fees_wei":"42000000000000",
              "total_in_wei":"12500000000000000000","total_out_wei":"42000000000000","balance_wei":"12500000000000000000",
              "difference_wei":"42000000000000","itemizes_completely":false,"rows":5}
-            """)
+            """
+        let secondaryBreakdown = """
+            {"proof_rewards_wei":"0","node_rewards_wei":"0","faucet_wei":"0",
+             "received_wei":"3250000000000000000","unwrapped_wei":"0","sent_wei":"0","fees_wei":"0",
+             "total_in_wei":"3250000000000000000","total_out_wei":"0","balance_wei":"3250000000000000000",
+             "difference_wei":"0","itemizes_completely":true,"rows":1}
+            """
+        breakdown = DesignPreview.variant == "empty" ? nil : (try? BalanceBreakdown.decode(secondary ? secondaryBreakdown : primaryBreakdown))
+        contacts = [WalletContact(name: secondary ? String(localized: "Account \(1)") : String(localized: "Account \(2)"),
+                                  address: secondary ? DesignPreview.primaryAddress : DesignPreview.secondaryAddress)]
+        incomingRecovery = nil
         sitePermissions.grant(origin: "https://eastsea.xyz", address: address)
         if UserDefaults.standard.string(forKey: "previewIncomingRecovery") == "1" {
             incomingRecovery = RecoveryStatus(guardians: 1, threshold: 1, delaySeconds: 172_800, pending: true,

@@ -18,8 +18,8 @@ check(BlockDataLocation.keepInternal.allSatisfy { KeySafety.isKey("follow/" + $0
 // A chosen block-data folder that already holds keys is refused.
 check(KeySafety.keysFound(in: ["follow", "validator.key", "x"]) == ["validator.key"], "keys found at the top of a chosen folder")
 check(KeySafety.keysFound(in: ["follow", "archive", ".DS_Store"]).isEmpty, "a clean folder")
-check(KeySafety.keysRefusal(found: ["validator.key"], ko: true)?.contains("키는 이 Mac에") == true, "plain refusal")
-check(KeySafety.keysRefusal(found: [], ko: true) == nil, "no keys, no refusal")
+check(KeySafety.keysRefusal(found: ["validator.key"], locale: walletTestLocale("ko"), bundle: walletTestBundle("ko"))?.contains("키는 이 Mac에") == true, "plain refusal")
+check(KeySafety.keysRefusal(found: [], locale: walletTestLocale("ko"), bundle: walletTestBundle("ko")) == nil, "no keys, no refusal")
 // The key folder itself must be on the internal disk.
 check(KeySafety.keyDirAllowed(path: "/Users/me/Library/Application Support/EastSea/node", isInternal: true), "internal: fine")
 check(!KeySafety.keyDirAllowed(path: "/Volumes/SSD/EastSea/node", isInternal: false), "an external volume is refused")
@@ -30,13 +30,18 @@ let present = ["validator.key", "node-account.key", "follow/wallet-node.key", "n
 check(KeySafety.backupExclusions(present: present) == ["devicecheck-token", "follow/wallet-node.key", "node-account.key", "validator.key"],
       "exactly the keys are excluded from Time Machine")
 let home = "/Users/me"
-check(KeySafety.iCloudRefusal(path: "/Users/me/Documents/Node", home: home, ubiquitous: true, ko: false) != nil,
+check(KeySafety.iCloudRefusal(path: "/Users/me/Documents/Node", home: home, ubiquitous: true, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil,
       "an iCloud-synced Documents is refused")
-check(KeySafety.iCloudRefusal(path: "/Users/me/Desktop/x", home: home, ubiquitous: true, ko: true) != nil, "and Desktop")
-check(KeySafety.iCloudRefusal(path: "/Users/me/Documents/Node", home: home, ubiquitous: false, ko: false) == nil,
+check(KeySafety.iCloudRefusal(path: "/Users/me/Desktop/x", home: home, ubiquitous: true, locale: walletTestLocale("ko"), bundle: walletTestBundle("ko")) != nil, "and Desktop")
+check(KeySafety.iCloudRefusal(path: "/Users/me/Documents/Node", home: home, ubiquitous: false, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil,
       "Documents without iCloud sync is fine")
-check(KeySafety.iCloudRefusal(path: "/Users/me/Library/Mobile Documents/com~apple~CloudDocs/x", home: home, ubiquitous: true, ko: false) != nil,
+check(KeySafety.iCloudRefusal(path: "/Users/me/Library/Mobile Documents/com~apple~CloudDocs/x", home: home, ubiquitous: true, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) != nil,
       "iCloud Drive itself is refused")
-check(KeySafety.iCloudRefusal(path: "/Volumes/SSD/x", home: home, ubiquitous: false, ko: false) == nil, "an external disk is not iCloud")
-check(KeySafety.iCloudRefusal(path: "/Users/me/Documents-old/x", home: home, ubiquitous: false, ko: false) == nil, "a look-alike folder is not Documents")
+check(KeySafety.iCloudRefusal(path: "/Volumes/SSD/x", home: home, ubiquitous: false, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil, "an external disk is not iCloud")
+check(KeySafety.iCloudRefusal(path: "/Users/me/Documents-old/x", home: home, ubiquitous: false, locale: walletTestLocale("en"), bundle: walletTestBundle("en")) == nil, "a look-alike folder is not Documents")
+check(KeySafety.keysRefusal(found: ["validator.key"], locale: walletTestLocale("ja"), bundle: walletTestBundle("ja"))
+      == "このフォルダにはノードのキー（validator.key）があります。キーはこのMacだけに保管してください。キーのない空のフォルダを選んでください。", "Japanese key-folder refusal")
+check(KeySafety.iCloudRefusal(path: "/Users/me/Documents/Node", home: home, ubiquitous: true,
+                           locale: walletTestLocale("ja"), bundle: walletTestBundle("ja"))
+      == "iCloudで同期するフォルダには保存できません。別のMacにコピーができるためです。別の場所を選んでください。", "Japanese iCloud refusal")
 print("OK key-safety")

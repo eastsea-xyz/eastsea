@@ -75,6 +75,7 @@ pub enum IlError {
 
 impl InclusionList {
     pub fn sign(key: &ed25519::PrivateKey, member: u64, height: u64, txs: Vec<TxEnvelope>) -> Self {
+        crate::key_binding::check_process();
         let sig = key.sign(IL_NAMESPACE, &signing_message(height, member, &txs));
         InclusionList { height, member, txs, signature: hex::encode(sig.encode()) }
     }

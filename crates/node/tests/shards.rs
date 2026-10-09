@@ -21,6 +21,7 @@ use aether_node::prune::{self, Retention};
 use aether_node::rpc::{self, RpcState};
 use aether_node::shards::{self, Shards};
 use aether_node::store::Store;
+use aether_test_support::Port;
 use aether_state::mmr::ERA_LEN;
 use aether_types::{Bytes, FeeVector, GasVector, TxEnvelope, U256};
 use commonware_codec::Encode;
@@ -29,6 +30,9 @@ use commonware_cryptography::{ed25519, Signer as Ed25519Signer};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+#[path = "common/rpc.rs"]
+mod test_rpc;
 
 const CHAIN: u64 = 7_793;
 const MACS: u8 = 4;
@@ -264,11 +268,12 @@ fn candidates_hold_assigned_shards_and_pruned_nodes_serve_them() {
 
     // 3. The pruned node holds shards of the pruned era too: it fetches the
     //    era verified over the B4 path, cuts it, and keeps no extra era file.
-    let port = 22_000 + (std::process::id() % 20_000) as u16;
+    let port = Port::reserve().expect("reserve archive shard RPC port");
+    let url = format!("http://127.0.0.1:{port}");
     let st_a = rpc_state(a.chain.clone(), None, Some(s_a.clone()));
-    rt.spawn(rpc::serve(std::net::SocketAddr::from(([127, 0, 0, 1], port)), st_a));
+    rt.spawn(test_rpc::serve(port, st_a));
     std::thread::sleep(std::time::Duration::from_millis(300));
-    let up = Upstream::Http(vec![format!("http://127.0.0.1:{port}")]);
+    let up = Upstream::Http(vec![url]);
     let me_b = node_id(2);
     let view_b = shards::View::of(&b.chain, shards::DEFAULT_MAX_SHARDS, Some(&me_b)).unwrap();
     assert_eq!(view_b.all, view_a.all, "the pruned node computes the same assignment");
@@ -283,10 +288,11 @@ fn candidates_hold_assigned_shards_and_pruned_nodes_serve_them() {
     // It serves those shards although the era's blocks are long pruned here.
     let st_b = rpc_state(b.chain.clone(), None, Some(Arc::new(s_b)));
     // Served like a peer would serve it, so the challenge below goes over RPC.
-    let port_b = 24_000 + (std::process::id() % 20_000) as u16;
-    rt.spawn(rpc::serve(std::net::SocketAddr::from(([127, 0, 0, 1], port_b)), st_b.clone()));
+    let port_b = Port::reserve().expect("reserve peer shard RPC port");
+    let url_b = format!("http://127.0.0.1:{port_b}");
+    rt.spawn(test_rpc::serve(port_b, st_b.clone()));
     std::thread::sleep(std::time::Duration::from_millis(300));
-    let up_b = Upstream::Http(vec![format!("http://127.0.0.1:{port_b}")]);
+    let up_b = Upstream::Http(vec![url_b]);
     rt.block_on(async {
         let era0 = std::fs::read(a.era_file(0)).unwrap();
         let (c0, cut0) = shards::encode(&era0).unwrap();

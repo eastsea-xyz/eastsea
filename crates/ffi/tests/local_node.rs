@@ -4,6 +4,7 @@
 //! end to end without a network.
 
 use aether_ffi::{account_history, use_devnet_keys, use_local_node, verified_account, verified_height};
+use aether_test_support::Port;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -27,9 +28,11 @@ struct Served {
 /// A JSON-RPC node on 127.0.0.1 answering from `served`: one request per
 /// connection, which is what the wallet's local-node client expects.
 fn fake_node(served: Arc<Mutex<Served>>) -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake node");
-    let port = listener.local_addr().unwrap().port();
+    let port_guard = Port::reserve().expect("reserve fake node port");
+    let listener = port_guard.bind_tcp().expect("bind fake node");
+    let port = port_guard.port();
     std::thread::spawn(move || {
+        let _port_guard = port_guard;
         for conn in listener.incoming() {
             let mut s = match conn {
                 Ok(s) => s,

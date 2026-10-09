@@ -2,10 +2,47 @@
 # Compile and run every pure-Swift test under apps/wallet/Tests with the sources it needs.
 # A new Tests/<name> directory must be added to the table below, or scripts/verify.sh will not run it.
 # The Aether 0.6.7 bridge (apps/bridge) has its own Sources/Tests: the `bridge` lines at the end.
-cd "$(dirname "$0")/.."
+set -uo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+mkdir -p "$root/tmp/swift-module-cache"
+export TMPDIR="$root/tmp"
+localizations="$root/tmp/wallet-languages/WalletLocalizations.bundle"
+/usr/bin/python3 scripts/wallet-l10n.py prepare-tests --out "$localizations" || exit 1
 W=apps/wallet/Sources; T=apps/wallet/Tests; bad=0
-run() { n=$1; shift; files=(); for f in "$@"; do files+=("$W/$f"); done
-  if swiftc -o tmp/sw-$n "${files[@]}" $T/$n/main.swift 2>tmp/sw-$n.err && AETHER_AGENT_TEST_TMP=$PWD/tmp ./tmp/sw-$n > tmp/sw-$n.out 2>&1; then echo "OK   $n"; else echo "FAIL $n :: $(head -c 160 tmp/sw-$n.err | tr '\n' ' ') $(tail -2 tmp/sw-$n.out | tr '\n' ' ')"; bad=$((bad+1)); fi; }
+run() {
+  n=$1; shift
+  files=()
+  for f in "$@"; do files+=("$W/$f"); done
+  if [ "$W" = apps/wallet/Sources ]; then
+    # AppLanguage/Brand stay Foundation-only. The helper never reaches the
+    # agent or bridge test modules, which keep their existing behavior.
+    if [[ " $* " != *" AppLanguage.swift "* ]]; then files+=("$W/AppLanguage.swift"); fi
+    files+=(apps/wallet/Tests/LocalizationTestSupport.swift)
+  fi
+  : > "tmp/sw-$n.err"
+  : > "tmp/sw-$n.out"
+  compiler_flags=(-Onone)
+  if [ "$n" = rename-migration ]; then
+    # Large migration fixtures hash hundreds of MB with the release code.
+    # Optimize that code while keeping Swift assertions and preconditions on.
+    compiler_flags=(-O -assert-config Debug)
+  fi
+  if swiftc "${compiler_flags[@]}" -module-cache-path "$root/tmp/swift-module-cache" -o "tmp/sw-$n" "${files[@]}" "$T/$n/main.swift" 2>"tmp/sw-$n.err" \
+      && AETHER_AGENT_TEST_TMP="$root/tmp" WALLET_TEST_BUNDLE="$localizations" "./tmp/sw-$n" >"tmp/sw-$n.out" 2>&1; then
+    echo "OK   $n"
+  else
+    echo "FAIL $n :: $(head -c 160 "tmp/sw-$n.err" | tr '\n' ' ') $(tail -2 "tmp/sw-$n.out" | tr '\n' ' ')"
+    bad=$((bad+1))
+  fi
+}
+run multi-account AccountStore.swift
+run account-selection AccountStore.swift AccountDataStore.swift AccountControls.swift
+run account-isolation AccountStore.swift AccountDataStore.swift AccountControls.swift
+run account-retire-guard AccountStore.swift AccountDataStore.swift AccountControls.swift
+run account-data AccountDataStore.swift
+run account-removal EarningsModel.swift TokenAssets.swift AccountRemovalBalance.swift
+run account-operations WalletOperationGate.swift
 run account-history Brand.swift ChainActivity.swift
 run assets EarningsModel.swift TokenAssets.swift
 run balance-sources Brand.swift EarningsModel.swift ChainActivity.swift BalanceBreakdown.swift EarningsExport.swift
@@ -15,6 +52,7 @@ run browser-permissions SitePermissions.swift
 run browser-routing Brand.swift BrowserPolicy.swift
 run dapp-signing Brand.swift BrowserPolicy.swift EarningsModel.swift DappSigning.swift
 run browser-verify Brand.swift BrowserOriginPolicy.swift BrowserPolicy.swift VerifyBridge.swift
+run candidate-eligibility CandidateEligibilityText.swift
 run diagnostic-report Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift HealthCheck.swift DiagnosticReport.swift
 run earnings EarningsModel.swift
 run earnings-export Brand.swift EarningsModel.swift ChainActivity.swift EarningsExport.swift
@@ -28,6 +66,7 @@ run network-upgrade Brand.swift NetworkUpgrade.swift
 run node-stop Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift
 run block-data Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift UnattendedDecision.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift DataMigration.swift BlockDataMove.swift NodeStorageMove.swift
 run prover-menu ProverMenuText.swift
+run localization ProverMenuText.swift
 run key-safety Brand.swift Clock.swift NodeWatchdog.swift NodeStopReason.swift ArchiveMeasurement.swift BlockDataLocation.swift KeySafety.swift
 run release-approval ReleaseApproval.swift
 run rename-migration DataMigration.swift

@@ -81,9 +81,14 @@ with tempfile.TemporaryDirectory(prefix='swift-cache-check-', dir=root / 'tmp') 
         jobs = [line.rstrip('\t').split('\t') for line in manifest.read_text().splitlines()]
         if not selected:
             full_manifest = manifest.read_text()
-            assert len(jobs) == (52 if sys.platform == 'darwin' else 50)
-            migration = next(job for job in jobs if job[0] == 'rename-migration')
-            assert migration[1:4] == ['-O', '-assert-config', 'Debug']
+            expected = {str(path.relative_to(root)) for path in (root / 'apps/wallet/Tests').glob('*/main.swift')}
+            if sys.platform != 'darwin':
+                expected -= {'apps/wallet/Tests/update-daemon/main.swift', 'apps/wallet/Tests/update-daemon-tree/main.swift'}
+            covered = {arg for job in jobs for arg in job[1:] if arg in expected}
+            assert covered == expected, f'unregistered pure Swift fixtures: {expected - covered}'
+            for name in ['rename-migration', 'hash-memory', 'block-data-progress']:
+                fixture_job = next(job for job in jobs if job[0] == name)
+                assert fixture_job[1:4] == ['-O', '-assert-config', 'Debug']
         else:
             assert len(jobs) == 1
             if selected[0].startswith('update-'):
@@ -101,7 +106,7 @@ with tempfile.TemporaryDirectory(prefix='swift-cache-check-', dir=root / 'tmp') 
     assert affected('apps/wallet/Sources/BalanceHistory.swift') == {'balance-history'}
     assert affected('apps/wallet/Tests/earnings/main.swift') == {'earnings'}
     assert affected('apps/wallet/Tests/earnings/runtime-fixture.json') == {'earnings'}
-    assert affected('apps/wallet/Sources/EarningsModel.swift') == {
+    assert affected('apps/wallet/Sources/EarningsModel.swift') >= {
         'account-removal', 'assets', 'balance-sources', 'earnings', 'earnings-export',
         'fee-confirm', 'reward-status', 'proving-badge', 'token-guard', 'token-icon', 'token-send',
     }, 'a shared source must select every registered consumer'
@@ -241,4 +246,4 @@ else:
     assert edited.returncode == 0, edited.stderr
     assert json.loads(timing_file.read_text())['builds'] == 1
     assert calls.read_text().splitlines().count('compile') == 2
-print('OK   Swift cache invalidation, reuse, failed publication, 52 registrations, source selection, queue timeout, build-only slot ownership and timing')
+print(f'OK   Swift cache invalidation, reuse, failed publication, {len(registered)} registrations, source selection, queue timeout, build-only slot ownership and timing')

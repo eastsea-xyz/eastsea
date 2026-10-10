@@ -1,0 +1,77 @@
+{
+  "algorithmVersion": 3,
+  "seedDomain": "eastsea-account-icon-v2",
+  "coverage": {
+    "mode": "exhaustive geometry outcomes",
+    "shapes": 4,
+    "layouts": 16384,
+    "rotations": 4,
+    "outcomes": 262144,
+    "sizes": [
+      32,
+      64
+    ],
+    "sizeEquivalence": "Verified identical actual emitted land paths and transforms for every outcome",
+    "palette": "Color-independent: all geometry outcomes rendered with palette 0; color does not enter the detector"
+  },
+  "detector": {
+    "thresholds": {
+      "minimumSmallerAreaRatio": 0.65,
+      "maximumSmallerToLargerAreaRatio": 0.65,
+      "maximumVerticalSeparationInMeanHeights": 0.5,
+      "minimumHorizontalSeparationInMeanWidths": 1
+    },
+    "curveSamplesPerSegment": 64,
+    "geometry": "Closed actual canonical SVG M/L/C/Z paths; cubic curves sampled uniformly; filled polygon area and centroid by shoelace; path and group transforms applied",
+    "definition": "Two elements with min/max area >=0.65, each area <=0.65 of the larger element, centroid Y separation <=0.5 mean heights, centroid X separation >=1 mean width, both centroids above the larger centroid",
+    "strongerPlacementDefinition": "Both secondary filled-area centroids above the main filled-area centroid, regardless of their sizes or horizontal alignment; must be absent at every quarter-turn",
+    "centroidBracketingDefinition": "For each unrotated outcome, the main filled-area centroid is strictly inside the secondary centroid span in both X and Y. Each margin is the distance to the nearest span endpoint; positive margins prove the placement condition under all quarter-turns"
+  },
+  "flaggedOutcomes": 0,
+  "flaggedExamples": [],
+  "maximumSecondaryAreaRatio": 0.3460507695758031,
+  "secondaryPairsAboveMain": 0,
+  "secondaryAboveMainExamples": [],
+  "centroidBracketing": {
+    "unrotatedOutcomes": 65536,
+    "failures": 0,
+    "minimumMargins": {
+      "x": 4.017302338420201,
+      "y": 11.280729047356415
+    }
+  },
+  "passes": true,
+  "positiveControl": {
+    "revision": "20e669a",
+    "address": "0x1234567890abcdef1234567890abcdef12345678",
+    "algorithmVersion": 2,
+    "flaggedLayouts": 1,
+    "secondaryPairsAboveMain": 1,
+    "matches": [
+      {
+        "smaller": [
+          1,
+          2
+        ],
+        "larger": 0,
+        "smallerAreaRatio": 0.9999999999999998,
+        "maximumSmallerToLargerAreaRatio": 0.1440270178244842,
+        "verticalSeparationInMeanHeights": 0.16326530612244913,
+        "horizontalSeparationInMeanWidths": 1.8571428571428563
+      }
+    ]
+  },
+  "sampledPathCacheEntries": 576,
+  "provenance": {
+    "scriptSha256": "ce866a168a02dc0ffb002022fdf530a66053dcfd50923ea04bb39f8bf972f4dd",
+    "canonicalSourceSha256": "5cc8f53b5d3ff26971d561b1c21e456b12134ebc749bafb3c0d11ddb2df7cb91"
+  },
+  "environment": {
+    "host": "Jayui-MacBookPro-2.local",
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v26.3.0"
+  },
+  "caveat": "These numeric regression checks cover the specified two-small-elements-over-larger-form pattern and the stronger two-secondary-islands-above-main pattern. Human pareidolia and recognition remain unmeasured; other face-like perceptions can exist outside these checks.",
+  "elapsedSeconds": 3.588932417
+}

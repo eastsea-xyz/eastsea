@@ -8,6 +8,7 @@ struct SitePermission: Codable, Equatable, Identifiable {
     let origin: String
     let address: String
     let grantedAt: Date
+    var displayOrigin: String? = nil
 }
 
 /// The store behind it. Everything except `save`/`load` is pure, so the
@@ -25,9 +26,9 @@ struct SitePermissionStore: Equatable {
         return s.address.lowercased() == current.lowercased() ? s.address : nil
     }
 
-    mutating func grant(origin: String, address: String, at date: Date = Date()) {
+    mutating func grant(origin: String, address: String, at date: Date = Date(), displayOrigin: String? = nil) {
         revoke(origin: origin)
-        sites.insert(SitePermission(origin: origin, address: address, grantedAt: date), at: 0)
+        sites.insert(SitePermission(origin: origin, address: address, grantedAt: date, displayOrigin: displayOrigin), at: 0)
     }
 
     mutating func revoke(origin: String) {

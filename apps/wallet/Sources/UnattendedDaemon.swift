@@ -97,6 +97,7 @@ final class UnattendedDaemon: ObservableObject {
     /// AppStorage restores the choice without invoking its didSet. Reconcile
     /// a saved opt-in once at startup, including a service never seen by macOS.
     func restore() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         if enabled { applyEnabledChange() } else { refreshStatus() }
     }
 
@@ -156,6 +157,7 @@ final class UnattendedDaemon: ObservableObject {
     }
 
     private func applyEnabledChange() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         #if WALLET_SCREENS
         // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
         return 
@@ -204,6 +206,9 @@ final class UnattendedDaemon: ObservableObject {
     /// single source of what the daemon runs: the same argv the app's own node
     /// takes (minus `--exit-with-parent`), so a restart changes nothing.
     func syncMarker() {
+        // An aborted update must not start background work from recovery.
+        // The saved preference is applied again on normal startup/retry.
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         #if WALLET_SCREENS
         return
         #endif
@@ -233,7 +238,8 @@ final class UnattendedDaemon: ObservableObject {
                                                        storageFlag: StorageSetting.flag(shards: storageShards ?? StorageSetting.defaultShards),
                         locationFlags: BlockDataLocation.flags(
                             chainDataPath: chainDataPath,
-                            archive: UserDefaults.standard.bool(forKey: "nodeArchive"))),
+                            archive: UserDefaults.standard.bool(forKey: "nodeArchive")),
+                        presenceFlags: PresenceCountry.preference().flags),
                      proveAddress: UserDefaults.standard.string(forKey: "proveAddress"))
     }
 
@@ -318,7 +324,7 @@ private enum Marker {
 
     static func write(binary: URL?, argv: [String], proveAddress: String?) {
         guard let binary else { return }
-        let dict: [String: Any] = [
+        var dict: [String: Any] = [
             "user": NSUserName(),
             "bundle": Bundle.main.bundlePath,
             "data": NodeController.dataDir.path,
@@ -326,6 +332,10 @@ private enum Marker {
             "argv": argv,
             "prove": proveAddress ?? "",
         ]
+        // The default M49 region survives independently of country consent.
+        // New wrappers discard legacy country arguments unless this marker
+        // records an explicit answer and the exact authorized preference.
+        dict.merge(PresenceCountry.preference().markerFields) { _, choice in choice }
         try? FileManager.default.createDirectory(at: NodeController.dataDir, withIntermediateDirectories: true)
         if let data = try? PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0) {
             try? data.write(to: url, options: .atomic)

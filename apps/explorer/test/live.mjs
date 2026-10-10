@@ -20,7 +20,7 @@ class El {
   replaceChildren(...cs) { this.children = [...cs.flat()]; return this; }
 }
 globalThis.Node = El;
-globalThis.document = { createElement: (t) => new El(t) };
+globalThis.document = { createElement: (t) => new El(t), createElementNS: (_namespace, t) => new El(t) };
 
 /** Every string a tree renders, in order — what a page "says". */
 function text(el) {
@@ -125,7 +125,7 @@ if (token) {
   check('search finds the address', found?.page === 'account');
   const byHeight = await resolveSearch(String(newest.height), node);
   check('search finds the height', byHeight?.page === 'block');
-  check('search rejects junk', (await resolveSearch('not a thing', node)) === null);
+  check('text search routes to apps and names', (await resolveSearch('not a thing', node))?.page === 'search');
 } else {
   console.log('     (no token sources for this chain; skipping the token page)');
 }

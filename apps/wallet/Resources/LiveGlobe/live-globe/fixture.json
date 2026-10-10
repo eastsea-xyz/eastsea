@@ -1,0 +1,47 @@
+{
+  "schema_version": 3,
+  "scope": "node",
+  "total": 4,
+  "roles": {
+    "validator": {
+      "count": 4
+    },
+    "wallet": {
+      "count": 3
+    },
+    "candidate": {
+      "count": 0
+    },
+    "follower": {
+      "count": 0
+    }
+  },
+  "versions": {
+    "0.7.4": 4
+  },
+  "reserve_keys": {
+    "standby": 3,
+    "seated": 0
+  },
+  "regions": [
+    {
+      "continent": "asia",
+      "country": "KR",
+      "count": 3,
+      "quality": {
+        "score_sum": 153979,
+        "histogram": [2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      }
+    },
+    {
+      "continent": "asia",
+      "count": 1,
+      "quality": {
+        "score_sum": 8074,
+        "histogram": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      }
+    }
+  ],
+  "recent_blocks": [],
+  "quality_version": 1
+}

@@ -26,6 +26,8 @@ if [ "$what" = all ] || [ "$what" = rust ]; then
 fi
 
 if [ "$what" = all ] || [ "$what" = apps ]; then
+  step design-token-drift python3 scripts/gen-design-tokens.py --check
+  step design-token-tests python3 scripts/test_design_tokens.py
   step forge bash -c 'cd contracts && forge test'
   step extension-build scripts/build-extension.sh
   step extension-tests bash -c 'cd apps/extension && node --test test/*.test.mjs'

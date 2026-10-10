@@ -1,3 +1,5 @@
+import { readVerdict, readSource } from './peers.js';
+
 // DOM helpers. Everything renders through `h`, whose children are set as text
 // nodes only — nothing from the chain is ever interpreted as HTML.
 
@@ -18,12 +20,12 @@ export function h(tag, props = {}, ...children) {
 
 /** A card: the box every section of a page sits in. */
 export function card(title, ...children) {
-  return h('section', { class: 'card' }, title ? h('h2', {}, title) : null, ...children);
+  return h('section', { class: 'card' }, title ? h('h2', { class: 'es-section-title' }, title) : null, ...children);
 }
 
 /** Status pill. `kind`: good | warn | bad | plain. Never color alone — always text. */
 export function pill(text, kind = 'plain') {
-  return h('span', { class: `pill ${kind}` }, text);
+  return h('span', { class: `pill es-status ${kind}` }, text);
 }
 
 /** A status dot with a text label beside it. */
@@ -33,7 +35,7 @@ export function dot(kind, label) {
 
 /** `label → value` rows, the field list at the top of every detail page. */
 export function kv(pairs) {
-  return h('div', { class: 'kv' }, ...pairs.flatMap(([k, v]) => [h('span', {}, k), wrap(v)]));
+  return h('dl', { class: 'kv' }, ...pairs.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, wrap(v))]));
 }
 
 function wrap(v) {
@@ -56,7 +58,7 @@ export function message(kind, text) {
 /** Copy button for a full hash/address. Clipboard needs a secure context
  * (localhost or https); on failure it says so instead of pretending. */
 export function copyButton(text) {
-  const b = h('button', { class: 'copy', title: 'Copy', 'aria-label': 'Copy to clipboard' }, 'copy');
+  const b = h('button', { class: 'copy es-control', title: 'Copy', 'aria-label': 'Copy to clipboard' }, 'copy');
   b.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(text);
@@ -70,11 +72,15 @@ export function copyButton(text) {
 }
 
 /** The line every page carries: where its data came from. */
-export function sourceLine(node, extra) {
-  return h('p', { class: 'small muted source' }, 'Data read from the node at ', h('span', { class: 'mono' }, node.url), extra ? ` · ${extra}` : null, '. Not light-client verified.');
+export function sourceLine(node, extra, displayed) {
+  if (readVerdict(displayed)) {
+    return h('p', { class: 'small muted source' }, 'Public chain data verified with committee certificates and Merkle proofs',
+      extra ? ` · ${extra}` : null, '. Uncommitted metrics unavailable.');
+  }
+  return h('p', { class: 'small muted source' }, 'Data read from the node at ', h('span', { class: 'mono' }, readSource(displayed)?.url || node.url), extra ? ` · ${extra}` : null, '. Not light-client verified.');
 }
 
 /** Placeholder while a page fetches. */
 export function loading(text = 'Loading…') {
-  return h('div', { class: 'loading' }, h('span', { class: 'spin', 'aria-hidden': 'true' }), h('span', {}, text));
+  return h('div', { class: 'loading', role: 'status' }, h('span', { class: 'spin', 'aria-hidden': 'true' }), h('span', {}, text));
 }

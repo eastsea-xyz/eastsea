@@ -10,13 +10,23 @@ struct ContentView: View {
     @EnvironmentObject var node: NodeController
     #endif
     @AppStorage("developerMode") private var developerMode = false
+    @State private var showLinkedBrowser = false
     /// The terms version this user accepted (0: none yet).
     @AppStorage("acceptedTerms") private var acceptedTerms = 0
 
     var body: some View {
         page
-            .onAppear { model.start() }
+            .eastSeaPage()
+            .eastSeaPresentation(.panel, value: developerMode)
+            .onAppear {
+                showLinkedBrowser = model.browserLinkRequest != nil
+                model.start()
+            }
+            .onChange(of: model.browserLinkRequest) { _, request in
+                if request != nil { showLinkedBrowser = true }
+            }
             .onChange(of: developerMode) { _, enabled in
+                showLinkedBrowser = false
                 if !enabled && model.developmentNetwork {
                     model.selectNetwork(development: false)
                     #if os(macOS)
@@ -25,15 +35,43 @@ struct ContentView: View {
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
+                if developerMode && showLinkedBrowser {
+                    Button("Back to Developer Mode") { showLinkedBrowser = false }
+                        .buttonStyle(EastSeaQuietButtonStyle())
+                        .frame(maxWidth: .infinity, alignment: .trailing).padding(DesignTokens.Space.s3)
+                }
                 if model.developmentNetwork {
                     Text("Dev network · 127.0.0.1")
-                        .font(.caption.bold()).frame(maxWidth: .infinity)
-                        .padding(.vertical, 5).background(.orange).foregroundStyle(.black)
+                        .font(.aeCaption.bold()).frame(maxWidth: .infinity)
+                        .padding(.vertical, DesignTokens.Space.s2)
+                        .background(DesignTokens.Palette.warn.color)
+                        .foregroundStyle(DesignTokens.Palette.bg.color)
                 }
             }
-            .sheet(isPresented: Binding(get: { Self.needsTerms(acceptedTerms) }, set: { _ in })) {
+            .sheet(isPresented: Binding(get: { needsOnboarding }, set: { _ in })) {
+                #if os(macOS)
+                if Self.needsTerms(acceptedTerms) {
+                    TermsSheet { acceptedTerms = Terms.version }
+                } else if node.needsCountryNotice {
+                    CountryNoticeSheet(country: node.presenceCountryCode)
+                        .environmentObject(node)
+                }
+                #else
                 TermsSheet { acceptedTerms = Terms.version }
+                #endif
             }
+    }
+
+    private var needsOnboarding: Bool {
+        if Self.needsTerms(acceptedTerms) { return true }
+        #if os(macOS)
+        #if DEBUG
+        if DesignPreview.on { return false }
+        #endif
+        return node.needsCountryNotice
+        #else
+        return false
+        #endif
     }
 
     /// Design previews skip the gate: screenshots need the dashboard, not terms.
@@ -46,7 +84,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var page: some View {
-        if developerMode {
+        if developerMode && !showLinkedBrowser {
             DeveloperView()
         } else {
             SimpleDashboard()
@@ -56,6 +94,7 @@ struct ContentView: View {
 
 struct DeveloperView: View {
     @EnvironmentObject var model: WalletModel
+    @State private var seaAddressInput = ""
     @AppStorage("developerMode") private var developerMode = false
 
     #if os(macOS)
@@ -69,9 +108,10 @@ struct DeveloperView: View {
             if stacked {
                 stackedLayout
             } else {
-                HStack(alignment: .top, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: DesignTokens.Space.s4) {
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
                         header
+                        browserEntry
                         accountCard
                         sendCard
                         recoveryCard
@@ -80,152 +120,184 @@ struct DeveloperView: View {
                     .frame(minWidth: 400)
                     blocksPanel.frame(width: 300)
                 }
-                .padding(20)
+                .padding(DesignTokens.Space.s5)
             }
         }
         .frame(minWidth: 380, minHeight: 520)
         .onGeometryChange(for: Bool.self) { $0.size.width < 760 } action: { stacked = $0 }
+        .measuringNarrowLayout()
+        .eastSeaPage()
         #else
-        stackedLayout
+        stackedLayout.measuringNarrowLayout().eastSeaPage()
         #endif
     }
 
     /// One column: iPhone and narrow Mac windows.
     private var stackedLayout: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
                 header
+                browserEntry
                 accountCard
                 sendCard
                 recoveryCard
                 activity
                 blocksPanel.frame(height: 320)
             }
-            .padding(16)
+            .padding(DesignTokens.Space.s4)
+        }
+    }
+
+    private var browserEntry: some View {
+        HStack(spacing: DesignTokens.Space.s3) {
+            TextField("Enter a .sea name or https:// address", text: $seaAddressInput)
+                .textFieldStyle(.roundedBorder).font(.aeBody)
+                .onSubmit { model.open(link: seaAddressInput) }
+            Button("Go") { model.open(link: seaAddressInput) }
+                .buttonStyle(EastSeaQuietButtonStyle())
+                .disabled(seaAddressInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 
     private var header: some View {
         HStack {
-            Image(systemName: "cube.transparent").font(.title)
+            EastSeaDawnMark().frame(width: 40, height: 40)
             VStack(alignment: .leading) {
-                Text("\(Brand.name) Wallet").font(.title2.bold())
+                Text("\(Brand.name) Wallet").font(.aeTitle)
                 if let s = model.status {
                     Text(model.developmentNetwork
                          ? String(localized: "devnet \(String(s.chainId)) · height \(String(s.height)) · \(model.validators) validators")
                          : String(localized: "chain \(String(s.chainId)) · height \(String(s.height)) · \(model.validators) validators"))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 } else {
-                    Text("connecting…").font(.caption).foregroundStyle(.secondary)
+                    Text("connecting…").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 }
                 // Under the title (not beside it) so it stays readable in a narrow window.
-                Label(model.connectionInfo, systemImage: "network").font(.caption).foregroundStyle(.secondary)
+                Label(model.connectionInfo, systemImage: "network").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     .lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 0)
-            Button("Done") { withAnimation(.easeInOut(duration: 0.2)) { developerMode = false } }
+            Button("Done") { developerMode = false }
+                .buttonStyle(EastSeaQuietButtonStyle())
                 .help("Leave Developer mode")
         }
     }
 
     private var accountCard: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                AccountSwitcherButton(store: model.accountStore, compact: true)
+        Card {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
                 HStack {
-                    Text(model.address.isEmpty ? "—" : model.address).font(.callout.monospaced()).textSelection(.enabled)
+                    Text("Account").font(.aeHeadline)
+                    Spacer()
+                    AccountSwitcherButton(store: model.accountStore, compact: true)
+                }
+                HStack {
+                    Text(model.address.isEmpty ? "—" : model.address).font(.aeBody.monospaced()).textSelection(.enabled)
                         .lineLimit(1).truncationMode(.middle)
                     Button { Clipboard.copy(model.address) }
                         label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless)
                 }
                 Text(model.account.map { "\(Wei.format($0.balanceWei)) \(Brand.networkCoinTicker)" } ?? "…")
-                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .font(DesignTokens.TypeScale.amountMd.font).monospacedDigit()
+                    .lineLimit(1).minimumScaleFactor(0.5)
+                    .accessibilityLabel("\(model.account.map { Wei.exact($0.balanceWei) } ?? "…") \(Brand.networkCoinTicker)")
+                    .foregroundStyle(DesignTokens.Palette.plateInk.color)
+                    .padding(DesignTokens.Space.s4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .eastSeaNavyPlate()
                 if let a = model.account, model.verifyError == nil {
-                    Label("Verified by this device", systemImage: "checkmark.seal.fill").foregroundStyle(.green).font(.headline)
+                    Label("Verified by this device", systemImage: "checkmark.seal.fill").foregroundStyle(DesignTokens.Palette.success.color).font(.aeHeadline)
                     Text("Block \(String(a.certifiedBlock)) finality: one BLS threshold signature from a \(a.validators)-validator committee, checked against its group key · state root \(a.stateRoot.prefix(12))… · EIP-7864 proof for this address")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 } else if let e = model.verifyError {
-                    Label("Not verified", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.headline)
-                    Text(e).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    Label("Not verified", systemImage: "exclamationmark.triangle.fill").foregroundStyle(DesignTokens.Palette.warn.color).font(.aeHeadline)
+                    Text(e).font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color).lineLimit(3)
                 }
                 HStack {
-                    Label(model.keyLabel, systemImage: "lock.shield").font(.caption)
+                    Label(model.keyLabel, systemImage: "lock.shield").font(.aeCaption)
                     Spacer()
                     if model.developmentNetwork {
                         Button("Get 10 test \(Brand.networkCoinTicker)") { model.faucet() }.disabled(model.busy || model.address.isEmpty)
                     }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
-        } label: { Text("Account") }
+        }
     }
 
     private var sendCard: some View {
-        GroupBox {
-            HStack {
-                TextField("0x recipient (several: comma-separated, one signature)", text: $model.sendTo).textFieldStyle(.roundedBorder).font(.callout.monospaced())
-                TextField("\(Brand.networkCoinTicker)", text: $model.sendAmount).textFieldStyle(.roundedBorder).frame(width: 80)
-                Button("Send") { Task { await model.send() } }.keyboardShortcut(.return).disabled(model.busy || model.sendTo.isEmpty)
+        Card {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
+                Text("Send (signed in the Secure Enclave)").font(.aeHeadline)
+                AdaptiveStack(spacing: DesignTokens.Space.s3) {
+                    TextField("0x recipient (several: comma-separated, one signature)", text: $model.sendTo).textFieldStyle(EastSeaTextFieldStyle()).font(.aeBody.monospaced())
+                    TextField("\(Brand.networkCoinTicker)", text: $model.sendAmount).textFieldStyle(EastSeaTextFieldStyle()).frame(width: 100)
+                    Button("Send") { Task { await model.send() } }
+                        .buttonStyle(EastSeaPrimaryButtonStyle())
+                        .keyboardShortcut(.return).disabled(model.busy || model.sendTo.isEmpty)
+                }
             }
-        } label: { Text("Send (signed in the Secure Enclave)") }
+        }
     }
 
     private var recoveryCard: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("This device's recovery-key code").font(.caption).foregroundStyle(.secondary)
-                    Text(model.recoveryCode.isEmpty ? "…" : "\(model.recoveryCode.prefix(16))…").font(.caption.monospaced())
+        Card {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
+                Text("Recovery (second device's Secure Enclave key · delayed, cancellable)").font(.aeHeadline)
+                AdaptiveStack(spacing: DesignTokens.Space.s3) {
+                    Text("This device's recovery-key code").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                    Text(model.recoveryCode.isEmpty ? "…" : "\(model.recoveryCode.prefix(16))…").font(.aeCaption.monospaced())
                         .lineLimit(1).truncationMode(.middle)
                     Button {
                         Clipboard.copy(model.recoveryCode)
                         model.note("Recovery-key code copied. Give it to the account owner who wants this Mac as their recovery key.")
                     } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).disabled(model.recoveryCode.isEmpty)
                 }
-                HStack {
-                    TextField("Other device's recovery-key code", text: $model.guardianInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                AdaptiveStack(spacing: DesignTokens.Space.s3) {
+                    TextField("Other device's recovery-key code", text: $model.guardianInput).textFieldStyle(EastSeaTextFieldStyle()).font(.aeCaption.monospaced())
                     Button("Make it my recovery key") { model.setRecoveryKey() }.disabled(model.busy || model.guardianInput.isEmpty)
                 }
-                HStack {
-                    TextField("0x lost account (that trusts this device)", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.caption.monospaced())
+                AdaptiveStack(spacing: DesignTokens.Space.s3) {
+                    TextField("0x lost account (that trusts this device)", text: $model.lostInput).textFieldStyle(EastSeaTextFieldStyle()).font(.aeCaption.monospaced())
                     Button("Propose recovery") { model.recover() }.disabled(model.busy || model.lostInput.isEmpty || model.outgoingRecovery != nil)
                 }
                 // F-05: recovery saves a lost key, never a stolen one.
-                Text(KeyExposureNotice.recovery.text).font(.caption).foregroundStyle(.orange)
+                Text(KeyExposureNotice.recovery.text).font(.aeCaption).foregroundStyle(DesignTokens.Palette.warn.color)
                     .fixedSize(horizontal: false, vertical: true)
                 if let p = model.outgoingRecovery {
-                    HStack {
-                        Text("Pending: \(Wei.format(p.request.valueWei)) \(Brand.networkCoinTicker) from \(p.request.lost.prefix(10))… · ready \(p.readyAt.formatted())").font(.caption)
+                    AdaptiveStack(spacing: DesignTokens.Space.s3) {
+                        Text("Pending: \(Wei.format(p.request.valueWei)) \(Brand.networkCoinTicker) from \(p.request.lost.prefix(10))… · ready \(p.readyAt.formatted())").font(.aeCaption)
                         Spacer()
                         Button("Finish") { model.finishRecovery() }.disabled(model.busy || !p.isReady)
                     }
                 }
                 if let r = model.incomingRecovery {
-                    HStack {
+                    AdaptiveStack(spacing: DesignTokens.Space.s3) {
                         Label("A recovery of THIS account is pending (ready \(Date(timeIntervalSince1970: TimeInterval(r.readyAt)).formatted()))", systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption).foregroundStyle(.orange)
+                            .font(.aeCaption).foregroundStyle(DesignTokens.Palette.warn.color)
                         Spacer()
                         Button("Cancel it") { model.cancelIncomingRecovery() }.disabled(model.busy)
                         Button("Cancel and remove all recovery keys") { model.removeRecoveryKeys() }.disabled(model.busy)
                     }
                 }
             }
-        } label: { Text("Recovery (second device's Secure Enclave key · delayed, cancellable)") }
+        }
     }
 
     private var activity: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
             LinkedWalletsCard()
-            GroupBox("Activity") {
-                VStack(alignment: .leading, spacing: 6) {
+            Card {
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
+                    Text("Activity").font(.aeHeadline)
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 6) {
+                        LazyVStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
                             ForEach(model.activity) { item in
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.title).font(.callout)
+                                    Text(item.title).font(.aeBody)
                                     Text("\(item.source ?? String(localized: "On this device")) · \(item.date.formatted()) · \(item.hash ?? "")")
-                                        .font(.caption).foregroundStyle(.secondary)
+                                        .font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                                 }
-                                Divider()
+                                Divider().overlay(DesignTokens.Palette.line.color)
                             }
                         }
                     }
@@ -239,24 +311,29 @@ struct DeveloperView: View {
     }
 
     private var blocksPanel: some View {
-        GroupBox {
-            ScrollView {
-              LazyVStack(alignment: .leading, spacing: 10) {
-                ForEach(model.blocks, id: \.height) { b in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text("#\(String(b.height))").font(.callout.bold().monospacedDigit())
-                        Spacer()
-                        Text("\(b.txs) tx").font(.caption).foregroundStyle(b.txs > 0 ? .primary : .secondary)
+        Card {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
+                Text("Finalized blocks").font(.aeHeadline)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
+                        ForEach(model.blocks, id: \.height) { b in
+                            VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
+                                HStack {
+                                    Text("#\(String(b.height))").font(.aeBody.bold().monospacedDigit())
+                                    Spacer()
+                                    Text("\(b.txs) tx").font(.aeCaption)
+                                        .foregroundStyle(b.txs > 0 ? DesignTokens.Palette.text.color : DesignTokens.Palette.textMuted.color)
+                                }
+                                Text("root \(b.stateRoot.prefix(18))…").font(.aeCaption.monospaced()).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                                Text("proposer \(b.proposer.prefix(10))…").font(.aeCaption.monospaced()).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                                Divider().overlay(DesignTokens.Palette.line.color)
+                            }
+                        }
                     }
-                    Text("root \(b.stateRoot.prefix(18))…").font(.caption2.monospaced()).foregroundStyle(.secondary)
-                    Text("proposer \(b.proposer.prefix(10))…").font(.caption2.monospaced()).foregroundStyle(.secondary)
-                    Divider()
+                    .padding(.vertical, DesignTokens.Space.s1)
                 }
-                }
-              }.padding(.vertical, 4)
             }
-        } label: { Text("Finalized blocks") }
+        }
     }
 }
 

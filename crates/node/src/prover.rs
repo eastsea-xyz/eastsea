@@ -229,6 +229,14 @@ impl Sidecar {
         unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGKILL) };
     }
 
+    /// Called after an interrupted request releases the io lock. A successful
+    /// reply can race cancellation, so pipe closure alone does not prove that
+    /// the killed process has exited.
+    fn reap(&self) -> Result<(), String> {
+        let mut io = self.io.lock().map_err(|_| "sidecar lock poisoned")?;
+        io.child.wait().map(|_| ()).map_err(|e| format!("sidecar wait: {e}"))
+    }
+
     fn request(&self, req: Value, timeout: std::time::Duration) -> Result<Value, String> {
         let mut io = self.io.lock().map_err(|_| "sidecar lock poisoned")?;
         writeln!(io.stdin, "{req}").and_then(|_| io.stdin.flush()).map_err(|e| format!("sidecar: {e}"))?;
@@ -262,7 +270,13 @@ impl Sidecar {
         std::fs::write(&inp, input).map_err(|e| e.to_string())?;
         let reply = self.request(json!({"cmd": "prove", "input": inp, "out": out}), PROVE_TIMEOUT);
         let _ = std::fs::remove_file(&inp);
-        let reply = reply?;
+        let reply = match reply {
+            Ok(reply) => reply,
+            Err(error) => {
+                let _ = std::fs::remove_file(&out);
+                return Err(error);
+            }
+        };
         let proof = std::fs::read(&out).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(&out);
         let commitment = from_hex32(reply["commitment"].as_str().unwrap_or_default())?;
@@ -507,6 +521,15 @@ pub struct Status {
     pub last_txs: usize,
     pub last_seconds: f64,
     pub proofs: u64,
+    /// Jobs stopped after a verified competing proof reached this node.
+    pub cancelled: u64,
+    pub last_cancelled_height: Option<u64>,
+    /// Verified-proof observation through the stopped sidecar request, including
+    /// notification delivery and process exit (no polling interval).
+    pub last_abort_latency_ms: Option<u64>,
+    pub assignment_k: usize,
+    pub grace_seconds: u64,
+    pub window: usize,
     /// Proofs admitted to this node's pool or accepted by the upstream.
     pub accepted: u64,
     /// Definite cryptographic refusals (transient transport errors excluded).
@@ -656,8 +679,14 @@ struct Gate {
     /// hang check counts from here. A request would sit out its own
     /// half-hour timeout on a silent sidecar; the watchdog kills it hung.
     proving_since: Mutex<Option<std::time::Instant>>,
+    flight: Mutex<Option<Flight>>,
     /// How long a proof may run before the watchdog kills it as hung.
     hang: std::time::Duration,
+}
+
+struct Flight {
+    height: u64,
+    cancelled_at: Option<std::time::Instant>,
 }
 
 impl Gate {
@@ -786,13 +815,26 @@ impl Gate {
 
     /// The service is proving with the sidecar now; the watchdog's hang check
     /// counts from here.
-    fn proving(&self) {
+    fn proving(&self, height: u64) {
+        *self.flight.lock().expect("prover flight") = Some(Flight { height, cancelled_at: None });
         *self.proving_since.lock().expect("prover gate") = Some(std::time::Instant::now());
     }
 
+    /// Serialize cancellation with job completion, so a delayed notice of the
+    /// previous height cannot kill the replacement proving process.
+    fn cancel(&self, height: u64, seen: std::time::Instant) {
+        let mut flight = self.flight.lock().expect("prover flight");
+        let Some(active) = flight.as_mut().filter(|f| f.height == height && f.cancelled_at.is_none()) else { return };
+        active.cancelled_at = Some(seen);
+        self.dead.store(true, Ordering::Relaxed);
+        self.current().kill_hard();
+    }
+
     /// No proof is in flight — answered, failed, or given up.
-    fn idle(&self) {
+    fn idle(&self) -> Option<std::time::Instant> {
+        let flight = self.flight.lock().expect("prover flight").take();
         *self.proving_since.lock().expect("prover gate") = None;
+        flight.and_then(|f| f.cancelled_at)
     }
 
     /// Restart a dead sidecar once the back-off allows.
@@ -814,7 +856,7 @@ fn gbytes(bytes: u64) -> String {
     format!("{:.1} GB", bytes as f64 / crate::resources::GB as f64)
 }
 
-/// Prove the newest finalized block nobody has proven yet, again and again,
+/// Prove locally assigned finalized blocks, rescuing old unproven blocks,
 /// and hand each proof to `submit` (this node's proof pool, or its upstream).
 pub fn spawn_service(
     chain: Chain,
@@ -826,6 +868,35 @@ pub fn spawn_service(
     network_program: impl Fn() -> Result<String, String> + Send + 'static,
     submit: impl Fn(ProofClaim) -> Result<(), String> + Send + 'static,
 ) {
+    let config = match crate::prover_assignment::Config::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(%error, "invalid prover assignment settings");
+            status.lock().map(|mut s| s.error = Some(error)).ok();
+            return;
+        }
+    };
+    spawn_service_with_config(chain, bin, dir, sidecar, prover, status, config, network_program, submit);
+}
+
+pub fn spawn_service_with_config(
+    chain: Chain,
+    bin: PathBuf,
+    dir: PathBuf,
+    sidecar: Sidecar,
+    prover: Address,
+    status: SharedStatus,
+    config: crate::prover_assignment::Config,
+    network_program: impl Fn() -> Result<String, String> + Send + 'static,
+    submit: impl Fn(ProofClaim) -> Result<(), String> + Send + 'static,
+) {
+    if crate::resources::monitor().is_some_and(|m| m.limits.prover_max_memory == 0) {
+        chain.set_prover_window(0);
+        status.lock().map(|mut s| s.paused = Some("disabled".into())).ok();
+        return;
+    }
+    chain.set_prover_window(config.window);
+    let notices = chain.observe_proofs();
     let program = sidecar.program.clone();
     let gate = Arc::new(Gate {
         cap: crate::resources::monitor()
@@ -838,6 +909,7 @@ pub fn spawn_service(
         kills: std::sync::atomic::AtomicU32::new(0),
         wait: Mutex::new(None),
         proving_since: Mutex::new(None),
+        flight: Mutex::new(None),
         hang: hang_timeout(),
     });
     let threads = crate::resources::monitor()
@@ -851,8 +923,22 @@ pub fn spawn_service(
             s.payout = Some(prover);
             s.memory_cap = gate.cap;
             s.threads = threads;
+            s.assignment_k = config.designated;
+            s.grace_seconds = config.grace.as_secs();
+            s.window = config.window;
         })
         .ok();
+    {
+        let gate = gate.clone();
+        std::thread::Builder::new()
+            .name("prover-proof-notices".into())
+            .spawn(move || {
+                for (height, seen) in notices {
+                    gate.cancel(height, seen);
+                }
+            })
+            .expect("start prover proof notifications");
+    }
     // The watchdog: sample the sidecar's footprint every 2 s, kill it past the
     // cap, and kill a running proof when the system hits critical pressure.
     {
@@ -888,7 +974,7 @@ pub fn spawn_service(
             continue;
         }
         unsent.retain(|c| {
-            if !chain.proof_open(c.height) {
+            if chain.proof_seen(c.height) || !chain.proof_open(c.height) {
                 return false;
             }
             match submit(c.clone()) {
@@ -917,7 +1003,7 @@ pub fn spawn_service(
         }
         status.lock().map(|mut s| s.paused = None).ok();
         gate.ensure();
-        let job = match next_job(&chain, prover) {
+        let job = match next_job_with_config(&chain, prover, &config, now_ms()) {
             Ok(job) => job,
             Err((height, e)) => {
                 tracing::warn!(height, %e, "cannot build a proof job for this block; skipping it");
@@ -947,9 +1033,38 @@ pub fn spawn_service(
                 continue;
             }
         };
-        gate.proving();
-        let proven = gate.current().prove(&bytes);
-        gate.idle();
+        gate.proving(height);
+        chain.set_proving_height(Some(height));
+        // A proof may have arrived while its witness was being built, before
+        // the flight was registered. Recheck after registration to close that
+        // gap; subsequent sightings kill this flight through the notice thread.
+        if chain.proof_seen(height) || !chain.proof_open(height) {
+            gate.idle();
+            chain.set_proving_height(None);
+            status.lock().map(|mut s| s.proving = None).ok();
+            continue;
+        }
+        let sidecar = gate.current();
+        let proven = sidecar.prove(&bytes);
+        let cancelled = gate.idle();
+        chain.set_proving_height(None);
+        if let Some(seen) = cancelled {
+            let reaped = sidecar.reap();
+            let latency_ms = reaped.as_ref().ok().map(|_| seen.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+            status.lock().map(|mut s| {
+                s.proving = None;
+                s.error = reaped.err();
+                s.cancelled += 1;
+                s.last_cancelled_height = Some(height);
+                s.last_abort_latency_ms = latency_ms;
+            }).ok();
+            tracing::info!(height, abort_latency_ms = latency_ms, "competing proof seen; local proof stopped");
+            continue; // ordinary loss: no crash back-off and never retry height
+        }
+        if chain.proof_seen(height) || !chain.proof_open(height) {
+            status.lock().map(|mut s| s.proving = None).ok();
+            continue;
+        }
         match proven {
             Ok((proof, _, seconds)) => {
                 gate.proved();
@@ -1060,11 +1175,24 @@ fn pause(status: &SharedStatus, reason: &str) {
 
 pub(crate) type Job = (u64, usize, aether_proving::block::BlockInput);
 
-/// The newest finalized block still unproven whose parent state this node
+/// An assigned or grace-expired finalized block whose parent state this node
 /// holds. `Ok(None)`: nothing to prove right now. `Err`: a block was picked
 /// but no prover input could be built for it (never silent: the caller logs it).
+#[cfg(test)]
 pub(crate) fn next_job(chain: &Chain, prover: Address) -> Result<Option<Job>, (u64, String)> {
-    let Some((exec, parent, block)) = chain.provable() else { return Ok(None) };
+    next_job_with_config(chain, prover, &crate::prover_assignment::Config::default(), now_ms())
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn next_job_with_config(chain: &Chain, prover: Address, config: &crate::prover_assignment::Config, now_ms: u64) -> Result<Option<Job>, (u64, String)> {
+    chain.proving_input_for(prover, config, now_ms)
+}
+
+pub(crate) fn input_for(chain: &Chain, exec: &crate::chain::Executed, parent: &crate::chain::Executed, block: &crate::block::Block, prover: Address) -> Result<aether_proving::block::BlockInput, (u64, String)> {
     let height = exec.height;
     let payload = block.payload().ok_or((height, "block payload does not decode".to_string()))?;
     let (pre, _) = chain
@@ -1077,7 +1205,7 @@ pub(crate) fn next_job(chain: &Chain, prover: Address) -> Result<Option<Job>, (u
     if statement.commitment() != exec.statement.commitment {
         return Err((height, "the prover input does not restate the block's recorded statement".to_string()));
     }
-    Ok(Some((height, payload.txs.len(), input)))
+    Ok(input)
 }
 
 /// Initialize the macOS network runtime before either spawn path's smoke test.
@@ -1358,7 +1486,7 @@ mod tests {
         p
     }
 
-    fn gate(bin: PathBuf, dir: PathBuf, sidecar: Arc<Sidecar>, cap: u64) -> Gate {
+    pub(super) fn gate(bin: PathBuf, dir: PathBuf, sidecar: Arc<Sidecar>, cap: u64) -> Gate {
         Gate {
             bin,
             dir,
@@ -1368,6 +1496,7 @@ mod tests {
             kills: std::sync::atomic::AtomicU32::new(0),
             wait: Mutex::new(None),
             proving_since: Mutex::new(None),
+            flight: Mutex::new(None),
             hang: PROVE_TIMEOUT,
         }
     }
@@ -1709,6 +1838,7 @@ mod service_fault_tests {
     /// of them a provable job for the service.
     fn proving_chain(n: u64) -> Chain {
         let (chain, genesis) = Chain::new(config());
+        chain.set_prover_window(crate::prover_assignment::Config::default().window);
         {
             let (_, sharing, _) = aether_light::devnet_threshold(4);
             let mut g = chain.lock();
@@ -1807,6 +1937,151 @@ done
             assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
+    }
+
+    struct PaddedEcho;
+
+    impl ProofVerifier for PaddedEcho {
+        fn verify(&self, proof: &[u8], output: [u8; 32]) -> bool {
+            proof.len() == 32 << 10 && proof[..32] == output && proof[32..].iter().all(|b| *b == 0)
+        }
+    }
+
+    fn competing_claim(chain: &Chain, height: u64) -> ProofClaim {
+        let prover = Address::repeat_byte(0x88);
+        let commitment = aether_execution::proofs::commitment(&chain.lock().finalized.state, height).unwrap();
+        let mut proof = vec![0; 32 << 10];
+        proof[..32].copy_from_slice(&aether_proving::block::claim(commitment, prover));
+        ProofClaim { height, prover, proof: hex::encode(proof) }
+    }
+
+    #[test]
+    fn cancellation_reaps_even_when_the_sidecar_already_replied() {
+        let dir = scratch("svc-completion-race");
+        let bin = fake(&dir, "", "");
+        let sidecar = Arc::new(Sidecar::spawn_prover(&bin, &dir).unwrap());
+        let old_pid = sidecar.pid;
+        let gate = super::tests::gate(bin, dir.clone(), sidecar.clone(), 0);
+        gate.proving(1);
+        sidecar.prove(b"input").unwrap();
+        gate.cancel(1, std::time::Instant::now());
+        let seen = gate.idle().expect("the completion race still remembers cancellation");
+        sidecar.reap().unwrap();
+        assert!(seen.elapsed() < std::time::Duration::from_secs(2));
+        assert!(crate::resources::footprint(old_pid).is_none());
+        assert_eq!(gate.kills.load(Ordering::Relaxed), 0);
+        assert!(gate.blocked().is_none());
+        gate.ensure();
+        let new_pid = gate.current().pid;
+        gate.proving(2);
+        gate.cancel(1, std::time::Instant::now());
+        assert!(gate.idle().is_none(), "a delayed notice cannot stop another height");
+        assert!(crate::resources::footprint(new_pid).is_some());
+        drop(gate);
+        drop(sidecar);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_verified_competitor_drops_a_transport_refused_submission() {
+        let dir = scratch("svc-lost-submission");
+        let chain = proving_chain(2);
+        chain.lock().verifier = Some(Arc::new(PaddedEcho));
+        let bin = fake(&dir, "", "");
+        let sidecar = Sidecar::spawn_prover(&bin, &dir).unwrap();
+        let program = sidecar.program.clone();
+        let status = SharedStatus::default();
+        let attempts = Arc::new(Mutex::new(Vec::new()));
+        let submitted = attempts.clone();
+        let release = Arc::new(AtomicBool::new(false));
+        let released = release.clone();
+        spawn_service(chain.clone(), bin, dir.clone(), sidecar, Address::repeat_byte(0x77), status,
+            move || Ok(program.clone()),
+            move |claim| {
+                submitted.lock().unwrap().push(claim.height);
+                if claim.height == 1 {
+                    while !released.load(Ordering::SeqCst) {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err("upstream unavailable".into())
+                } else {
+                    Ok(())
+                }
+            });
+        wait_for("initial submission", 5, || attempts.lock().unwrap().contains(&1));
+        chain.add_own_proof(competing_claim(&chain, 1)).unwrap();
+        release.store(true, Ordering::SeqCst);
+        wait_for("next height dispatched without retrying the lost claim", 5, || attempts.lock().unwrap().contains(&2));
+        assert_eq!(attempts.lock().unwrap().iter().filter(|&&h| h == 1).count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_verified_proof_of_the_active_height_cancels_and_restart_has_no_backoff() {
+        let dir = scratch("svc-competing");
+        let chain = proving_chain(3);
+        chain.lock().verifier = Some(Arc::new(PaddedEcho));
+        let bin = fake(&dir, "read x", "");
+        let sidecar = Sidecar::spawn_prover(&bin, &dir).unwrap();
+        let old_pid = sidecar.pid;
+        let (status, claims) = service(&chain, bin, sidecar, dir.clone());
+        wait_for("the first flight", 30, || status.lock().unwrap().proving == Some(1));
+        // Another height and an invalid proof must not stop the running job.
+        chain.add_own_proof(competing_claim(&chain, 2)).unwrap();
+        let mut invalid = competing_claim(&chain, 1);
+        let wrong = if invalid.proof.starts_with("00") { "01" } else { "00" };
+        invalid.proof.replace_range(..2, wrong);
+        assert!(chain.add_own_proof(invalid).is_err());
+        assert_eq!(status.lock().unwrap().cancelled, 0);
+        assert!(crate::resources::footprint(old_pid).is_some());
+        let observed = std::time::Instant::now();
+        chain.add_own_proof(competing_claim(&chain, 1)).unwrap();
+        wait_for("cancellation", 5, || status.lock().unwrap().cancelled == 1);
+        wait_for("replacement proving the next open height", 5, || claims.lock().unwrap().contains(&3));
+        let status = status.lock().unwrap();
+        assert_eq!(status.last_cancelled_height, Some(1));
+        assert!(status.last_abort_latency_ms.unwrap() < 2_000);
+        println!("competing_pool_abort_latency_ms={}", status.last_abort_latency_ms.unwrap());
+        assert!(observed.elapsed() < std::time::Duration::from_secs(5));
+        assert!(status.paused.is_none(), "a competing proof is an ordinary loss, not a crash");
+        assert!(!claims.lock().unwrap().contains(&1));
+        assert!(!claims.lock().unwrap().contains(&2));
+        chain.drop_proofs(&[1]);
+        chain.retry_proof(1);
+        assert!(chain.proof_seen(1), "a verified loss survives removal from the pool");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_proof_seen_only_in_a_finalized_block_also_stops_the_sidecar() {
+        let dir = scratch("svc-inclusion");
+        let chain = proving_chain(2);
+        chain.lock().verifier = Some(Arc::new(PaddedEcho));
+        let bin = fake(&dir, "read x", "");
+        let sidecar = Sidecar::spawn_prover(&bin, &dir).unwrap();
+        let (status, claims) = service(&chain, bin, sidecar, dir.clone());
+        wait_for("the first flight", 30, || status.lock().unwrap().proving == Some(1));
+        let parent = chain.lock().finalized.clone();
+        let height = commonware_consensus::types::Height::new(3);
+        let leader = ed25519::PrivateKey::from_seed(1).public_key();
+        let context = Context {
+            round: Round::new(EPOCH, View::new(3)), leader,
+            parent: (View::new(2), parent.digest),
+        };
+        let skeleton = Block::new(context.clone(), parent.digest, height, 3_000, bytes::Bytes::new());
+        let ctx = Chain::block_context(&chain.cfg(), &skeleton, &parent);
+        let proofs = vec![competing_claim(&chain, 1)];
+        let (pre, _) = chain.pre_state(&parent, parent.next_protocol(), &proofs, None, false).unwrap();
+        let (payload, _) = build_payload(&parent, &pre, &ctx, vec![], Extras { proofs, ..Extras::default() });
+        let block = Block::new(context, parent.digest, height, 3_000, payload.to_bytes());
+        chain.execute(&block, &parent).unwrap();
+        chain.finalize(&block).unwrap();
+        wait_for("inclusion cancellation", 5, || status.lock().unwrap().cancelled == 1);
+        wait_for("the next job after inclusion", 5, || !claims.lock().unwrap().is_empty());
+        assert_eq!(status.lock().unwrap().last_cancelled_height, Some(1));
+        println!("finalized_inclusion_abort_latency_ms={}", status.lock().unwrap().last_abort_latency_ms.unwrap());
+        assert!(!claims.lock().unwrap().contains(&1));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// (1) The sidecar is killed mid-proof: the job it was holding must not

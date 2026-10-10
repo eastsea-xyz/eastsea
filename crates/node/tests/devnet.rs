@@ -6,6 +6,8 @@
 
 use aether_test_support::{Port, TestChild};
 use serde_json::{json, Value};
+use std::io::{Read, Write};
+use std::net::{Shutdown, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -368,6 +370,554 @@ fn faucet_grant(net: &Net, i: usize, addr: &str) {
     }
 }
 
+/// A loopback WebSocket client without another test dependency. Keep received
+/// frames buffered across timeout boundaries; notifications can precede the
+/// response to a request on the same socket.
+struct RpcSocket {
+    stream: TcpStream,
+    input: Vec<u8>,
+    pending: Vec<Value>,
+    id: u64,
+    closed: bool,
+}
+
+impl RpcSocket {
+    fn connect(net: &Net, node: usize) -> Self {
+        let mut stream = TcpStream::connect(("127.0.0.1", net.rpc[node].port())).expect("connect RPC websocket");
+        stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+        let request = format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            net.rpc[node]
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut response = Vec::new();
+        while !response.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).expect("RPC websocket handshake response");
+            response.push(byte[0]);
+            assert!(response.len() <= 16 * 1024, "bounded websocket handshake");
+        }
+        let headers = String::from_utf8(response).unwrap();
+        assert!(headers.starts_with("HTTP/1.1 101 "), "RPC must upgrade to websocket: {headers}");
+        assert!(
+            headers.to_ascii_lowercase().contains("sec-websocket-accept: s3pplmbitxaq9kygzzhzrbk+xoo="),
+            "valid websocket handshake: {headers}"
+        );
+        Self { stream, input: Vec::new(), pending: Vec::new(), id: 0, closed: false }
+    }
+
+    fn receive_buffer(&self, bytes: i32) -> i32 {
+        use std::os::fd::AsRawFd;
+        let result = unsafe {
+            libc::setsockopt(
+                self.stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVBUF,
+                (&bytes as *const i32).cast(), std::mem::size_of_val(&bytes) as libc::socklen_t,
+            )
+        };
+        assert_eq!(result, 0, "set RPC client receive buffer: {}", std::io::Error::last_os_error());
+        let mut actual = 0i32;
+        let mut len = std::mem::size_of_val(&actual) as libc::socklen_t;
+        let result = unsafe {
+            libc::getsockopt(
+                self.stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVBUF,
+                (&mut actual as *mut i32).cast(), &mut len,
+            )
+        };
+        assert_eq!(result, 0, "read RPC client receive buffer: {}", std::io::Error::last_os_error());
+        actual
+    }
+
+    fn frame(&mut self, opcode: u8, payload: &[u8]) {
+        let mut frame = vec![0x80 | opcode];
+        if payload.len() < 126 {
+            frame.push(0x80 | payload.len() as u8);
+        } else if payload.len() <= u16::MAX as usize {
+            frame.push(0x80 | 126);
+            frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        } else {
+            frame.push(0x80 | 127);
+            frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        }
+        let mask = [0x12, 0x34, 0x56, 0x78];
+        frame.extend_from_slice(&mask);
+        frame.extend(payload.iter().enumerate().map(|(i, byte)| byte ^ mask[i % 4]));
+        self.stream.write_all(&frame).expect("write masked websocket frame");
+    }
+
+    fn receive(&mut self, deadline: Instant) -> Option<Value> {
+        loop {
+            if self.input.len() >= 2 {
+                let opcode = self.input[0] & 0x0f;
+                assert_ne!(self.input[0] & 0x80, 0, "server sends complete JSON frames");
+                assert_eq!(self.input[1] & 0x80, 0, "server frames are unmasked");
+                let short_len = self.input[1] & 0x7f;
+                let header = match short_len { 126 => 4, 127 => 10, _ => 2 };
+                if self.input.len() >= header {
+                    let len = match short_len {
+                        126 => u16::from_be_bytes(self.input[2..4].try_into().unwrap()) as usize,
+                        127 => usize::try_from(u64::from_be_bytes(self.input[2..10].try_into().unwrap())).unwrap(),
+                        other => other as usize,
+                    };
+                    assert!(len <= 256 * 1024, "subscription frame exceeds 256 KiB");
+                    if self.input.len() >= header + len {
+                        let payload = self.input[header..header + len].to_vec();
+                        self.input.drain(..header + len);
+                        match opcode {
+                            1 => return Some(serde_json::from_slice(&payload).expect("JSON websocket frame")),
+                            8 => { self.closed = true; return None; }
+                            9 => self.frame(10, &payload),
+                            10 => {},
+                            other => panic!("unexpected server websocket opcode {other}"),
+                        }
+                        continue;
+                    }
+                }
+            }
+            if self.closed || Instant::now() >= deadline { return None; }
+            self.stream.set_read_timeout(Some(deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1)))).unwrap();
+            let mut chunk = [0; 4096];
+            match self.stream.read(&mut chunk) {
+                Ok(0) => { self.closed = true; return None; }
+                Ok(n) => self.input.extend_from_slice(&chunk[..n]),
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => return None,
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted) => {
+                    self.closed = true;
+                    return None;
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
+                Err(e) => panic!("read RPC websocket: {e}"),
+            }
+        }
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Value {
+        self.id += 1;
+        let id = self.id;
+        self.frame(1, &serde_json::to_vec(&json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params})).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let message = self.receive(deadline).expect("websocket RPC response before timeout");
+            if message["id"] == id { return message; }
+            self.pending.push(message);
+            assert!(self.pending.len() <= 1024, "bounded test notification buffer");
+        }
+    }
+
+    fn result(&mut self, method: &str, params: Value) -> Value {
+        let answer = self.request(method, params);
+        assert!(answer.get("error").is_none(), "{method}: {answer}");
+        answer.get("result").cloned().expect("websocket RPC result")
+    }
+
+    fn subscribe(&mut self, method: &str, params: Value) -> String {
+        let result = self.result(method, params);
+        let id = result.as_str().expect("hex subscription identifier");
+        assert!(id.starts_with("0x") && id.len() > 2 && id[2..].bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        id.to_string()
+    }
+
+    fn notification(&mut self, subscription: &str, wait: Duration) -> Option<Value> {
+        let matches = |v: &Value| v["params"]["subscription"].as_str() == Some(subscription);
+        if let Some(i) = self.pending.iter().position(matches) { return Some(self.pending.remove(i)); }
+        let deadline = Instant::now() + wait;
+        while let Some(v) = self.receive(deadline) {
+            if matches(&v) { return Some(v); }
+            self.pending.push(v);
+            assert!(self.pending.len() <= 1024, "bounded test notification buffer");
+        }
+        None
+    }
+
+    fn close(&mut self) {
+        self.frame(8, &1000u16.to_be_bytes());
+        let _ = self.stream.shutdown(Shutdown::Both);
+        self.closed = true;
+    }
+}
+
+impl Drop for RpcSocket {
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
+    }
+}
+
+fn hex_quantity(value: &Value) -> u64 {
+    u64::from_str_radix(value.as_str().expect("hex quantity").strip_prefix("0x").expect("0x prefix"), 16).unwrap()
+}
+
+fn slow_websocket_reader_is_evicted_while_validators_finalize(net: &Net) {
+    const CALLS_PER_BURST: u64 = 12;
+    const BURSTS: u64 = 2;
+    const LOGS_PER_CALL: usize = 4;
+    const DATA_BYTES: usize = 32 * 1024;
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(60);
+    // Four LOG0 instructions reuse the same zeroed 32 KiB memory region.
+    // Gas: 21,000 intrinsic + 4*(375+8*32,768) + 5,120 memory + 24 pushes
+    // = 1,076,220. The 2,000,000 cap leaves room without filling a whole block.
+    let runtime = format!("{}00", "6180006000a0".repeat(LOGS_PER_CALL));
+    let len = runtime.len() / 2;
+    let init = format!("60{len:02x}600c60003960{len:02x}6000f3{runtime}");
+    let out = net.cli(&["deploy", "--rpc", &net.url(1), "--from-dev", "2", "--code", &init]);
+    let emitter = out.lines().find_map(|line| line.strip_prefix("contract: ")).expect("backpressure log emitter").trim().to_string();
+    let deploy_hash = out.split_whitespace().nth(1).expect("deployment transaction hash");
+    wait_receipt(net, 0, deploy_hash, 15);
+    let mut slow = RpcSocket::connect(net, 0);
+    let slow_buffer = slow.receive_buffer(1024);
+    assert!(slow_buffer <= 4096, "tiny slow-reader TCP receive window: {slow_buffer}");
+    let slow_id = slow.subscribe("eth_subscribe", json!(["logs", {"address":emitter}]));
+    let mut fast = RpcSocket::connect(net, 0);
+    fast.receive_buffer(1024 * 1024);
+    let fast_id = fast.subscribe("eth_subscribe", json!(["logs", {"address":emitter}]));
+    let expected_logs = CALLS_PER_BURST as usize * BURSTS as usize * LOGS_PER_CALL;
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut received = std::collections::BTreeMap::<String, usize>::new();
+        ready_tx.send(()).unwrap();
+        for _ in 0..expected_logs {
+            let notification = fast.notification(&fast_id, deadline.saturating_duration_since(Instant::now())).expect("healthy websocket reader receives every emitted log");
+            let log = &notification["params"]["result"];
+            assert_eq!(notification["method"], "eth_subscription");
+            assert!(log.get("kind").is_none(), "healthy reader must not receive a gap: {log}");
+            assert_eq!(log["data"].as_str().unwrap().len(), DATA_BYTES * 2 + 2);
+            assert_eq!(log["removed"], false);
+            let hash = log["transactionHash"].as_str().unwrap().to_string();
+            *received.entry(hash).or_default() += 1;
+        }
+        assert_eq!(fast.result("eth_unsubscribe", json!([fast_id])), true);
+        fast.close();
+        received
+    });
+    ready_rx.recv_timeout(Duration::from_secs(2)).expect("healthy reader active before emissions");
+    let status = net.rpc(0, "aether_status", json!([])).unwrap();
+    let chain_id = status["chain_id"].as_u64().unwrap();
+    let signer = aether_crypto::P256Signer::from_seed(&aether_node::chain::dev_seed(1)).unwrap();
+    let sender = dev_address(1);
+    let nonce = hex_quantity(&net.rpc(0, "eth_getTransactionCount", json!([sender])).unwrap());
+    let call = aether_execution::EvmCall {
+        to: Some(emitter.parse().unwrap()), value: aether_types::U256::ZERO,
+        input: aether_types::Bytes::new(), gas_limit: 2_000_000, delegate: None,
+    };
+    let mut hashes = Vec::new();
+    let mut finalized_height = 0;
+    for burst in 0..BURSTS {
+        let begin = hashes.len();
+        for i in 0..CALLS_PER_BURST {
+            assert!(Instant::now() < deadline, "bounded backpressure submission phase");
+            let tx = aether_execution::sign_call(&signer, chain_id, nonce + burst * CALLS_PER_BURST + i, 100_000_000_000, &call).unwrap();
+            let hash = format!("{:#x}", aether_execution::tx_hash(&tx));
+            let sent = net.rpc(3, "aether_sendTransaction", json!([tx])).expect("submit bounded backpressure call");
+            assert_eq!(sent["hash"], hash);
+            hashes.push(hash);
+        }
+        // Separate the bursts at finality: 48 logs (~3 MiB JSON) fit beneath
+        // the per-height aggregate cap, while both bursts exceed ordinary TCP
+        // send buffers. The slow client performs no reads after its ack.
+        let mut waiting: std::collections::BTreeSet<_> = hashes[begin..].iter().cloned().collect();
+        while !waiting.is_empty() {
+            let mut included = Vec::new();
+            for hash in &waiting {
+                assert!(Instant::now() < deadline, "bounded backpressure finality phase");
+                if let Some(receipt) = net.rpc(0, "aether_getReceipt", json!([hash])) {
+                    if let Some(height) = receipt["height"].as_u64() {
+                        assert_eq!(receipt["receipt"]["success"], true, "log fixture must execute: {receipt}");
+                        assert_eq!(receipt["receipt"]["events"].as_array().unwrap().len(), LOGS_PER_CALL);
+                        finalized_height = finalized_height.max(height);
+                        included.push(hash.clone());
+                    }
+                }
+            }
+            for hash in included { waiting.remove(&hash); }
+            if !waiting.is_empty() { std::thread::sleep(Duration::from_millis(50)); }
+        }
+    }
+    let received = reader.join().expect("healthy websocket reader thread");
+    assert_eq!(received.len(), hashes.len());
+    for hash in hashes { assert_eq!(received.get(&hash), Some(&LOGS_PER_CALL), "healthy reader receives all four logs of {hash}"); }
+
+    // Keep the slow reader paused through the writer's two-second deadline,
+    // and prove all four nodes make progress before draining its receive side.
+    let reader_done = Instant::now();
+    let target = finalized_height + 3;
+    loop {
+        assert!(Instant::now() < deadline, "node consensus continues under client backpressure");
+        let progressed = (0..4).all(|i| net.height(i) >= target);
+        if progressed && reader_done.elapsed() >= Duration::from_secs(3) { break; }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for node in 0..4 {
+        let b = block(net, node, target);
+        assert_eq!(b["hash"], block(net, 0, target)["hash"], "all validators agree while slow reader is paused");
+    }
+    slow.receive_buffer(256 * 1024);
+    let mut gap_seen = false;
+    let mut slow_logs = 0;
+    while let Some(notification) = slow.notification(&slow_id, deadline.saturating_duration_since(Instant::now())) {
+        let result = &notification["params"]["result"];
+        if result["kind"] == "gap" {
+            gap_seen = true;
+            assert!(matches!(result["reason"].as_str(), Some("slow_reader" | "queue_overflow")), "backpressure emits an explicit gap: {result}");
+        } else {
+            slow_logs += 1;
+        }
+    }
+    assert!(slow.closed, "slow TCP client is evicted with a gap or EOF within 60 seconds");
+    assert!(gap_seen || slow_logs < expected_logs, "the slow reader does not silently remain subscribed after missing deliveries");
+    eprintln!("backpressure: {expected_logs} healthy logs, {slow_logs} buffered slow logs, receive_buffer={slow_buffer}, gap={gap_seen}, validators agree at {target}, elapsed={:?}", started.elapsed());
+}
+
+#[test]
+fn four_validators_websocket_heads_unsubscribe_and_subscriber_limits() {
+    let _serial = serial();
+    let net = Net::start_with("rpc-push-heads", vec![vec![]; 4]);
+    for i in 0..4 { net.wait_height(i, 3, 60); }
+    let mut first = RpcSocket::connect(&net, 0);
+    let first_id = first.subscribe("eth_subscribe", json!(["newHeads"]));
+    let mut other = RpcSocket::connect(&net, 0);
+    let other_id = other.subscribe("eth_subscribe", json!(["newHeads"]));
+    aether_node::rpc_push::assert_backpressure_isolated();
+    assert_ne!(first_id, other_id);
+    assert_eq!(other.result("eth_unsubscribe", json!([first_id])), false, "a connection cannot cancel another's subscription");
+    let head = first.notification(&first_id, Duration::from_secs(30)).expect("finalized newHeads notification");
+    assert_eq!(head["method"], "eth_subscription");
+    let height = hex_quantity(&head["params"]["result"]["number"]);
+    let finalized = block(&net, 0, height);
+    assert_eq!(head["params"]["result"]["hash"].as_str().unwrap().trim_start_matches("0x"), finalized["hash"].as_str().unwrap().trim_start_matches("0x"));
+    assert_eq!(head["params"]["result"]["stateRoot"], finalized["state_root"]);
+    let inactive = json!(["logs", {"address":"0x0000000000000000000000000000000000000000"}]);
+    let log_id = first.subscribe("eth_subscribe", inactive.clone());
+    let excess = first.request("eth_subscribe", inactive.clone());
+    assert_eq!(excess["error"]["code"], -32002, "two subscriptions per connection: {excess}");
+    assert_eq!(first.result("eth_unsubscribe", json!([first_id])), true);
+    assert_eq!(first.result("eth_unsubscribe", json!([first_id])), false);
+    first.pending.retain(|v| v["params"]["subscription"] != first_id);
+    assert!(first.notification(&first_id, Duration::from_millis(750)).is_none(), "no notifications after unsubscribe acknowledges");
+    assert!(other.notification(&other_id, Duration::from_secs(30)).is_some(), "other connection stays subscribed");
+    assert_eq!(first.result("eth_unsubscribe", json!([log_id])), true);
+    first.close();
+    assert_eq!(other.result("eth_unsubscribe", json!([other_id])), true);
+    other.close();
+
+    slow_websocket_reader_is_evicted_while_validators_finalize(&net);
+
+    // Quiet log filters make the exact node-wide cap deterministic: no socket
+    // is evicted by a queue filled with notifications while slots are counted.
+    let mut sockets = Vec::new();
+    let mut ids = Vec::new();
+    for _ in 0..64 {
+        let mut socket = RpcSocket::connect(&net, 0);
+        ids.push(socket.subscribe("eth_subscribe", inactive.clone()));
+        socket.subscribe("eth_subscribe", inactive.clone());
+        sockets.push(socket);
+    }
+    let mut overflow = RpcSocket::connect(&net, 0);
+    let refused = overflow.request("eth_subscribe", inactive.clone());
+    assert_eq!(refused["error"]["code"], -32002, "128 subscriptions per node: {refused}");
+    let mut independent = RpcSocket::connect(&net, 1);
+    independent.subscribe("eth_subscribe", inactive.clone());
+    assert_eq!(sockets[0].result("eth_unsubscribe", json!([ids[0]])), true);
+    overflow.subscribe("eth_subscribe", inactive.clone());
+    sockets[0].close();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let reply = overflow.request("eth_subscribe", inactive.clone());
+        if reply.get("result").is_some() { break; }
+        assert_eq!(reply["error"]["code"], -32002, "{reply}");
+        assert!(Instant::now() < deadline, "closing a connection must release its remaining subscription");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let next = net.height(0) + 2;
+    for i in 0..4 { net.wait_height(i, next, 30); }
+    assert_agree(&net, &[0, 1, 2, 3], next);
+}
+
+#[test]
+fn four_validators_websocket_logs_match_filters_and_finalized_receipts() {
+    let _serial = serial();
+    let net = Net::start_with("rpc-push-logs", vec![vec![]; 4]);
+    for i in 0..4 { net.wait_height(i, 3, 60); }
+    // This handshake is also the old-code RED gate, before fixture deployment.
+    let mut socket = RpcSocket::connect(&net, 0);
+    let topic_a = format!("0x{}", "11".repeat(32));
+    let topic_b = format!("0x{}", "22".repeat(32));
+    let noise = format!("0x{}", "aa".repeat(32));
+    let indexed = "bb".repeat(32);
+    // Emit a noise LOG2 first, then LOG2(calldata[0], calldata[32]). This makes
+    // the matched log's block index independent of its filtered result index.
+    let runtime = format!("6020357f{}60006000a260203560003560006000a200", "aa".repeat(32));
+    let len = runtime.len() / 2;
+    let init = format!("60{len:02x}600c60003960{len:02x}6000f3{runtime}");
+    let deploy = |dev: &str| {
+        let out = net.cli(&["deploy", "--rpc", &net.url(1), "--from-dev", dev, "--code", &init]);
+        out.lines().find_map(|l| l.strip_prefix("contract: ")).expect("log emitter deployed").trim().to_string()
+    };
+    let emitter = deploy("2");
+    let other_emitter = deploy("3");
+    net.wait_height(0, net.height(1), 30);
+    let filter = json!({"address":[emitter], "topics":[[topic_a, topic_b], null]});
+    let filtered = socket.subscribe("eth_subscribe", json!(["logs", filter]));
+    let noisy = socket.subscribe("eth_subscribe", json!(["logs", {"address":emitter, "topics":[noise]}]));
+    let mut excluded = RpcSocket::connect(&net, 0);
+    let absent = excluded.subscribe("eth_subscribe", json!(["logs", {"address":"0x0000000000000000000000000000000000000000"}]));
+    let from = net.height(0) + 1;
+    let mut matching = Vec::new();
+    let mut all_hashes = Vec::new();
+    for (address, topic, expected) in [(&emitter, &topic_a, true), (&emitter, &topic_b, true), (&emitter, &format!("0x{}", "99".repeat(32)), false), (&other_emitter, &topic_a, false)] {
+        let data = format!("{}{indexed}", topic.trim_start_matches("0x"));
+        let out = net.cli(&["call", "--rpc", &net.url(3), "--from-dev", "4", "--to", address, "--data", &data, "--wait"]);
+        assert!(out.contains("success=true"), "{out}");
+        let hash = out.split_whitespace().nth(1).expect("call transaction hash").to_string();
+        let receipt = wait_receipt(&net, 0, &hash, 30);
+        assert_eq!(receipt["receipt"]["events"].as_array().unwrap().len(), 2);
+        if expected { matching.push((hash.clone(), receipt)); }
+        all_hashes.push(hash);
+    }
+    let to = net.height(0);
+    let mut query = filter;
+    query["fromBlock"] = json!(format!("0x{from:x}"));
+    query["toBlock"] = json!(format!("0x{to:x}"));
+    let expected = net.rpc(0, "eth_getLogs", json!([query])).unwrap();
+    let expected = expected.as_array().unwrap();
+    assert_eq!(expected.len(), 2, "OR topics match both target logs and exclude another topic/emitter");
+    for (i, (hash, receipt)) in matching.iter().enumerate() {
+        let notification = socket.notification(&filtered, Duration::from_secs(30)).expect("matching finalized log notification");
+        assert_eq!(notification["method"], "eth_subscription");
+        let log = &notification["params"]["result"];
+        assert_eq!(log, &expected[i], "subscription and historical log RPC agree");
+        assert_eq!(log["transactionHash"], *hash);
+        assert_eq!(hex_quantity(&log["blockNumber"]), receipt["height"].as_u64().unwrap());
+        let b = block(&net, 0, receipt["height"].as_u64().unwrap());
+        let tx_index = b["txs"].as_array().unwrap().iter().position(|tx| tx == hash).unwrap() as u64;
+        assert_eq!(hex_quantity(&log["transactionIndex"]), tx_index);
+        assert_eq!(log["logIndex"], "0x1", "noise log consumes block log index zero");
+        assert_eq!(log["removed"], false, "only finalized logs are pushed");
+        assert_eq!(log["topics"][1], format!("0x{indexed}"), "null positional filter preserves the indexed topic");
+        for node in 1..4 { wait_receipt(&net, node, hash, 30); }
+    }
+    for hash in &all_hashes[..3] {
+        let notification = socket.notification(&noisy, Duration::from_secs(30)).expect("independent topic filter");
+        assert_eq!(notification["params"]["result"]["transactionHash"], *hash);
+        assert_eq!(notification["params"]["result"]["logIndex"], "0x0");
+    }
+    assert!(socket.notification(&filtered, Duration::from_millis(750)).is_none(), "excluded topic and emitter do not leak into the subscription");
+    assert!(excluded.notification(&absent, Duration::from_millis(750)).is_none(), "address filter excludes other emitters");
+}
+
+fn has_wallet_topic(notification: &Value, topic: &str) -> bool {
+    notification["params"]["result"]["topics"].as_array().is_some_and(|topics| topics.iter().any(|t| t == topic))
+}
+
+#[test]
+fn four_validators_own_node_wallet_push_replays_and_reports_gap() {
+    let _serial = serial();
+    let net = Net::start_with("rpc-push-wallet", vec![vec![]; 4]);
+    for i in 0..4 { net.wait_height(i, 3, 60); }
+    let mut socket = RpcSocket::connect(&net, 0);
+    let address = dev_address(2);
+    let chain_id = net.rpc(0, "aether_status", json!([])).unwrap()["chain_id"].as_u64().unwrap();
+    let signer = aether_crypto::P256Signer::from_seed(&aether_node::chain::dev_seed(1)).unwrap();
+    let transfer = |nonce, value| {
+        aether_execution::sign_call(&signer, chain_id, nonce, 100_000_000_000, &aether_execution::EvmCall {
+            to: Some(address.parse().unwrap()), value: aether_types::U256::from(value),
+            input: aether_types::Bytes::new(), gas_limit: 21_000, delegate: None,
+        }).unwrap()
+    };
+    // Know both hashes before subscription, including the transaction that
+    // will finalize while this wallet is disconnected.
+    let tx = transfer(0, 777u64);
+    let offline_tx = transfer(1, 888u64);
+    let hash = format!("{:#x}", aether_execution::tx_hash(&tx));
+    let offline_hash = format!("{:#x}", aether_execution::tx_hash(&offline_tx));
+    let subscription = socket.subscribe("aether_subscribe", json!(["wallet", {"address":address, "transactions":[hash, offline_hash]}]));
+    let initial = socket.notification(&subscription, Duration::from_secs(5)).expect("wallet initial snapshot");
+    assert_eq!(initial["method"], "aether_subscription");
+    assert_eq!(initial["params"]["result"]["kind"], "wallet");
+    for topic in ["head", "balance", "tx_status", "release"] {
+        assert!(has_wallet_topic(&initial, topic), "initial wallet view includes {topic}: {initial}");
+    }
+    let initial_height = initial["params"]["result"]["height"].as_u64().unwrap();
+    let sent = net.rpc(3, "aether_sendTransaction", json!([tx])).expect("submit tracked transfer");
+    assert_eq!(sent["hash"], hash);
+    let receipt = wait_receipt(&net, 0, &hash, 30);
+    assert_eq!(receipt["receipt"]["success"], true);
+    let height = receipt["height"].as_u64().unwrap();
+    assert!(height > initial_height, "subscribed before transaction finality");
+    let mut last = initial_height;
+    loop {
+        let notification = socket.notification(&subscription, Duration::from_secs(30)).expect("live own-node wallet watermark");
+        let current = notification["params"]["result"]["height"].as_u64().unwrap();
+        assert!(current == last || current == last + 1, "every finalized height advances the wallet, including empty blocks");
+        assert!(has_wallet_topic(&notification, "head"));
+        last = current;
+        if current == height {
+            assert!(has_wallet_topic(&notification, "balance"), "recipient balance change is pushed at finality: {notification}");
+            assert!(has_wallet_topic(&notification, "tx_status"), "watched transaction finality is pushed: {notification}");
+            break;
+        }
+        assert!(current < height, "must not skip the finalized transfer height");
+    }
+
+    // Dealer-key devnets have no pinned committee identity for upgrades.
+    // The real-DKG fixture below covers finalized release notices; this
+    // stream still checks that unchanged heads do not dirty wallet reads.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let notification = socket.notification(&subscription, deadline.saturating_duration_since(Instant::now())).expect("unchanged own-node wallet watermark");
+        let current = notification["params"]["result"]["height"].as_u64().unwrap();
+        assert!(current == last || current == last + 1, "unchanged wallet stream has complete finalized head watermarks");
+        assert!(has_wallet_topic(&notification, "head"));
+        last = current;
+        if current > height {
+            assert!(!has_wallet_topic(&notification, "balance"), "unchanged balances must not trigger repeated wallet refreshes");
+            assert!(!has_wallet_topic(&notification, "tx_status"), "unchanged watched receipts must not trigger repeated wallet refreshes");
+            break;
+        }
+    }
+    socket.close();
+    net.rpc(2, "aether_sendTransaction", json!([offline_tx])).expect("transfer while wallet disconnected");
+    let offline_receipt = wait_receipt(&net, 0, &offline_hash, 30);
+    assert_eq!(offline_receipt["receipt"]["success"], true);
+    let offline_height = offline_receipt["height"].as_u64().unwrap();
+    net.wait_height(0, offline_height + 2, 30);
+    let watermark = net.height(0);
+    let mut resumed = RpcSocket::connect(&net, 0);
+    let resumed_id = resumed.subscribe("aether_subscribe", json!(["wallet", {"address":address, "transactions":[hash, offline_hash], "after":last}]));
+    let mut received = std::collections::BTreeSet::new();
+    let mut previous = last;
+    let mut offline_hint = false;
+    loop {
+        let notification = resumed.notification(&resumed_id, Duration::from_secs(30)).expect("bounded reconnect replay");
+        assert_eq!(notification["params"]["result"]["kind"], "wallet", "retained history resumes without a gap: {notification}");
+        let current = notification["params"]["result"]["height"].as_u64().unwrap();
+        assert!(current >= previous, "replay stays ordered across initial snapshot and live registration");
+        assert!(current >= last, "a durable cursor is never rolled backwards");
+        previous = current;
+        received.insert(current);
+        if current == offline_height {
+            offline_hint |= has_wallet_topic(&notification, "balance") && has_wallet_topic(&notification, "tx_status");
+        }
+        if current >= watermark { break; }
+    }
+    for expected in last + 1..=watermark {
+        assert!(received.contains(&expected), "no replay-to-live height gap at {expected}");
+    }
+    assert!(offline_hint, "offline transaction is present in the own-node catch-up view");
+    assert_eq!(resumed.result("eth_unsubscribe", json!([resumed_id])), true);
+    resumed.close();
+
+    // A cursor outside the node's retained finalized history cannot look like
+    // an empty inbox. The explicit gap is followed by stream termination.
+    let mut gap_socket = RpcSocket::connect(&net, 0);
+    let gap_id = gap_socket.subscribe("aether_subscribe", json!(["wallet", {"address":address, "transactions":[], "after":u64::MAX}]));
+    let gap = gap_socket.notification(&gap_id, Duration::from_secs(5)).expect("explicit history-unavailable gap");
+    assert_eq!(gap["params"]["result"]["kind"], "gap");
+    assert_eq!(gap["params"]["result"]["reason"], "history_unavailable");
+    assert!(gap_socket.receive(Instant::now() + Duration::from_secs(5)).is_none());
+    assert!(gap_socket.closed, "gap terminates the stream");
+    assert_agree(&net, &[0, 1, 2, 3], offline_height);
+}
+
 /// Every validator leaves dev 3 out of its own ordering, and validator 1 also
 /// ignores inclusion lists. Dev 3's tx can then only land through a list:
 /// published by a committee member, gossiped, put first by an honest proposer.
@@ -586,7 +1136,9 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     //    protocol stop before it activates instead of forking.
     let target = net.height(0) + 40;
     let next = aether_node::upgrade::PROTOCOL + 1;
-    let upgrade = json!({ "chain_id": written["chain_id"], "protocol": next, "activate_at": target, "releases": [], "notes": "test" });
+    let upgrade = json!({ "chain_id": written["chain_id"], "protocol": next, "activate_at": target,
+        "releases": [{ "platform": "macos-arm64-dmg", "version": "0.0.0-rpc-push-fixture",
+            "blake3": "ab".repeat(32), "url": "https://example.invalid/rpc-push-fixture.dmg" }], "notes": "test" });
     let up_path = dir.join("upgrade.json");
     std::fs::write(&up_path, upgrade.to_string()).unwrap();
     let net_file = data(0).join("network.json");
@@ -606,8 +1158,18 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
     let signed_path = dir.join("signed.json");
     std::fs::write(&signed_path, &signed).unwrap();
     assert!(net.cli(&["upgrade-verify", "--network", net_file.to_str().unwrap(), signed_path.to_str().unwrap()]).contains("signed by the committee"));
+    // Consume the subscription's initial release hint before announcing a
+    // real DKG-signed release; only a later finalized notice can satisfy it.
+    let mut socket = RpcSocket::connect(&net, 0);
+    let subscription = socket.subscribe("aether_subscribe", json!(["wallet", {"address":bob, "transactions":[]}]));
+    let initial = socket.notification(&subscription, Duration::from_secs(5)).expect("DKG wallet initial snapshot");
+    assert!(has_wallet_topic(&initial, "head"));
+    assert!(has_wallet_topic(&initial, "release"));
+    let initial_height = initial["params"]["result"]["height"].as_u64().unwrap();
+    let mut last_wallet_height = initial_height;
     // A forged copy (protocol changed) is ignored; the signed one stops the nodes.
-    let mut forged: Value = serde_json::from_str(&signed).unwrap();
+    let signed_notice: Value = serde_json::from_str(&signed).unwrap();
+    let mut forged = signed_notice.clone();
     forged["upgrade"]["protocol"] = json!(1);
     forged["upgrade"]["activate_at"] = json!(1);
     for i in 0..n {
@@ -616,6 +1178,25 @@ fn locally_generated_keys_network_file_dkg_and_consensus() {
         std::fs::write(d.join("forged.json"), forged.to_string()).unwrap();
         std::fs::write(d.join("v2.json"), &signed).unwrap();
     }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let notification = socket.notification(&subscription, deadline.saturating_duration_since(Instant::now()))
+            .expect("finalized release notice is pushed");
+        assert_eq!(notification["params"]["result"]["kind"], "wallet");
+        let current = notification["params"]["result"]["height"].as_u64().unwrap();
+        assert!(current == last_wallet_height || current == last_wallet_height + 1,
+            "release notice stream has complete finalized head watermarks");
+        assert!(has_wallet_topic(&notification, "head"));
+        last_wallet_height = current;
+        if has_wallet_topic(&notification, "release") {
+            assert!(current > initial_height && current < target, "release is finalized before activation");
+            let status = net.rpc(0, "aether_status", json!([])).unwrap();
+            assert!(status["upcoming_upgrades"].as_array().unwrap().iter().any(|notice| notice == &signed_notice),
+                "release hint comes from a finalized committee-signed notice: {status}");
+            break;
+        }
+    }
+    socket.close();
     let end = Instant::now() + Duration::from_secs(120);
     while Instant::now() < end && (0..n).any(|i| net.alive(i)) {
         std::thread::sleep(Duration::from_millis(250));
@@ -907,6 +1488,126 @@ fn a_follower_verifies_everything_and_serves_a_wallet() {
     assert_eq!(b2.height, 2);
 }
 
+/// A valid certificate proves a block, not that a single path's replay is
+/// today's head. Replay one stale certified head while only one source has
+/// the current head; a follower must wait for a second current witness.
+#[test]
+fn rel24_follower_rejects_a_stale_path_and_waits_for_two_current_sources() {
+    let _serial = serial();
+    let mut net = Net::start_with("rel24", vec![vec![]; 4]);
+    for i in 0..4 { net.wait_height(i, 8, 90); }
+    // A real finalized large-read fixture: valid one-byte runtime, with padded
+    // init code. Its canonical finalized RPC includes the actual transaction.
+    let init = format!("6001600c60003960016000f300{}", "00".repeat(16_000));
+    let deployed = net.cli(&["deploy", "--rpc", &net.url(0), "--from-dev", "2", "--code", &init]);
+    assert!(deployed.contains("contract: "), "{deployed}");
+    let target = net.height(0) + 2;
+    for i in 0..4 { net.wait_height(i, target, 60); }
+    for i in 0..4 { net.kill(i); }
+    // Restore one validator for reads only: the other three remain stopped,
+    // so certificates and the DB fixture cannot change during this test.
+    net.spawn(0);
+    net.wait_height(0, 8, 60);
+    let head = net.height(0);
+    let mut proofs = std::collections::BTreeMap::new();
+    for h in 1..=head {
+        proofs.insert(h, net.rpc(0, "aether_getFinalized", json!([h])).unwrap());
+    }
+    net.kill(0);
+    let proofs = std::sync::Arc::new(proofs);
+
+    struct Source {
+        url: String,
+        enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        stop: Option<tokio::sync::oneshot::Sender<()>>,
+        task: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for Source {
+        fn drop(&mut self) {
+            if let Some(stop) = self.stop.take() { let _ = stop.send(()); }
+            if let Some(task) = self.task.take() { let _ = task.join(); }
+        }
+    }
+    let source = |height: u64, enabled: bool| {
+        let enabled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(enabled));
+        let flag = enabled.clone();
+        let proofs = proofs.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let task = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                started_tx.send(format!("http://{}", listener.local_addr().unwrap())).unwrap();
+                let app = axum::Router::new().route("/", axum::routing::post(move |axum::Json(req): axum::Json<Value>| {
+                    let proofs = proofs.clone();
+                    let flag = flag.clone();
+                    async move {
+                        let result = if !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                            Value::Null
+                        } else if req["method"] == "aether_status" {
+                            json!({"height":height})
+                        } else if req["method"] == "aether_getFinalized" {
+                            req["params"][0].as_u64().filter(|h| *h <= height)
+                                .and_then(|h| proofs.get(&h).cloned()).unwrap_or(Value::Null)
+                        } else { Value::Null };
+                        axum::Json(json!({"jsonrpc":"2.0", "id":req["id"], "result":result}))
+                    }
+                }));
+                axum::serve(listener, app).with_graceful_shutdown(async { let _ = stopped.await; }).await.unwrap();
+            });
+        });
+        Source {url:started_rx.recv().unwrap(), enabled, stop:Some(stop), task:Some(task)}
+    };
+    let stale = source(3, true);
+    let fresh = source(head, true);
+    let corroborator = source(head, false);
+    let port = Port::reserve().expect("reserve test port");
+    let data = net.dir.join("follower");
+    let log = net.dir.join("rel24-follower.log");
+    let from = format!("{},{},{}", stale.url, fresh.url, corroborator.url);
+    let child = spawn_logged(log, &["follow".into(), "--from-rpc".into(), from,
+        "--data".into(), data.to_str().unwrap().into(), "--rpc-port".into(), port.to_string()]);
+    net.rpc.push(port);
+    net.procs.push(Some(child));
+    net.logs.push(net.dir.join("rel24-follower.log"));
+    let f = net.rpc.len() - 1;
+    let deadline = Instant::now() + Duration::from_secs(45);
+    while net.rpc(f, "aether_status", json!([])).is_none() {
+        assert!(Instant::now() < deadline, "follower did not start{}", net.log_tail(f));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Wait long enough for several polling rounds. Old code accepts the stale
+    // path's three valid blocks, then the sole current source's head.
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(net.height(f), 0, "a stale certificate and one current witness must not establish the head{}", net.log_tail(f));
+    let status = net.rpc(f, "aether_status", json!([])).unwrap();
+    assert_eq!(status["follower_network"]["alert"], true, "HTTP-only devnet paths are explicitly degraded");
+    corroborator.enabled.store(true, std::sync::atomic::Ordering::SeqCst);
+    net.wait_height(f, head, 60);
+    let fin = net.rpc(f, "aether_getFinalized", json!([head])).unwrap();
+    assert_eq!(fin["block"], proofs[&head]["block"], "the accepted head is the corroborated certified block");
+    fresh.enabled.store(false, std::sync::atomic::Ordering::SeqCst);
+    corroborator.enabled.store(false, std::sync::atomic::Ordering::SeqCst);
+    std::thread::sleep(Duration::from_secs(2));
+    let status = net.rpc(f, "aether_status", json!([])).unwrap();
+    assert_eq!(status["follower_network"]["head_confirmed"], false, "cached agreement cannot survive lost sources");
+    assert_eq!(net.height(f), head, "a later stale head never rolls state back");
+    if let Ok(copy) = std::env::var("AETHER_REL_DB_FIXTURE") {
+        let copy = std::path::Path::new(&copy);
+        std::fs::create_dir_all(copy).unwrap();
+        std::fs::copy(net.data(0).join("state.redb"), copy.join("state.redb")).unwrap();
+        let store = aether_node::store::Store::open_for_maintenance(&copy.join("state.redb")).unwrap();
+        for (h, proof) in proofs.iter() {
+            store.put_proof(*h, proof.to_string().as_bytes()).unwrap();
+        }
+        drop(store);
+        let measurement_height = proofs.iter().max_by_key(|(_, p)| p["block"].as_str().map(str::len).unwrap_or(0)).unwrap().0;
+        std::fs::write(copy.join("certificates.json"), serde_json::to_vec(&*proofs).unwrap()).unwrap();
+        std::fs::write(copy.join("fixture.json"), json!({"head":head, "measurement_height":measurement_height, "validators":4, "origin":"isolated loopback devnet"}).to_string()).unwrap();
+    }
+}
+
 /// Open voting nodes, part 2: a follower Mac becomes a candidate. Its owner
 /// registers it once (registrar attestation → registry); from then on the node
 /// sends a liveness beacon every epoch by itself and its streak grows.
@@ -926,7 +1627,7 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     let args: Vec<String> = vec![
         "follow".into(),
         "--from-rpc".into(),
-        net.url(1),
+        format!("{},{}", net.url(1), net.url(2)),
         "--data".into(),
         data.to_str().unwrap().into(),
         "--rpc-port".into(),
@@ -944,7 +1645,7 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     // This legacy devnet has no free lane; its genesis funds dev account 4,
     // so the contract registration pays normally.
     assert_eq!(net.rpc(0, "aether_status", json!([])).unwrap()["free_registration"], false);
-    let out = net.cli(&["candidate-register", "--data", data.to_str().unwrap(), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", "4"]);
+    let out = net.cli(&["candidate-register", "--devnet", "--data", data.to_str().unwrap(), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", "4"]);
     assert!(out.contains("candidate") && out.contains("success=true"), "{out}");
     let mine = |net: &Net| net.rpc(0, "aether_candidates", json!([])).expect("candidates");
     let c = mine(&net);
@@ -952,7 +1653,7 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     assert_eq!(c["candidates"][0]["operator"].as_str().unwrap().to_lowercase(), dev_address(4).to_lowercase());
     let current_epoch = c["epoch"].as_u64().unwrap();
     assert_eq!(c["next_draw_epoch"], (current_epoch / 24 + 1) * 24, "{c}");
-    assert_eq!(c["open_seats"], 1, "a four-validator draw has one seat: {c}");
+    assert_eq!(c["open_seats"], 0, "a dealer devnet has no authoritative DKG draw roster: {c}");
     let candidate = &c["candidates"][0];
     assert!(candidate["missed"].is_u64(), "missed epochs must be visible: {c}");
     assert_eq!(candidate["eligible_next_draw"], false, "this Mac is still warming up: {c}");
@@ -960,7 +1661,7 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     assert!(candidate["hours_to_eligible"].as_f64().is_some_and(|h| h > 0.0), "a live devnet has a measured ETA: {c}");
     // Registering the same Mac again is refused by the registry.
     assert!(!net
-        .cli_fails(&["candidate-register", "--data", data.to_str().unwrap(), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", "4"])
+        .cli_fails(&["candidate-register", "--devnet", "--data", data.to_str().unwrap(), "--registrar-rpc", &net.url(0), "--rpc", &net.url(0), "--from-dev", "4"])
         .is_empty());
 
     // Two more epochs pass: the node beacons by itself and the streak grows.
@@ -988,7 +1689,7 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     let data = net.dir.join("candidate-replay");
     let log_path = net.dir.join("candidate-replay.log");
     let args = vec![
-        "follow".into(), "--from-rpc".into(), net.url(0),
+        "follow".into(), "--from-rpc".into(), format!("{},{}", net.url(0), net.url(1)),
         "--data".into(), data.to_str().unwrap().into(),
         "--rpc-port".into(), port.port().to_string(), epoch[0].clone(), epoch[1].clone(),
     ];
@@ -1001,6 +1702,255 @@ fn a_candidate_registers_once_and_beacons_every_epoch() {
     assert_eq!(block(&net, replay, checkpoint)["state_root"], root, "candidate reads do not change the state root on devnet replay");
     for h in [checkpoint, checkpoint + 1, checkpoint + 2] { assert_agree(&net, &[0, 1, 2, 3, replay], h); }
     eprintln!("candidate observability replay: height={checkpoint} unchanged state_root={root}");
+}
+
+/// Restart all four voters with a finalized rotation still pending. Their
+/// background reshares must use listeners separate from the consecutive
+/// consensus ports, finish while the old committee votes, and seat a candidate.
+#[test]
+fn background_reshare_survives_mid_epoch_validator_restarts() {
+    use commonware_codec::Encode as _;
+    use commonware_cryptography::bls12381::primitives::variant::MinSig;
+
+    let _serial = serial();
+    let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-reshare-bind", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = |i: usize| dir.join(i.to_string()).to_str().unwrap().to_string();
+    let path = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    for i in 1..=5 {
+        run_ok(&["keygen", "--data", &d(i)]);
+    }
+    let faucet = run_ok(&["faucet-key", "--data", &d(1)]);
+    let faucet_addr = faucet.split_whitespace().nth(2).unwrap().to_string();
+    let mut args: Vec<String> = vec![
+        "network".into(), "--chain-id".into(), "7777".into(),
+        "--faucet".into(), faucet_addr, "--dev-registrar".into(),
+        "--epoch-blocks".into(), "40".into(), "--min-streak".into(), "0".into(),
+        "--draw-epochs".into(), "1".into(),
+    ];
+    args.extend((1..=4).map(|i| format!("{}/validator.pub.json", d(i))));
+    std::fs::write(path("A.json"), run_ok(&args.iter().map(String::as_str).collect::<Vec<_>>())).unwrap();
+
+    let ceremony_ports: Vec<Port> = (0..4).map(|_| Port::reserve().expect("reserve ceremony port")).collect();
+    let ceremony: Vec<TestChild> = (0..4).map(|i| spawn_quiet(&[
+        "dkg".into(), "--network".into(), path("A.json"),
+        "--port".into(), ceremony_ports[i].to_string(), "--data".into(), d(i + 1),
+        "--peers".into(), tcp_peers(&ceremony_ports, i), "--offline".into(),
+    ])).collect();
+    for child in ceremony {
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "dkg failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    std::fs::copy(format!("{}/network.json", d(1)), path("A-final.json")).unwrap();
+    let initial: Value = serde_json::from_slice(&std::fs::read(path("A-final.json")).unwrap()).unwrap();
+    let identity = initial["identity"].as_str().unwrap().to_string();
+    let old_round = initial["round"].as_u64().unwrap();
+    let record = coordinator_check(&path("A-final.json"));
+    for i in 1..=4 {
+        verify_local(&path("A-final.json"), &d(i), &record);
+    }
+
+    // On 0.7.3 each omitted --reshare-port resolves to the next node's live
+    // consensus port. Lease both this block and the repaired default +11000
+    // block below the ephemeral TCP range; keep every lease through cleanup.
+    let start = std::process::id() % 7_995;
+    let (p2p, _reshare_ports) = (0..7_995).find_map(|offset| {
+        let base = 30_000 + ((start + offset) % 7_995) as u16;
+        let p2p = (0..5).map(|i| Port::reserve_at(base + i))
+            .collect::<std::io::Result<Vec<_>>>().ok()?;
+        let reshare = (0..5).map(|i| Port::reserve_at(base + 11_000 + i))
+            .collect::<std::io::Result<Vec<_>>>().ok()?;
+        Some((p2p, reshare))
+    }).expect("reserve consecutive consensus and reshare ports");
+    let rpc: Vec<Port> = (0..5).map(|_| Port::reserve().expect("reserve RPC port")).collect();
+    let mut net = Net::prepared(dir.clone(), p2p, rpc, vec![vec![]; 5]);
+    for i in 0..4 {
+        let mut cmd = Command::new(BIN);
+        cmd.args([
+            "node", "--network", &path("A-final.json"), "--ceremony", &record,
+            "--data", &d(i + 1), "--port", &net.p2p[i].to_string(),
+            "--rpc-port", &net.rpc[i].to_string(), "--block-time-ms", "500",
+            "--peers", &tcp_peers(&net.p2p[..4], i), "--offline", "--min-free-disk", "0",
+        ]).env("RUST_LOG", "info,commonware=warn");
+        if i == 0 {
+            cmd.args(["--dev-registrar", "--faucet-key", &format!("{}/faucet.key", d(1))]);
+        }
+        net.procs[i] = Some(TestChild::spawn(cmd, &net.logs[i]).expect("spawn initial voter"));
+    }
+    for i in 0..4 {
+        net.wait_height(i, 3, 90);
+    }
+    // A direct follower has the same keys/follow layout the supervisor will
+    // reopen, but neither direct child starts an automatic reshare yet.
+    let upstream = (0..4).map(|i| net.url(i)).collect::<Vec<_>>().join(",");
+    let mut cmd = Command::new(BIN);
+    cmd.args([
+        "follow", "--network", &path("A-final.json"), "--data", &format!("{}/follow", d(5)),
+        "--keys", &d(5), "--candidate", "--checkpoint", "--from-rpc", &upstream,
+        "--rpc-port", &net.rpc[4].to_string(), "--min-free-disk", "0",
+    ]).env("RUST_LOG", "info,commonware=warn");
+    net.procs[4] = Some(TestChild::spawn(cmd, &net.logs[4]).expect("spawn initial candidate"));
+    net.wait_height(4, 3, 90);
+    for dev in 1..=5 {
+        faucet_grant(&net, 0, &dev_address(dev));
+    }
+    let aa = "0x00000000000000000000000000000000000000aa";
+    net.cli(&["send", "--rpc", &net.url(0), "--from-dev", "1", "--to", aa, "--value", "11", "--wait"]);
+    let payment_height = net.height(0);
+    // Four eligible keys are needed for this draw. Register three current
+    // voters and the candidate with separate owners: voter four must leave.
+    for (operator, node) in [1, 2, 3, 5].into_iter().enumerate() {
+        let out = net.cli(&[
+            "candidate-register", "--data", &d(node), "--network", &path("A-final.json"),
+            "--registrar-rpc", &net.url(0),
+            "--rpc", &net.url(0), "--from-dev", &(operator + 2).to_string(),
+        ]);
+        assert!(out.contains("success=true"), "{out}");
+    }
+    let expected_keys: std::collections::BTreeSet<String> = [1, 2, 3, 5].map(|i| keys_of(&d(i))).into_iter().collect();
+    let end = Instant::now() + Duration::from_secs(180);
+    let proposal = loop {
+        if let Some(rot) = net.rpc(0, "aether_rotation", json!([])).filter(|v| !v.is_null()) {
+            let offset = rot["height"].as_u64().unwrap() % 40;
+            // Leave room for all four persisted heads to be inside the epoch.
+            if (4..=30).contains(&offset) {
+                assert!(net.rpc(0, "aether_handoff", json!([])).unwrap().is_null());
+                break rot;
+            }
+        }
+        assert!(Instant::now() < end, "no pending mid-epoch rotation{}", net.log_tail(0));
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let proposed_keys: std::collections::BTreeSet<String> = proposal["next"].as_array().unwrap().iter()
+        .map(|member| member["key"].as_str().unwrap().to_string()).collect();
+    assert_eq!(proposed_keys, expected_keys);
+    let restart_height = proposal["height"].as_u64().unwrap();
+    let expected_round = old_round + 2 * proposal["epoch"].as_u64().unwrap() + 1;
+    for i in 0..4 {
+        net.wait_height(i, restart_height, 30);
+        assert!(net.rpc(i, "aether_handoff", json!([])).unwrap().is_null());
+    }
+    for i in 0..5 {
+        net.kill(i);
+    }
+    for i in 1..=4 {
+        let head = run_ok(&["head", "--data", &d(i)]);
+        let height = head.split_whitespace().next().unwrap().parse::<u64>().unwrap();
+        assert_ne!(height % 40, 0, "voter {i} must restart mid-epoch, at {height}");
+    }
+    // Give every restarting node TCP peers even before the other supervisors
+    // publish. Each supervisor replaces its own placeholder reshare field
+    // with the resolved port before starting its child and watching the draw.
+    std::fs::create_dir_all(path("peers")).unwrap();
+    for i in 0..5 {
+        std::fs::write(
+            dir.join("peers").join(keys_of(&d(i + 1))),
+            format!("{} {}", net.p2p[i], net.p2p[i].port() + 11_000),
+        ).unwrap();
+    }
+    let offsets: Vec<usize> = net.logs.iter().map(|log| std::fs::metadata(log).unwrap().len() as usize).collect();
+    for i in 0..5 {
+        let others = (0..5).filter(|j| *j != i).map(|j| net.url(j)).collect::<Vec<_>>().join(",");
+        let mut cmd = Command::new(BIN);
+        cmd.args([
+            "run", "--data", &d(i + 1), "--network", &path("A-final.json"), "--ceremony", &record,
+            "--port", &net.p2p[i].to_string(), "--rpc-port", &net.rpc[i].to_string(),
+            "--dev-peer-dir", &path("peers"), "--min-free-disk", "0", "--node-arg=--block-time-ms=500",
+            &format!("--follow-arg=--from-rpc={others}"),
+        ]).env("RUST_LOG", "info,commonware=warn").env("AETHER_TEST_INTERNAL_KEY_DIR", d(i + 1));
+        if i == 0 {
+            cmd.args(["--node-arg=--dev-registrar", &format!("--node-arg=--faucet-key={}/faucet.key", d(1))]);
+        }
+        let child = TestChild::spawn(cmd, &net.logs[i]).expect("restart with supervisor");
+        // A background bind failure is the regression, not an external
+        // startup port race the harness should hide with another restart.
+        child.mark_started();
+        net.procs[i] = Some(child);
+    }
+    let check_reshare = || {
+        let logs: Vec<String> = net.logs.iter().zip(&offsets).map(|(path, offset)| {
+            std::fs::read_to_string(path).unwrap()[*offset..].to_string()
+        }).collect();
+        for (i, log) in logs.iter().enumerate() {
+            assert!(
+                !log.contains("BindFailed") && !log.contains("p2p closed") && !log.contains("reshare failed:"),
+                "background reshare failed after voter restart on node {}:\n{}", i + 1, log,
+            );
+        }
+        logs
+    };
+    let end = Instant::now() + Duration::from_secs(330);
+    loop {
+        let logs = check_reshare();
+        if logs[..4].iter().all(|log| log.contains("reshare: started")) {
+            break;
+        }
+        assert!(Instant::now() < end, "not all restarted voters started their background reshare: {logs:?}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let end = Instant::now() + aether_node::supervisor::default_reshare_timeout(4) + Duration::from_secs(30);
+    let reshare_height = net.height(0);
+    let mut last_height = reshare_height;
+    let mut progressed = Instant::now();
+    let handoff = loop {
+        check_reshare();
+        let height = net.height(0);
+        if height > last_height {
+            last_height = height;
+            progressed = Instant::now();
+        }
+        assert!(progressed.elapsed() < Duration::from_secs(30), "old committee stopped during DKG at {height}{}", net.log_tail(0));
+        if let Some(handoff) = net.rpc(0, "aether_handoff", json!([])).filter(|v| !v.is_null()) {
+            assert!(height >= reshare_height + 3, "the old committee must advance during background DKG");
+            break handoff;
+        }
+        assert!(Instant::now() < end, "no handoff after restarted background reshares{}", net.log_tail(0));
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(handoff["round"], json!(expected_round));
+    let members: std::collections::BTreeSet<String> = handoff["members"].as_array().unwrap().iter()
+        .map(|member| member["key"].as_str().unwrap().to_string()).collect();
+    assert_eq!(members, expected_keys, "the candidate replaces the fourth founder");
+    let switch = handoff["switch"].as_u64().unwrap();
+    let end = Instant::now() + Duration::from_secs(120);
+    for i in [0, 1, 2, 4] {
+        loop {
+            check_reshare();
+            let network = std::fs::read(net.data(i).join("network.json")).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+            let threshold = std::fs::read(net.data(i).join("threshold.json")).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+            let installed = network.as_ref().zip(threshold.as_ref()).is_some_and(|(network, threshold)| {
+                network["round"] == handoff["round"] && threshold["round"] == handoff["round"]
+                    && network["output"] == handoff["output"] && threshold["output"] == handoff["output"]
+                    && network["identity"] == identity && threshold["identity"] == identity
+            });
+            if installed && !net.data(i).join("no-vote").exists()
+                && net.rpc(i, "aether_network", json!([true])).is_some_and(|network| network["round"] == handoff["round"])
+            {
+                let key: aether_node::dkg::KeyFile = serde_json::from_value(threshold.unwrap()).unwrap();
+                let (output, share) = key.decode(4).expect("installed share decodes");
+                assert_eq!(hex::encode(output.players().get(usize::from(share.index)).unwrap().encode()), keys_of(&d(i + 1)));
+                assert_eq!(output.public().partial_public(share.index).ok(), Some(share.public::<MinSig>()), "installed share signs for its seat");
+                break;
+            }
+            assert!(Instant::now() < end, "new voter {} did not install its matching share{}", i + 1, net.log_tail(i));
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+    for height in [payment_height, restart_height, switch - 1, switch, switch + 10] {
+        assert_agree(&net, &[0, 1, 2, 4, 3], height);
+    }
+    check_reshare();
+    let balance = net.cli(&["balance", aa, "--rpc", &net.url(4), "--identity", &identity]);
+    assert!(balance.contains("balance   11 wei") && balance.contains("verified  ✓"), "{balance}");
+    // Two retained voters need the newly seated candidate for quorum.
+    net.kill(0);
+    let quorum_height = [1, 2, 4, 3].into_iter().map(|i| net.height(i)).max().unwrap() + 3;
+    for i in [1, 2, 4] {
+        net.wait_height(i, quorum_height, 60);
+    }
+    assert_agree(&net, &[1, 2, 4, 3], quorum_height);
+    eprintln!("restarted background reshare: height={restart_height} round={expected_round} switch={switch} identity unchanged");
 }
 
 /// Open voting nodes: nobody runs a ceremony by hand. Four Macs run `aether
@@ -1185,17 +2135,11 @@ fn open_voting_nodes_take_over_the_chain_by_themselves() {
     assert!(bal.contains("balance   11 wei") && bal.contains("verified  ✓"), "{bal}");
 }
 
-/// Founder reserve keys run as `aether run` like any Mac (docs/ops/reserve-keys.md):
-/// three keys that are not in the genesis voting set and never register follow
-/// the chain. With the genesis set holding four seats, not one of them joins —
-/// reserve keys only fill a committee that is short of four seats, because
-/// growing four to seven would put three seats on the founder's one Mac and let
-/// its outage stall the quorum. They stay followers with no share and no vote,
-/// and the chain never stops.
-#[test]
-fn founder_reserve_keys_stay_followers_over_a_full_committee() {
-    let _serial = serial();
-    let dir = std::env::temp_dir().join(format!("aether-devnet-test-{}-reserve", std::process::id()));
+/// Four genesis voters and three unseated reserves, all supervised by `run`.
+/// The mainnet variant uses the free registration lane and registry-v3 uptime.
+fn founder_reserve_net(tag: &str, epoch_blocks: u64, mainnet: bool) -> Net {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp")
+        .join(format!("aether-devnet-test-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
@@ -1204,13 +2148,16 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
     for k in genesis_set.iter().chain(reserve.iter()) {
         run_ok(&["keygen", "--data", &d(k)]);
     }
-    let reg = run_ok(&["registrar-key", "--data", &d("reg")]);
-    let registrar = reg.split_whitespace().nth(2).unwrap().to_string();
     let founder = "0x00000000000000000000000000000000000000f0";
-    let mut args: Vec<String> = ["network", "--epoch-blocks", "40", "--min-streak", "0", "--draw-epochs", "1", "--node-rewards", "--registrar", &registrar, "--reserve-operator", founder]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut args = vec!["network".into(), "--epoch-blocks".into(), epoch_blocks.to_string(),
+        "--min-streak".into(), "0".into(), "--draw-epochs".into(), "1".into(),
+        "--node-rewards".into(), "--reserve-operator".into(), founder.into()];
+    if mainnet {
+        args.extend(["--dev-registrar", "--history", "2", "--protocol", "4"].map(str::to_string));
+    } else {
+        let reg = run_ok(&["registrar-key", "--data", &d("reg")]);
+        args.extend(["--registrar".to_string(), reg.split_whitespace().nth(2).unwrap().to_string()]);
+    }
     for r in reserve {
         args.extend(["--reserve".to_string(), format!("{}/validator.pub.json", d(r))]);
     }
@@ -1254,7 +2201,7 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
     net.logs = names.iter().map(|name| dir.join(format!("{name}.log"))).collect();
     for (k, name) in names.iter().enumerate() {
         let others: Vec<String> = (0..n).filter(|j| *j != k).map(|j| format!("http://127.0.0.1:{}", rpc[j])).collect();
-        let a: Vec<String> = vec![
+        let mut a: Vec<String> = vec![
             "run".into(),
             "--data".into(),
             d(name),
@@ -1275,13 +2222,34 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
             "--reshare-timeout".into(),
             "120".into(),
         ];
+        if mainnet && k == 0 {
+            a.push("--node-arg=--dev-registrar".into());
+        }
         let mut cmd = Command::new(BIN);
         cmd.args(&a).env("RUST_LOG", "info,commonware=warn")
-            .env("AETHER_TEST_INTERNAL_KEY_DIR", d(name));
+            .env("AETHER_TEST_INTERNAL_KEY_DIR", d(name)).env("TMPDIR", &dir);
         let child = TestChild::spawn(cmd, dir.join(format!("{name}.log"))).expect("spawn run");
         net.procs[k] = Some(child);
     }
     net.wait_height(0, 3, 90);
+    net
+}
+
+/// Founder reserve keys run as `aether run` like any Mac (docs/ops/reserve-keys.md):
+/// three keys that are not in the genesis voting set and never register follow
+/// the chain. With the genesis set holding four seats, not one of them joins —
+/// reserve keys only fill a committee that is short of four seats, because
+/// growing four to seven would put three seats on the founder's one Mac and let
+/// its outage stall the quorum. They stay followers with no share and no vote,
+/// and the chain never stops.
+#[test]
+fn founder_reserve_keys_stay_followers_over_a_full_committee() {
+    let _serial = serial();
+    let net = founder_reserve_net("reserve", 40, false);
+    let dir = &net.dir;
+    let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let reserve = ["r1", "r2", "r3"];
+    let n = net.procs.len();
     let reserve_keys: Vec<String> = reserve.iter().map(|r| keys_of(&d(r))).collect();
     // The reserve keys follow (no share, not voting), and stay that way.
 
@@ -1313,6 +2281,177 @@ fn founder_reserve_keys_stay_followers_over_a_full_committee() {
         .collect();
     assert!(!proposers.is_empty());
     assert!(reserve_keys.iter().all(|k| !proposers.contains(k)), "a reserve key proposed: {proposers:?}");
+}
+
+/// A consistent RPC snapshot lets this black-box test read the same public
+/// eligibility and silence records as rotation, without duplicating slot tags.
+fn devnet_state(net: &Net, node: usize) -> Option<(u64, aether_execution::WorldState)> {
+    let manifest = net.rpc(node, "aether_snapshot", json!([]))?;
+    let height = manifest["height"].as_u64()?;
+    let size = manifest["size"].as_u64()?;
+    let chunk = manifest["chunk"].as_u64()?;
+    let mut bytes = Vec::new();
+    for index in 0..size.div_ceil(chunk) {
+        let part = net.rpc(node, "aether_snapshotChunk", json!([height, index]))?;
+        bytes.extend(hex::decode(part["data"].as_str()?).ok()?);
+    }
+    assert_eq!(bytes.len() as u64, size, "snapshot length");
+    assert_eq!(blake3::hash(&bytes).to_hex().to_string(), manifest["blake3"].as_str()?, "snapshot digest");
+    let snapshot = aether_node::snapshot::Snapshot::from_bytes(&bytes).expect("decode snapshot");
+    assert_eq!(snapshot.summary.height, height);
+    let root = snapshot.summary.state_root;
+    let state = aether_execution::WorldState::from_parts(snapshot.entries, snapshot.codes.into_iter().collect());
+    assert_eq!(state.root(), root, "snapshot state root");
+    Some((height, state))
+}
+
+/// Mainnet standby + auto-join, with real supervised nodes and a real reshare.
+/// About 20–25 minutes at the mainnet one-second block floor; run separately:
+/// cargo test -p aether-node --test devnet founder_reserve_fills_one_silent_seat_without_halting -- --ignored --nocapture
+#[test]
+#[ignore = "seven supervised processes, registry-v3 warmup and two silent epochs"]
+fn founder_reserve_fills_one_silent_seat_without_halting() {
+    let _serial = serial();
+    // The 64-block handoff delay alone exceeds the old fixture's 40-block
+    // epoch. This leaves room for the offline dealer's quorum-log wait too.
+    const E: u64 = 192;
+    let mut net = founder_reserve_net("reserve-autojoin", E, true);
+    let dir = net.dir.clone();
+    let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let operators = ["g1", "g2", "g3", "g4"];
+    let reserves = ["r1", "r2", "r3"];
+    let operator_keys: Vec<String> = operators.iter().map(|name| keys_of(&d(name))).collect();
+    let reserve_keys: Vec<String> = reserves.iter().map(|name| keys_of(&d(name))).collect();
+    let expected: std::collections::BTreeSet<String> = operator_keys.iter().cloned().collect();
+    let initial: Value = serde_json::from_slice(&std::fs::read(d("A-final.json")).unwrap()).unwrap();
+    assert_eq!(net.rpc(0, "aether_status", json!([])).unwrap()["free_registration"], true);
+    for (i, name) in operators.iter().enumerate() {
+        net.cli(&["candidate-register", "--data", &d(name), "--registrar-rpc", &net.url(0),
+            "--rpc", &net.url(0), "--from-dev", &(i + 1).to_string()]);
+    }
+    eprintln!("reserve devnet: four operators registered; waiting for registry-v3 qualification ({E}-block epochs)");
+
+    let mut last_height = net.height(0);
+    let mut progressed = Instant::now();
+    let mut observe = |net: &Net| {
+        let h = net.height(0);
+        if h > last_height {
+            last_height = h;
+            progressed = Instant::now();
+        }
+        assert!(progressed.elapsed() < Duration::from_secs(30),
+            "finalization stalled at {last_height} (see {}/*.log){}", dir.display(), net.log_tail(0));
+        h
+    };
+    // Registry v3 needs three good full epochs, not merely four registrations.
+    // Read at a boundary, before this epoch's answers replace last_epoch.
+    let end = Instant::now() + Duration::from_secs(8 * E + 240);
+    let mut checked_epoch = 0;
+    let (ready_height, state) = loop {
+        let h = observe(&net);
+        let epoch = h / E;
+        if h >= 4 * E && epoch != checked_epoch && h % E <= 1 {
+            if let Some((at, state)) = devnet_state(&net, 0) {
+                checked_epoch = epoch;
+                let reserve = aether_node::chain::Reserve::of(&state).expect("registered reserves");
+                let pool = aether_node::rotation::eligible(&state, at / E, 0);
+                let ops = aether_node::rotation::operators(&state);
+                let keys: std::collections::BTreeSet<String> = pool.iter().map(|(k, _)| k.clone()).collect();
+                if keys == expected && aether_node::rotation::independent(&pool, |k| ops.get(k).cloned(), &reserve) == 4 {
+                    break (at, state);
+                }
+            }
+        }
+        assert!(Instant::now() < end, "four independent operators never qualified (see {}/*.log)", dir.display());
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let candidates = aether_execution::registry::candidates(&state);
+    assert_eq!(candidates.len(), 4);
+    assert_eq!(candidates.iter().map(|c| c.operator).collect::<std::collections::BTreeSet<_>>().len(), 4);
+    let reserve = aether_node::chain::Reserve::of(&state).unwrap();
+    assert_eq!(reserve.members.len(), 3, "four operators keep the reserve set registered");
+    assert_eq!(aether_rewards::committee(&state).iter().map(|(k, _)| k.clone()).collect::<std::collections::BTreeSet<_>>(), expected);
+    assert!(net.rpc(0, "aether_handoff", json!([])).is_some_and(|v| v.is_null()), "no reserve joins a full four-seat committee");
+    for name in reserves {
+        assert!(!dir.join(name).join("threshold.json").exists(), "{name} waits without a voting share");
+    }
+    eprintln!("reserve devnet: four independent operators qualified at height {ready_height}; all reserves are followers");
+    assert_agree(&net, &(0..7).collect::<Vec<_>>(), ready_height);
+    let dead_key = &operator_keys[3];
+    let dead_index = candidates.iter().find(|c| hex::encode(c.validator_key) == *dead_key).unwrap().index;
+
+    // No departure announcement, hand-made reshare or intervention: kill g4's
+    // supervisor; its leased node child exits with it. The other three still
+    // have the old 3-of-4 quorum throughout the automatic replacement.
+    net.kill(3);
+    let stopped = Instant::now() + Duration::from_secs(15);
+    while net.rpc(3, "aether_status", json!([])).is_some() {
+        observe(&net);
+        assert!(Instant::now() < stopped, "the stopped operator's node child is still running");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let down_epoch = net.height(0) / E;
+    eprintln!("reserve devnet: g4 stopped in epoch {down_epoch}; waiting for two confirmed silent epochs");
+    let end = Instant::now() + Duration::from_secs(4 * E + 240);
+    let mut checked_epoch = down_epoch;
+    let mut confirmed_boundary = None;
+    let handoff = loop {
+        let h = observe(&net);
+        if confirmed_boundary.is_none() && h / E >= down_epoch + 2 && h / E != checked_epoch {
+            if let Some((at, state)) = devnet_state(&net, 0) {
+                if at / E == h / E {
+                    checked_epoch = at / E;
+                    if let Some((epoch, last, prev)) = aether_rewards::beacons::recent(&state, dead_index) {
+                        if epoch + 1 == at / E && last < aether_node::rotation::SILENT_BELOW && prev < aether_node::rotation::SILENT_BELOW {
+                            confirmed_boundary = Some((epoch + 1) * E);
+                            eprintln!("reserve devnet: two silent epochs confirmed at boundary {} (answers {prev}, {last})", (epoch + 1) * E);
+                        }
+                    }
+                }
+            }
+        }
+        if let (Some(boundary), Some(handoff)) = (confirmed_boundary,
+            net.rpc(0, "aether_handoff", json!([])).filter(|v| !v.is_null())) {
+            assert!(handoff["at"].as_u64().unwrap() >= boundary, "no replacement before two confirmed silent epochs");
+            assert!(handoff["switch"].as_u64().unwrap() <= boundary + E, "the reserve takes the missing seat within one epoch");
+            break handoff;
+        }
+        if let Some(boundary) = confirmed_boundary {
+            assert!(h <= boundary + E, "no automatic reserve handoff within one epoch (see {}/*.log)", dir.display());
+        }
+        assert!(Instant::now() < end, "no automatic reserve handoff (see {}/*.log)", dir.display());
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    let members: std::collections::BTreeSet<String> = handoff["members"].as_array().unwrap().iter()
+        .map(|m| m["key"].as_str().unwrap().to_string()).collect();
+    assert_eq!(members.len(), 4, "fill only the missing seat, never grow four to seven");
+    assert!(!members.contains(dead_key), "the silent operator's seat is replaced");
+    assert!(operator_keys[..3].iter().all(|k| members.contains(k)), "all surviving operators retain their seats");
+    let joined: Vec<usize> = reserve_keys.iter().enumerate().filter_map(|(i, k)| members.contains(k).then_some(i)).collect();
+    assert_eq!(joined.len(), 1, "exactly one standby reserve joins");
+    let j = 4 + joined[0];
+    let round = handoff["round"].as_u64().unwrap();
+    let switch = handoff["switch"].as_u64().unwrap();
+    let target = switch + 12;
+    eprintln!("reserve devnet: one reserve joins in round {round} at switch {switch}; checking local installation and height {target}");
+    let installed = || {
+        let read = |file: &str| std::fs::read(dir.join(reserves[j - 4]).join(file)).ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        let (Some(network), Some(threshold)) = (read("network.json"), read("threshold.json")) else { return false };
+        network["round"].as_u64() == Some(round) && threshold["round"].as_u64() == Some(round)
+            && network["output"] == handoff["output"] && threshold["output"] == handoff["output"]
+            && network["identity"] == initial["identity"]
+    };
+    let end = Instant::now() + Duration::from_secs(E + 180);
+    while !installed() || [0, 1, 2, 4, 5, 6].iter().any(|&i| net.height(i) < target) {
+        observe(&net);
+        assert!(Instant::now() < end, "the automatic reserve did not install and finalize (see {}/*.log)", dir.display());
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert_agree(&net, &[0, 1, 2, 4, 5, 6], target);
+    for (i, name) in reserves.iter().enumerate() {
+        assert_eq!(dir.join(name).join("threshold.json").exists(), i == joined[0], "only the seated reserve receives a share");
+    }
 }
 
 fn keys_of(dir: &str) -> String {
@@ -1381,14 +2520,67 @@ fn regenerate_light_fixture() {
 #[test]
 fn a_late_mac_starts_from_a_certified_snapshot() {
     let _serial = serial();
-    let mut net = Net::start(4);
+    let mut net = Net::start_with("late-snapshot", vec![vec![]; 4]);
     for i in 0..4 {
         net.wait_height(i, 3, 60);
     }
     let bob = "0x00000000000000000000000000000000000c0c00";
     let out = net.cli(&["send", "--rpc", &net.url(0), "--from-dev", "2", "--to", bob, "--value", "321", "--wait"]);
     assert!(out.contains("success=true"), "{out}");
-    let joined_at = net.height(0);
+    let paid_at = net.height(0);
+
+    // Prepare both serving sources while quorum can still certify each
+    // snapshot's successor. Guarded startup needs two agreeing certificates.
+    let snapshots = [1, 2].map(|source| {
+        net.wait_height(source, paid_at, 60);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut last = Value::Null;
+        loop {
+            if let Some(manifest) = net.rpc(source, "aether_snapshot", json!([])) {
+                last = manifest;
+                if let Some(height) = last["height"].as_u64().filter(|h| *h >= paid_at) {
+                    break height;
+                }
+            }
+            assert!(Instant::now() < deadline, "source {source} did not prepare a current snapshot: {last}{}", net.log_tail(source));
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    let successor = snapshots.iter().copied().max().unwrap() + 2;
+    for source in [1, 2] {
+        net.wait_height(source, successor, 60);
+        let proof = net.rpc(source, "aether_getFinalized", json!([snapshots[source - 1] + 1])).expect("snapshot successor certificate");
+        assert!(proof["block"].is_string() && proof["finalization"].is_string(), "source {source} has no certified snapshot successor: {proof}{}", net.log_tail(source));
+    }
+    // Two stopped validators remove quorum; the serving validators remain
+    // live. Net owns and kills every child, including stopped ones on failure.
+    let paused = [0, 3];
+    for i in paused {
+        let child = net.procs[i].as_ref().expect("owned validator");
+        assert!(child.try_wait().unwrap().is_none(), "validator {i} already exited");
+        assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGSTOP) }, 0, "pause owned validator {i}");
+    }
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut stable: Option<(u64, Value, Instant)> = None;
+    let joined_at = loop {
+        let a = net.rpc(1, "aether_status", json!([])).expect("first snapshot source");
+        let b = net.rpc(2, "aether_status", json!([])).expect("second snapshot source");
+        let height = a["height"].as_u64().unwrap();
+        if b["height"].as_u64() == Some(height) && a["hash"] == b["hash"] {
+            if let Some((previous, hash, since)) = &stable {
+                if *previous == height && hash == &a["hash"] && since.elapsed() >= Duration::from_secs(1) {
+                    break height;
+                }
+            }
+            if stable.as_ref().is_none_or(|(previous, hash, _)| *previous != height || hash != &a["hash"]) {
+                stable = Some((height, a["hash"].clone(), Instant::now()));
+            }
+        } else {
+            stable = None;
+        }
+        assert!(Instant::now() < deadline, "snapshot sources did not settle on one certified head: {a}, {b}{}{}", net.log_tail(1), net.log_tail(2));
+        std::thread::sleep(Duration::from_millis(100));
+    };
 
     let port = Port::reserve().expect("reserve test port");
     let data = net.dir.join("late");
@@ -1408,10 +2600,17 @@ fn a_late_mac_starts_from_a_certified_snapshot() {
     net.rpc.push(port);
     net.logs.push(net.dir.join("late.log"));
     let f = net.rpc.len() - 1;
+    net.wait_height(f, joined_at, 60);
+    assert!(net.rpc(f, "aether_getBlock", json!([1])).is_none_or(|b| b.is_null()), "the late Mac replayed history during checkpoint startup{}", net.log_tail(f));
+    for i in paused {
+        let child = net.procs[i].as_ref().expect("owned validator");
+        assert!(child.try_wait().unwrap().is_none(), "validator {i} exited while paused");
+        assert_eq!(unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGCONT) }, 0, "resume owned validator {i}");
+    }
     net.wait_height(f, joined_at + 5, 60);
     assert_agree(&net, &[0, f], joined_at + 5);
     // It did not replay: early blocks are not on this Mac.
-    assert!(net.rpc(f, "aether_getBlock", json!([1])).is_none_or(|b| b.is_null()), "the late Mac replayed history");
+    assert!(net.rpc(f, "aether_getBlock", json!([1])).is_none_or(|b| b.is_null()), "the late Mac replayed history{}", net.log_tail(f));
     let bal = net.cli(&["balance", bob, "--rpc", &net.url(f)]);
     assert!(bal.contains("balance   321 wei") && bal.contains("verified  ✓"), "{bal}");
 }

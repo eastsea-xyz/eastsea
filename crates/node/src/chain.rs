@@ -102,8 +102,8 @@ pub struct ChainConfig {
     /// to the committed roster (finding 2). Node rewards only; empty on 7780.
     pub committee: Vec<(String, String)>,
     /// Founder reserve keys (docs/design/12-launch-plan.md, "창업자 Mac 안전망";
-    /// needs node rewards): up to three voting keys seated only while fewer
-    /// than four independent operators qualify for the voting set.
+    /// needs node rewards): up to three voting keys. From protocol 4 they stay
+    /// eligible standby through four independent operators and repair vacancies.
     pub reserve: Option<Reserve>,
     /// The consensus group this chain is (13-roadmap.md, 그룹 분열 준비):
     /// 0 is the only group today. Blocks of a group run only that group's
@@ -189,12 +189,17 @@ impl ChainConfig {
             // both before the ceremony record freezes its bytes.
             s.set_code(aether_execution::release_log::ADDRESS, aether_execution::release_log::code())
                 .expect("release log predeploy");
-            // Standard Ethereum predeploys (clone catalog §0 B3): the CREATE2
-            // deployer and Multicall3 at their Ethereum addresses with their
-            // exact mainnet runtime code, so deterministic deployments and
-            // multicall tooling work unchanged.
+            // Keep the released genesis catalogue for protocols 1..=3 so a
+            // cold participant derives the existing network's original root.
             for (address, code, _) in aether_execution::predeploys::all() {
                 s.set_code(address, code).expect("standard predeploy");
+            }
+            // Permit2 belongs only to a protocol-4-or-later genesis. This is
+            // the frozen genesis protocol, never the running implementation
+            // or a later committee-signed activation on an existing chain.
+            if self.protocol >= 4 {
+                s.set_code(crate::predeploys::PERMIT2, crate::predeploys::permit2_code())
+                    .expect("Permit2 genesis predeploy");
             }
         }
         if let Some(key) = self.registrar {
@@ -461,7 +466,7 @@ pub fn meta_digest_with_archive(
 /// Parent metadata authenticated by the finalized head's payload. A restored
 /// checkpoint may not retain its parent yet; no witness is served in that case.
 pub fn upgrade_metadata(g: &Inner) -> Option<Value> {
-    let head = g.recent.back().filter(|b|
+    let head = g.finalized_block.as_ref().filter(|b|
         b.digest() == g.finalized.digest && b.height.get() == g.finalized.height
     )?;
     let parent = g.executed.get(&head.parent)?;
@@ -479,12 +484,12 @@ pub fn upgrade_metadata(g: &Inner) -> Option<Value> {
 }
 
 /// A summary's rough share of the history caches: itself plus each tx hash.
-fn summary_bytes(s: &BlockSummary) -> u64 {
+pub(crate) fn summary_bytes(s: &BlockSummary) -> u64 {
     (std::mem::size_of::<BlockSummary>() + s.txs.len() * std::mem::size_of::<TxHash>()) as u64
 }
 
 /// A receipt's rough share: itself, its return data, and its events.
-fn receipt_bytes(r: &Receipt) -> u64 {
+pub(crate) fn receipt_bytes(r: &Receipt) -> u64 {
     let events: usize = r
         .events
         .iter()
@@ -493,25 +498,163 @@ fn receipt_bytes(r: &Receipt) -> u64 {
     (std::mem::size_of::<Receipt>() + r.output.len() + events) as u64
 }
 
+/// A free-lane registration's derived confirmation. Its registry state is
+/// durable; this notification does not claim transaction receipt inclusion.
+fn registration_receipt(hash: TxHash) -> Receipt {
+    Receipt {
+        tx_hash: hash,
+        success: true,
+        gas_used: 0,
+        prove_gas: 0,
+        state_gas: 0,
+        state_fee: U256::ZERO,
+        contract_address: None,
+        logs: 0,
+        output: Default::default(),
+        events: vec![],
+    }
+}
+
 /// The history caches' estimated bytes: kept summaries plus kept receipts.
 fn caches_bytes_of(blocks: &BTreeMap<u64, BlockSummary>, receipts: &HashMap<TxHash, (u64, Receipt)>) -> u64 {
     blocks.values().map(summary_bytes).sum::<u64>() + receipts.values().map(|(_, r)| receipt_bytes(r)).sum::<u64>()
 }
 
-/// Bring the history caches inside `budget`: drop the oldest cached era's
-/// summaries and receipts, one era at a time, when its era file is on disk to
-/// back them. History v2 only — a network without era files (7780) would lose
-/// the heights for good. Never the open era, never an unsealed one: without
-/// the file, `old_block` and `era_leaves` could not serve what went.
+/// Legacy networks keep their archive in redb; their memory copy never grows
+/// beyond this ceiling, including when no resource monitor is installed.
+const LEGACY_HISTORY_CACHE_BYTES: u64 = 64 << 20;
+
+pub(crate) fn legacy_cache_budget() -> u64 {
+    crate::resources::monitor().map_or(LEGACY_HISTORY_CACHE_BYTES, |m| {
+        m.limits.max_memory.min(LEGACY_HISTORY_CACHE_BYTES)
+    })
+}
+
+/// Conservative allocation estimate for a full state, computed outside the
+/// consensus lock once when it is remembered. BTree nodes hold at most eleven
+/// entries and non-root nodes at least five; allow 1280 bytes per stem node and
+/// 512 per value node, including allocation overhead. Code is charged in full
+/// even when another version shares its Arc. Journals and receipts count too.
+fn execution_bytes(e: &Executed) -> u64 {
+    let mut stems = 0u64;
+    let mut values = 0u64;
+    let mut tree = 0u64;
+    let mut previous = None;
+    for (key, _) in e.state.repo().entries() {
+        let stem: [u8; 31] = key[..31].try_into().expect("stem");
+        if previous != Some(stem) {
+            if values > 0 { tree += (values / 5 + 1) * 512; }
+            stems += 1;
+            values = 0;
+            previous = Some(stem);
+        }
+        values += 1;
+    }
+    if values > 0 { tree += (values / 5 + 1) * 512; }
+    if stems > 0 { tree += (stems / 5 + 1) * 1280; }
+    let journal = e.state.journal();
+    tree + std::mem::size_of::<Executed>() as u64 + 256
+        + e.state.codes().values().map(|code| code.len() as u64 + 256).sum::<u64>()
+        + (journal.writes.capacity() * std::mem::size_of::<(aether_state::TreeKey, Option<aether_state::Value>)>()) as u64
+        + journal.codes.iter().map(|(_, code)| code.len() as u64 + 64).sum::<u64>()
+        + (journal.codes.capacity() * std::mem::size_of::<(B256, aether_types::Bytes)>()) as u64
+        + e.receipts.iter().map(receipt_bytes).sum::<u64>()
+        + ((e.receipts.capacity() - e.receipts.len()) * std::mem::size_of::<Receipt>()) as u64
+        + (e.tx_hashes.capacity() * std::mem::size_of::<TxHash>()) as u64
+}
+
+struct ProvingInput {
+    encoded: Box<[u8]>,
+    commitment: [u8; 32],
+    bytes: u64,
+}
+
+fn retained_bytes(g: &Inner) -> u64 {
+    g.caches_bytes.saturating_add(g.execution_sizes.values().sum::<u64>()).saturating_add(g.proving_bytes)
+        .saturating_add((g.executed.capacity() * (std::mem::size_of::<(Digest, Arc<Executed>)>() + 16)) as u64)
+        .saturating_add((g.execution_sizes.capacity() * (std::mem::size_of::<(Digest, u64)>() + 16)) as u64)
+        .saturating_add((g.proving_inputs.capacity() * (std::mem::size_of::<(Digest, Arc<ProvingInput>)>() + 16)) as u64)
+        .saturating_add((g.recent.capacity() * std::mem::size_of::<Block>()) as u64)
+}
+
+fn trim_proving_inputs(g: &mut Inner) {
+    let retained: std::collections::HashSet<_> = g.recent.iter().map(Block::digest).collect();
+    g.proving_inputs.retain(|digest, _| retained.contains(digest));
+    if g.proving_inputs.capacity() > g.proving_inputs.len().saturating_mul(4) + 16 { g.proving_inputs.shrink_to_fit(); }
+    if g.recent.capacity() > g.recent.len().saturating_mul(4) + 16 { g.recent.shrink_to_fit(); }
+    g.proving_bytes = g.proving_inputs.values().map(|input| input.bytes).sum();
+}
+
+/// Bring optional state and proving retention inside `budget`, preserving the
+/// finalized head and its parent. Legacy history rows also have an independent
+/// 64 MiB ceiling and remain in redb; history v2 evicts only sealed eras.
 fn trim_caches(g: &mut Inner, budget: u64) {
     use aether_state::mmr::ERA_LEN;
-    if !g.cfg.history_v2 || g.caches_bytes <= budget {
+    g.history_budget = budget;
+    // Leave a quarter for witness construction, decoding, and other working
+    // allocations. Head and its immediate parent are mandatory working state;
+    // a budget smaller than those cannot be met by optional-cache eviction.
+    let budget = budget.saturating_sub(budget / 4);
+    let parent = g.finalized_block.as_ref().map(|b| b.parent);
+    while retained_bytes(g) > budget {
+        let oldest = g.executed.iter()
+            .filter(|(digest, _)| **digest != g.finalized.digest && Some(**digest) != parent)
+            .min_by_key(|(_, e)| e.height).map(|(digest, _)| *digest);
+        let Some(digest) = oldest else { break };
+        g.executed.remove(&digest);
+        g.execution_sizes.remove(&digest);
+    }
+    while retained_bytes(g) > budget && !g.recent.is_empty() {
+        g.recent.pop_front();
+        trim_proving_inputs(g);
+    }
+    if !g.cfg.history_v2 {
+        if g.store.is_none() {
+            return; // a memory-only chain has no durable archive to back eviction
+        }
+        // Optional allocation pressure must not bypass the independent
+        // legacy row ceiling, even when the total retention budget is larger.
+        let row_budget = budget.min(legacy_cache_budget());
+        let head = g.finalized.height;
+        let mut floor = g.cache_below;
+        while g.caches_bytes > row_budget || retained_bytes(g) > budget {
+            let Some((&height, _)) = g.blocks.first_key_value() else { break };
+            if height >= head {
+                break;
+            }
+            let (_, summary) = g.blocks.pop_first().expect("first cached summary");
+            g.caches_bytes = g.caches_bytes.saturating_sub(summary_bytes(&summary));
+            for hash in &summary.txs {
+                if let Some((_, receipt)) = g.receipts.remove(hash) {
+                    g.caches_bytes = g.caches_bytes.saturating_sub(receipt_bytes(&receipt));
+                }
+            }
+            floor = height + 1;
+        }
+        if g.cfg.node_rewards {
+            // Registration confirmations are derived receipts whose ids are
+            // not in the block's transaction list. Their cache expires too.
+            g.receipts.retain(|_, (h, _)| *h >= floor);
+            g.caches_bytes = caches_bytes_of(&g.blocks, &g.receipts);
+        }
+        if g.caches_bytes > row_budget || retained_bytes(g) > budget {
+            // A single block's receipt set may exceed the budget too. The
+            // head's state/summary remain; receipt RPC reads durable rows.
+            g.receipts.clear();
+            g.caches_bytes = caches_bytes_of(&g.blocks, &g.receipts);
+        }
+        g.cache_below = g.cache_below.max(floor);
+        tracing::debug!(floor, bytes = g.caches_bytes, budget = row_budget,
+            "evicted legacy history cache rows; archival rows remain in redb");
+        return;
+    }
+    if retained_bytes(g) <= budget {
         return;
     }
     let Some(era_dir) = g.store.as_ref().map(|s| s.era_dir()) else { return };
     let open = g.history_index.as_ref().map_or(0, |i| i.eras.len() as u64);
     let head = g.finalized.height;
-    while g.caches_bytes > budget {
+    while retained_bytes(g) > budget {
         let Some(&first) = g.blocks.keys().next() else { return };
         let era = first / ERA_LEN;
         if era >= open || (era + 1) * ERA_LEN > head {
@@ -537,10 +680,19 @@ fn trim_caches(g: &mut Inner, budget: u64) {
 
 pub struct Inner {
     pub cfg: ChainConfig,
+    /// Node-local bounded delivery; consensus only publishes a height reference.
+    pub push: Arc<crate::rpc_push::Hub>,
+    /// Non-consensus discovery derived from pinned release commitments.
+    pub(crate) release_watcher: crate::release::Watcher,
     executed: HashMap<Digest, Arc<Executed>>,
+    execution_sizes: HashMap<Digest, u64>,
     pub finalized: Arc<Executed>,
     pub blocks: BTreeMap<u64, BlockSummary>,
     pub receipts: HashMap<TxHash, (u64, Receipt)>,
+    /// Derived finalized discovery facts, with a separate lock so searching
+    /// never holds the consensus/state lock while it ranks records.
+    pub search: Arc<Mutex<crate::search::SearchIndex>>,
+    pub search_sources: crate::search_sources::SearchSources,
     pub mempool: BTreeMap<TxHash, TxEnvelope>,
     /// When each mempool tx arrived (inclusion lists name the oldest).
     arrivals: HashMap<TxHash, Instant>,
@@ -612,8 +764,22 @@ pub struct Inner {
     pub proof_pool: Vec<aether_light::block::ProofClaim>,
     /// The last finalized blocks (the prover builds its inputs from them).
     recent: std::collections::VecDeque<Block>,
+    /// The full finalized head, including quiet blocks, authenticates the
+    /// parent's metadata independently of the prover's statement window.
+    finalized_block: Option<Block>,
     /// Heights this node's prover already took up.
     attempted: std::collections::BTreeSet<u64>,
+    /// Verified competing proofs are permanent local losses, even if a pool
+    /// entry is subsequently dropped. A sidecar restart must not retry them.
+    lost_proofs: std::collections::BTreeSet<u64>,
+    /// Local proving input retention, independent of consensus validation.
+    prover_window: usize,
+    proving_inputs: HashMap<Digest, Arc<ProvingInput>>,
+    proving_bytes: u64,
+    history_budget: u64,
+    proof_observers: Vec<std::sync::mpsc::Sender<(u64, Instant)>>,
+    /// The running job may outlive eviction from the scheduling window.
+    proving_height: Option<u64>,
     /// When the proof RPC last started a verification (rate limit).
     last_proof_check: Option<Instant>,
     /// This node's last proposal carrying proofs: (height, block).
@@ -635,8 +801,8 @@ pub struct Inner {
     /// Pruning (roadmap B4): first height whose summary and receipts are kept.
     pub pruned_below: u64,
     /// The history caches' memory budget (`--max-memory`): first height still
-    /// cached after eviction. History v2 only — an evicted era's file is on
-    /// disk, so its blocks keep being served (`old_block`, `era_leaves`).
+    /// cached after eviction. Legacy rows remain in redb; history v2's
+    /// evicted eras remain in files (`old_block`, `era_leaves`).
     pub cache_below: u64,
     /// Estimated bytes of the kept block summaries and receipts.
     caches_bytes: u64,
@@ -651,6 +817,15 @@ pub struct Inner {
     /// Every block being replayed is certified and re-fetchable, so a power
     /// loss only replays them; the first durable commit after it anchors the file.
     pub relaxed: bool,
+}
+
+#[cfg(test)]
+impl Inner {
+    /// Attach an isolated archive copy for RPC representation measurements.
+    /// No production build can replace a chain's genesis-bound store this way.
+    pub(crate) fn set_test_archive_store(&mut self, store: Arc<Store>) {
+        self.store = Some(store);
+    }
 }
 
 #[derive(Clone)]
@@ -682,6 +857,11 @@ pub enum ChainError {
 
 impl Chain {
     pub fn new(cfg: ChainConfig) -> (Self, Block) {
+        Self::new_with_search_sources(cfg, Default::default())
+    }
+
+    pub fn new_with_search_sources(cfg: ChainConfig, sources: crate::search_sources::SearchSources) -> (Self, Block) {
+        let sources = sources.validated().expect("valid search protocol source pins");
         let state = cfg.genesis_state();
         let genesis = Block::genesis_with(cfg.chain_id, state.root(), cfg.history_v2, cfg.group);
         // A genesis above protocol 1 carries its activation from height 0: the
@@ -722,15 +902,21 @@ impl Chain {
         });
         let mut executed = HashMap::new();
         executed.insert(genesis.digest(), exec.clone());
+        let execution_sizes = HashMap::from([(genesis.digest(), execution_bytes(&exec))]);
         let mut blocks = BTreeMap::new();
         blocks.insert(0, summary(&genesis, &exec, B256::ZERO));
         let caches_bytes = blocks.values().map(summary_bytes).sum::<u64>();
         let inner = Inner {
             cfg,
+            push: Arc::new(crate::rpc_push::Hub::default()),
+            release_watcher: crate::release::Watcher::default(),
             executed,
+            execution_sizes,
             finalized: exec,
             blocks,
             receipts: HashMap::new(),
+            search: Arc::new(Mutex::new(crate::search::SearchIndex::new())),
+            search_sources: sources,
             mempool: BTreeMap::new(),
             pending_by_sender: HashMap::new(),
             nonces_by_sender: HashMap::new(),
@@ -771,7 +957,15 @@ impl Chain {
             verifier: None,
             proof_pool: Vec::new(),
             recent: Default::default(),
+            finalized_block: None,
             attempted: Default::default(),
+            lost_proofs: Default::default(),
+            prover_window: 0,
+            proving_inputs: HashMap::new(),
+            proving_bytes: 0,
+            history_budget: crate::resources::monitor().map(|m| m.limits.max_memory).unwrap_or_else(crate::resources::default_cache_budget),
+            proof_observers: Vec::new(),
+            proving_height: None,
             last_proof_check: None,
             proof_proposal: None,
             proof_backoff_until: 0,
@@ -793,7 +987,12 @@ impl Chain {
     /// Open with durable state: resume from the stored checkpoint, or start at
     /// genesis and persist it.
     pub fn open(cfg: ChainConfig, store: Store) -> Result<(Self, Block), StoreError> {
-        let (chain, genesis) = Self::new(cfg);
+        Self::open_with_search_sources(cfg, store, Default::default())
+    }
+
+    pub fn open_with_search_sources(cfg: ChainConfig, store: Store, sources: crate::search_sources::SearchSources) -> Result<(Self, Block), StoreError> {
+        let cache_budget = (!cfg.history_v2).then(legacy_cache_budget);
+        let (chain, genesis) = Self::new_with_search_sources(cfg, sources.clone());
         // The store belongs to one genesis: refuse data of another instead of diverging from it.
         let ours = genesis_digest(&genesis);
         match store.meta(GENESIS)? {
@@ -804,9 +1003,21 @@ impl Chain {
             None => return Err(StoreError::OtherGenesis),
         }
         let store = Arc::new(store);
-        match store.load()? {
+        let checkpoint = match cache_budget {
+            Some(budget) => store.load_with_cache_budget(budget)?,
+            None => store.load()?,
+        };
+        match checkpoint {
             Some(cp) => {
                 use commonware_codec::DecodeExt;
+                let search = match store.search_index(cp.height, cp.digest, sources.fingerprint())? {
+                    Some(index) => index,
+                    None => {
+                        let index = rebuild_search_cache(&cp, &sources);
+                        store.put_search_index(cp.height, cp.digest, &index, sources.fingerprint())?;
+                        index
+                    }
+                };
                 let digest = Digest::decode(cp.digest.as_slice())
                     .map_err(|_| StoreError::Corrupt("digest"))?;
                 let summary = cp.blocks.get(&cp.height).cloned();
@@ -835,12 +1046,19 @@ impl Chain {
                     payouts: vec![],
                     registration_ids: vec![],
                 });
+                let bytes = execution_bytes(&exec);
                 let mut g = chain.lock();
+                g.search = Arc::new(Mutex::new(search));
                 g.executed.insert(digest, exec.clone());
+                g.execution_sizes.insert(digest, bytes);
                 // History proofs need every block from genesis; a checkpoint-started node has none before it.
                 // A pruned store keeps the roots of the eras it dropped instead (roadmap B4).
-                g.history_index = rebuild_history_index(&cp.blocks, &cp.era_roots, cp.pruned_below, exec.height, &exec.history).map(Arc::new);
+                g.history_index = match cache_budget {
+                    Some(_) => rebuild_history_index_from_store(&store, &cp.era_roots, cp.pruned_below, exec.height, &exec.history),
+                    None => rebuild_history_index(&cp.blocks, &cp.era_roots, cp.pruned_below, exec.height, &exec.history),
+                }.map(Arc::new);
                 g.pruned_below = cp.pruned_below;
+                g.cache_below = cp.blocks.keys().next().copied().unwrap_or(cp.height);
                 g.finalized = exec;
                 g.upgrade_notices = cp.upgrade_notices;
                 g.blocks = cp.blocks;
@@ -901,6 +1119,16 @@ impl Chain {
         self.lock().executed.get(d).cloned()
     }
 
+    /// A shared immutable recent execution for RPC fanout. Never copies a
+    /// block's receipts or state while holding the consensus lock.
+    pub(crate) fn executed_at(&self, height: u64) -> Option<Arc<Executed>> {
+        let g = self.lock();
+        let finalized_hash = &g.blocks.get(&height)?.hash;
+        // The cache also holds speculative forks at this height. Only the
+        // digest in the finalized summary may label subscription receipts.
+        g.executed.values().find(|e| e.height == height && e.digest.to_string() == *finalized_hash).cloned()
+    }
+
     /// The durable store, if any (finality proofs a follower kept).
     pub fn store(&self) -> Option<Arc<Store>> {
         self.lock().store.clone()
@@ -908,6 +1136,37 @@ impl Chain {
 
     pub fn cfg(&self) -> ChainConfig {
         self.lock().cfg.clone()
+    }
+
+    /// Install the network.json release pin without changing genesis or
+    /// consensus metadata. Recovered payloads are untrusted until reverified.
+    pub fn watch_releases(&self, network: Option<&Value>) {
+        let mut g = self.lock();
+        let pin = crate::release::Watcher::pinned(network, g.cfg.chain_id);
+        if g.release_watcher.pin == pin { return; }
+        let mut watcher = crate::release::Watcher::new(pin);
+        if watcher.pin.is_some() {
+            if let Some(store) = &g.store {
+                if let Ok(Some(bytes)) = store.meta(crate::release::CACHE_KEY) {
+                    watcher.restore(&bytes, &g.finalized.state, g.cfg.chain_id, g.finalized.height);
+                }
+            }
+            // Also recover a payload when a commit landed before its cache
+            // write or this RPC attached after the publication was finalized.
+            for (_, receipt) in g.receipts.values() {
+                watcher.discover(std::slice::from_ref(receipt), &g.finalized.state, g.cfg.chain_id, g.finalized.height);
+            }
+        }
+        g.release_watcher = watcher;
+    }
+
+    /// Checkpoint followers can receive exact payload bytes in the status
+    /// they already request. An upstream claim never supplies approval.
+    pub fn discover_release_hint(&self, value: &Value) {
+        let mut g = self.lock();
+        let finalized = g.finalized.clone();
+        let chain_id = g.cfg.chain_id;
+        g.release_watcher.discover_status(value, &finalized.state, chain_id, finalized.height);
     }
 
     /// How many blocks behind the network this node last knew itself to be
@@ -967,14 +1226,32 @@ impl Chain {
     /// state on the next finalize, and pooled beacons older than the new head
     /// cannot make it into a block.
     pub fn adopt(&self, exec: Arc<Executed>, summary: BlockSummary) {
+        let bytes = execution_bytes(&exec);
         let mut g = self.lock();
         let height = exec.height;
+        let search = g.search.clone();
+        let search_sources = g.search_sources.clone();
+        let search_store = g.store.clone();
+        let unchanged_search_head = g.finalized.height == height && g.finalized.digest == exec.digest;
+        let search_digest = digest_bytes(&exec.digest);
+        let search_at = exec.timestamp / 1000;
+        let chain_id = g.cfg.chain_id;
+        g.release_watcher.rebase(&exec.state, chain_id, height);
         g.executed.clear();
         g.executed.insert(exec.digest, exec.clone());
+        g.execution_sizes.clear();
+        g.execution_sizes.insert(exec.digest, bytes);
         let sb = summary_bytes(&summary);
         let old = g.blocks.insert(height, summary);
         g.caches_bytes = g.caches_bytes.saturating_add(sb).saturating_sub(old.as_ref().map(summary_bytes).unwrap_or(0));
         g.finalized = exec;
+        let mut proven: Vec<_> = g.attempted.iter().copied().chain(g.proving_height)
+            .filter(|h| aether_execution::proofs::prover(&g.finalized.state, *h).is_some()).collect();
+        proven.sort_unstable();
+        proven.dedup();
+        for height in proven {
+            g.notice_proof(height);
+        }
         // The new head's base fee re-sorts the pool between paying and free
         // lanes; keep the quota's count and byte share true to it until the
         // next finalize.
@@ -998,6 +1275,22 @@ impl Chain {
         // Old finalized blocks are no longer provable here (their states are
         // gone); do not let them hold the prover's queue.
         g.recent.clear();
+        g.proving_inputs.clear();
+        g.proving_bytes = 0;
+        g.finalized_block = None;
+        g.push.publish(height);
+        drop(g);
+        if let Some(restored) = search_store.as_ref().and_then(|store| store.search_index(height, search_digest, search_sources.fingerprint()).ok().flatten()) {
+            *search.lock().expect("search index") = restored;
+            return;
+        }
+        if unchanged_search_head { return; }
+        // A snapshot contains state, not intervening discovery events. Old
+        // resolver facts could have changed during the gap; report that gap.
+        let mut index = search.lock().expect("search index");
+        *index = crate::search::SearchIndex::new();
+        index.apply(crate::search::SearchEvent::Tick { at: search_at });
+        index.mark_history_incomplete();
     }
 
     /// Key rounds only go up: a handoff built on `parent` must carry a round
@@ -1394,6 +1687,7 @@ impl Chain {
             return Err(ChainError::Protocol("free registrations without node rewards".into()));
         }
         if version == before
+            && (version < crate::upgrade::RESERVE_FLOOR_PROTOCOL || seed.is_none())
             && !records
             && !rotates
             && !stale
@@ -1515,11 +1809,28 @@ impl Chain {
             let draw = current_draw(&parent.state, parent.height + 1);
             if s.draw == draw
                 && draw > 0
+                && (version < crate::upgrade::RESERVE_FLOOR_PROTOCOL
+                    || parent.handoff.as_ref().is_none_or(|p| p.switch <= parent.height + 1))
                 && parent.seed.as_ref().is_none_or(|p| p.1.draw < draw)
                 && (!aether_rewards::registry_v3::is_v3(&state)
                     || aether_rewards::next_roster(&state).is_none_or(|(d, _)| d != draw))
             {
                 if let Some((_, pool)) = aether_rewards::draw_pool(&state).filter(|(d, _)| *d == draw) {
+                    // Protocol 4 keeps the frozen draw's membership ceiling,
+                    // but a delayed seed must not reinstall a proven departing
+                    // or silent key. Boundary-only `eligible` cannot be used
+                    // here: honest mid-epoch answers advance `last_epoch`.
+                    let mut pool = pool;
+                    if version >= crate::upgrade::RESERVE_FLOOR_PROTOCOL {
+                        let epoch = (parent.height + 1) / params.epoch_blocks;
+                        let recents = crate::rotation::recents(&state);
+                        let departures = crate::rotation::departures(&state);
+                        pool.retain(|(k, _)| !departures.contains(k)
+                            && !matches!(recents.get(k).copied(), Some((e, last, prev))
+                                if e.checked_add(1) == Some(epoch) && last != aether_rewards::beacons::NO_COUNT
+                                    && prev != aether_rewards::beacons::NO_COUNT
+                                    && last < crate::rotation::SILENT_BELOW && prev < crate::rotation::SILENT_BELOW));
+                    }
                     let seed_bytes = hex::decode(&s.signature).unwrap_or_default();
                     // The per-operator seat cap is a protocol-2 rule: before it, every key is its own operator.
                     let ops = crate::rotation::operators(&parent.state);
@@ -1537,14 +1848,29 @@ impl Chain {
                     let hours = |k: &str| availability.as_ref().and_then(|a| a.get(k).copied());
                     // Protocol 3: qualifying Macs join (up to 16 seats) instead of
                     // replacing members, each where the odds need it most.
+                    let repair = reserve.as_ref().filter(|_| version >= crate::upgrade::RESERVE_FLOOR_PROTOCOL
+                        && parent.handoff.as_ref().is_none_or(|p| p.switch <= parent.height + 1)).and_then(|r| {
+                        let recents = crate::rotation::recents(&state);
+                        let departures = crate::rotation::departures(&state);
+                        crate::rotation::reserve_replacement(
+                            &running, &pool, &seed_bytes, |k| ops.get(k).cloned(), hours,
+                            |k| recents.get(k).copied(), |k| departures.contains(k),
+                            (parent.height + 1) / params.epoch_blocks, r,
+                        )
+                    });
+                    // A repair is the final roster: the frozen pool can still
+                    // contain the unavailable key, so seating it again would
+                    // undo the one-for-one replacement.
+                    let drawn = repair.or_else(|| {
                     let drawn = if version >= 3 {
                         crate::rotation::draw_spread_capped(&pool, &seed_bytes, operator, &running, hours, self.cfg().max_committee)
                     } else {
                         crate::rotation::draw_capped(&pool, &seed_bytes, operator, &running, self.cfg().max_committee)
                     };
                     // Founder reserve keys join or leave with the draw too.
-                    let drawn = match reserve {
-                        Some(r) => crate::rotation::with_reserve(
+                    match reserve {
+                        Some(r) => crate::rotation::with_reserve_for(
+                            version,
                             drawn,
                             &pool,
                             &seed_bytes,
@@ -1554,7 +1880,8 @@ impl Chain {
                             hours,
                         ),
                         None => drawn,
-                    };
+                    }
+                    });
                     if let Some(members) = drawn {
                         aether_rewards::commit_roster(&mut state, draw, &members)
                             .map_err(|e| ChainError::Exec(format!("roster: {e}")))?;
@@ -1574,8 +1901,30 @@ impl Chain {
         let departures = crate::rotation::departures(&state);
         let urgent_leave = aether_rewards::registry_v3::is_v3(&state)
             && aether_rewards::committee(&state).iter().any(|(k, _)| departures.contains(k));
+        // A proven single vacancy in four seats cannot wait for the next
+        // day's draw. The reserve repair still respects pending handoffs and
+        // an already committed roster below.
+        let reserve_replaced = if boundary && version >= crate::upgrade::RESERVE_FLOOR_PROTOCOL {
+            Reserve::of(&parent.state).and_then(|reserve| {
+                let running = crate::rotation::Committee { members: aether_rewards::committee(&state) };
+                if running.members.len() != aether_consensus::committee::MIN_OPEN_COMMITTEE {
+                    return None;
+                }
+                let epoch = (parent.height + 1) / params.epoch_blocks;
+                let eligibility_state = if aether_rewards::registry_v3::is_v3(&state) { &state } else { &parent.state };
+                let pool = crate::rotation::eligible(eligibility_state, epoch, params.min_streak);
+                let ops = crate::rotation::operators(&parent.state);
+                let availability = crate::rotation::availability(&state);
+                let recents = crate::rotation::recents(&state);
+                crate::rotation::reserve_replacement(
+                    &running, &pool, &digest_bytes(&parent.digest),
+                    |k| ops.get(k).cloned(), |k| availability.get(k).copied(),
+                    |k| recents.get(k).copied(), |k| departures.contains(k), epoch, &reserve,
+                )
+            })
+        } else { None };
         if boundary
-            && (!freezes || (urgent_leave && seed.is_none()))
+            && (!freezes || ((urgent_leave || reserve_replaced.is_some()) && seed.is_none()))
             && parent.handoff.as_ref().is_none_or(|p| p.switch <= parent.height + 1)
             && aether_rewards::next_roster(&state).is_none_or(|(d, _)| d != current_draw(&parent.state, parent.height + 1))
         {
@@ -1591,7 +1940,7 @@ impl Chain {
                 // Early replacement (13-roadmap.md, F): a member silent through
                 // the last two epochs hands its seat to the candidate the
                 // spread rule picks, while the old quorum still stands.
-                let replaced = crate::rotation::replace_unavailable(
+                let replaced = reserve_replaced.or_else(|| crate::rotation::replace_unavailable(
                     &running,
                     &pool,
                     &digest_bytes(&parent.digest),
@@ -1600,7 +1949,7 @@ impl Chain {
                     |k: &str| recents.get(k).copied(),
                     |k: &str| departures.contains(k),
                     epoch,
-                );
+                ));
                 let members = match (replaced, Reserve::of(&parent.state)) {
                     (Some(members), _) => {
                         tracing::info!(
@@ -1609,9 +1958,10 @@ impl Chain {
                         );
                         Some(members)
                     }
-                    // From four independent operators on, the keys' staying is a
-                    // question of the committee's predicted worst hour.
-                    (None, Some(reserve)) => crate::rotation::with_reserve(
+                    // Missing seats use standby through four operators;
+                    // larger committees retain the night-time survival rule.
+                    (None, Some(reserve)) => crate::rotation::with_reserve_for(
+                        version,
                         None,
                         &pool,
                         &digest_bytes(&parent.digest),
@@ -1640,7 +1990,7 @@ impl Chain {
             }
         }
         // Finding 6: count the epochs the reserve keys hold seats nobody needs
-        // — four or more independent operators qualify — and stop their
+        // — four independent operators before protocol 4, five from it — and stop their
         // service credit past the grace (`rewards::reserve_served`). The count
         // this block writes is the epoch's that opens here; `distribute` above
         // read the word the boundary before it wrote.
@@ -1650,17 +2000,27 @@ impl Chain {
                 let eligibility_state = if aether_rewards::registry_v3::is_v3(&state) { &state } else { &parent.state };
                 let pool = crate::rotation::eligible(eligibility_state, epoch, params.min_streak);
                 let ops = crate::rotation::operators(&state);
+                let expiry = if version >= crate::upgrade::RESERVE_FLOOR_PROTOCOL {
+                    aether_rewards::RESERVE_STANDBY_MAX_OPERATORS + 1
+                } else {
+                    aether_consensus::committee::MIN_OPEN_COMMITTEE
+                };
                 let on = crate::rotation::independent(&pool, |k| ops.get(k).cloned(), &reserve)
-                    >= aether_consensus::committee::MIN_OPEN_COMMITTEE
+                    >= expiry
                     && aether_rewards::seated(&state).0 > 0;
                 let (_, so_far) = aether_rewards::overdue(&state);
                 let count = if on { so_far + 1 } else { 0 };
                 aether_rewards::set_overdue(&mut state, epoch, count);
                 if count > aether_rewards::RESERVE_GRACE_EPOCHS {
+                    let message = if version >= crate::upgrade::RESERVE_FLOOR_PROTOCOL {
+                        "founder reserve keys still hold seats with five or more independent operators: their service credit has stopped"
+                    } else {
+                        "founder reserve keys still hold seats with four or more independent operators: their service credit has stopped"
+                    };
                     tracing::warn!(
                         epoch,
                         count,
-                        "founder reserve keys still hold seats with four or more independent operators: their service credit has stopped"
+                        "{message}"
                     );
                 }
             }
@@ -1677,35 +2037,128 @@ impl Chain {
         Ok((std::borrow::Cow::Owned(state), payouts))
     }
 
-    /// The newest finalized block nobody proved yet that this node can build a
-    /// prover input for (its parent's state is still in memory); taken once.
-    pub fn provable(&self) -> Option<(Arc<Executed>, Arc<Executed>, Block)> {
-        let mut g = self.lock();
-        let head = g.finalized.clone();
-        // Oldest first among the recent blocks: none left behind to expire.
-        let pick = g.recent.iter().find_map(|b| {
-            let h = b.height().get();
-            if g.attempted.contains(&h)
+    /// Local assignment over the finalized registry. The consensus proof
+    /// market still accepts any operator's valid proof at any age.
+    pub fn provable_for(
+        &self,
+        prover: Address,
+        config: &crate::prover_assignment::Config,
+        now_ms: u64,
+    ) -> Option<(Arc<Executed>, Arc<Executed>, Block)> {
+        // Snapshot only Arc-backed blocks/state and bounded local bookkeeping.
+        // Registry reads and O(window * registry) scoring must not hold the
+        // mutex used by finalization.
+        let (head, recent, attempted, lost, pooled, available) = {
+            let g = self.lock();
+            (g.finalized.clone(), g.recent.iter().map(|b| (b.digest(), b.parent, b.height().get(), b.timestamp)).collect::<Vec<_>>(), g.attempted.clone(), g.lost_proofs.clone(),
+             g.proof_pool.iter().map(|c| c.height).collect::<std::collections::HashSet<_>>(),
+             g.executed.keys().copied().collect::<std::collections::HashSet<_>>())
+        };
+        let operators: Vec<_> = aether_execution::registry::candidates(&head.state)
+            .into_iter().map(|c| c.operator).collect();
+        let open: Vec<_> = recent.iter().filter_map(|&(digest, parent, h, timestamp_ms)| {
+            if attempted.contains(&h) || lost.contains(&h) || pooled.contains(&h)
                 || aether_execution::proofs::prover(&head.state, h).is_some()
-                || !records_statement(&g.cfg, &b.payload()?)
-            {
-                return None;
-            }
-            Some((
-                g.executed.get(&b.digest())?.clone(),
-                g.executed.get(&b.parent)?.clone(),
-                b.clone(),
-            ))
-        })?;
-        g.attempted.insert(pick.0.height);
+                || (h != head.height && aether_execution::proofs::claimable(&head.state, h, head.height + 1).is_err())
+                || !available.contains(&digest) || !available.contains(&parent)
+            { return None; }
+            Some(crate::prover_assignment::OpenBlock { height: h, timestamp_ms })
+        }).collect();
+        let height = crate::prover_assignment::select(&open, &operators, prover, now_ms, config)?;
+        let digest = recent.iter().find(|b| b.2 == height)?.0;
+        let mut g = self.lock();
+        if g.finalized.digest != head.digest || g.attempted.contains(&height)
+            || g.lost_proofs.contains(&height) || g.proof_pool.iter().any(|c| c.height == height)
+            || aether_execution::proofs::prover(&g.finalized.state, height).is_some()
+            || !g.recent.iter().any(|b| b.digest() == digest)
+        { return None; }
+        let block = g.recent.iter().find(|b| b.digest() == digest)?.clone();
+        let pick = (g.executed.get(&block.digest())?.clone(), g.executed.get(&block.parent)?.clone(), block);
+        g.attempted.insert(height);
         Some(pick)
+    }
+
+    pub fn set_prover_window(&self, window: usize) {
+        let mut g = self.lock();
+        g.prover_window = window.min(crate::prover_assignment::MAX_WINDOW);
+        while g.recent.len() > g.prover_window { g.recent.pop_front(); }
+        trim_proving_inputs(&mut g);
+    }
+
+    /// Dispatch from a compact, byte-budgeted witness. No full historical
+    /// state is held for a grace rescue. Decoding and witness replay happen
+    /// after releasing the consensus mutex.
+    pub fn proving_input_for(
+        &self,
+        prover: Address,
+        config: &crate::prover_assignment::Config,
+        now_ms: u64,
+    ) -> Result<Option<(u64, usize, aether_proving::block::BlockInput)>, (u64, String)> {
+        let (head, recent, attempted, lost, pooled, inputs) = {
+            let g = self.lock();
+            (g.finalized.clone(), g.recent.iter().map(|b| (b.digest(), b.parent, b.height().get(), b.timestamp)).collect::<Vec<_>>(), g.attempted.clone(), g.lost_proofs.clone(),
+             g.proof_pool.iter().map(|c| c.height).collect::<std::collections::HashSet<_>>(),
+             g.proving_inputs.keys().copied().collect::<std::collections::HashSet<_>>())
+        };
+        let operators: Vec<_> = aether_execution::registry::candidates(&head.state)
+            .into_iter().map(|c| c.operator).collect();
+        let open: Vec<_> = recent.iter().filter_map(|&(digest, _parent, h, timestamp_ms)| {
+            if attempted.contains(&h) || lost.contains(&h) || pooled.contains(&h)
+                || !inputs.contains(&digest)
+                || aether_execution::proofs::prover(&head.state, h).is_some()
+                || (h != head.height && aether_execution::proofs::claimable(&head.state, h, head.height + 1).is_err())
+            { return None; }
+            Some(crate::prover_assignment::OpenBlock { height: h, timestamp_ms })
+        }).collect();
+        let Some(height) = crate::prover_assignment::select(&open, &operators, prover, now_ms, config) else { return Ok(None) };
+        let digest = recent.iter().find(|b| b.2 == height).expect("selected block").0;
+        let retained = {
+            let mut g = self.lock();
+            if g.finalized.digest != head.digest || g.attempted.contains(&height)
+                || g.lost_proofs.contains(&height) || g.proof_pool.iter().any(|c| c.height == height)
+                || aether_execution::proofs::prover(&g.finalized.state, height).is_some()
+                || !g.recent.iter().any(|b| b.digest() == digest)
+            { return Ok(None); }
+            let Some(input) = g.proving_inputs.get(&digest).cloned() else { return Ok(None) };
+            g.attempted.insert(height);
+            input
+        };
+        let mut input: aether_proving::block::BlockInput = postcard::from_bytes(&retained.encoded)
+            .map_err(|e| (height, format!("retained prover input: {e}")))?;
+        input.prover = prover;
+        let statement = aether_proving::block::execute(&input).map_err(|e| (height, format!("witness replay: {e:?}")))?;
+        if statement.commitment() != retained.commitment {
+            return Err((height, "retained witness does not restate the finalized statement".into()));
+        }
+        Ok(Some((height, input.txs.len(), input)))
+    }
+
+    /// Only verified pool entries or finalized state count as proof sightings.
+    pub fn proof_seen(&self, height: u64) -> bool {
+        let g = self.lock();
+        g.lost_proofs.contains(&height)
+            || g.proof_pool.iter().any(|c| c.height == height)
+            || aether_execution::proofs::prover(&g.finalized.state, height).is_some()
+    }
+
+    pub(crate) fn observe_proofs(&self) -> std::sync::mpsc::Receiver<(u64, Instant)> {
+        let (send, recv) = std::sync::mpsc::channel();
+        self.lock().proof_observers.push(send);
+        recv
+    }
+
+    pub(crate) fn set_proving_height(&self, height: Option<u64>) {
+        self.lock().proving_height = height;
     }
 
     /// A proving attempt at `height` failed for the prover's own sake — its
     /// sidecar died or could not be talked to, not the block — so the height
     /// may be picked again once the sidecar is replaced.
     pub fn retry_proof(&self, height: u64) {
-        self.lock().attempted.remove(&height);
+        let mut g = self.lock();
+        if !g.lost_proofs.contains(&height) {
+            g.attempted.remove(&height);
+        }
     }
 
     /// Inclusion proof of block `height` under the history root of block
@@ -1731,9 +2184,8 @@ impl Chain {
         let hash = if e < open {
             eras.get(&e).map(|(_, hashes)| hashes[(height % ERA_LEN) as usize])
         } else {
-            self.lock()
-                .blocks
-                .get(&height)
+            self.block_summary(height)
+                .map_err(|e| e.to_string())?
                 .and_then(|b| hex::decode(&b.hash).ok())
                 .and_then(|d| d.try_into().ok())
         }
@@ -1760,17 +2212,21 @@ impl Chain {
     > {
         use aether_state::mmr::ERA_LEN;
         let h = ChainHasher::new();
-        let (index, kept, from_file, store) = {
+        let (index, kept, from_file, from_store, store) = {
             let g = self.lock();
             let index = g
                 .history_index
                 .clone()
                 .ok_or("this node started from a checkpoint and keeps no early history")?;
             let open = index.eras.len() as u64;
-            let (mut kept, mut from_file) = (BTreeMap::new(), Vec::new());
+            let (mut kept, mut from_file, mut from_store) = (BTreeMap::new(), Vec::new(), Vec::new());
             for &e in wanted.iter().filter(|e| **e < open) {
                 if e * ERA_LEN < g.pruned_below.max(g.cache_below) {
-                    from_file.push(e);
+                    if !g.cfg.history_v2 && e * ERA_LEN >= g.pruned_below {
+                        from_store.push(e);
+                    } else {
+                        from_file.push(e);
+                    }
                     continue;
                 }
                 let hashes: Option<Vec<[u8; 32]>> = g
@@ -1780,7 +2236,7 @@ impl Chain {
                     .collect();
                 kept.insert(e, hashes.ok_or("bad block hash")?);
             }
-            (index, kept, from_file, g.store.clone())
+            (index, kept, from_file, from_store, g.store.clone())
         };
         let mut out = BTreeMap::new();
         for (e, hashes) in kept {
@@ -1799,6 +2255,16 @@ impl Chain {
                 .enumerate()
                 .map(|(i, d)| aether_state::mmr::leaf(&h, e * ERA_LEN + i as u64, d))
                 .collect();
+            out.insert(e, (leaves, hashes));
+        }
+        for e in from_store {
+            let store = store.as_ref().ok_or("no archival store")?;
+            let hashes = store.block_hashes(e * ERA_LEN..(e + 1) * ERA_LEN).map_err(|e| e.to_string())?;
+            let leaves: Vec<_> = hashes.iter().enumerate()
+                .map(|(i, d)| aether_state::mmr::leaf(&h, e * ERA_LEN + i as u64, d)).collect();
+            if aether_state::mmr::subtree_root(&h, &leaves) != index.eras[e as usize] {
+                return Err("archival summaries do not match the retained era root".into());
+            }
             out.insert(e, (leaves, hashes));
         }
         Ok((index, out))
@@ -1901,16 +2367,86 @@ impl Chain {
         Ok(report)
     }
 
-    /// Trim the history caches under the installed monitor's `--max-memory`
-    /// budget (no monitor installed: nothing happens).
+    /// Trim history under the monitor's memory budget. Durable legacy chains
+    /// also have a 64 MiB ceiling when no monitor is installed.
     pub fn trim_history_caches(&self) {
-        if let Some(budget) = crate::resources::monitor().map(|m| m.limits.max_memory) {
-            trim_caches(&mut self.lock(), budget);
+        let mut g = self.lock();
+        let budget = g.history_budget;
+        trim_caches(&mut g, budget);
+    }
+
+    /// A finalized summary, using durable rows on a cache miss. Disk I/O is
+    /// outside the chain lock and reads never repopulate the history cache.
+    pub fn block_summary(&self, height: u64) -> Result<Option<BlockSummary>, StoreError> {
+        let store = {
+            let g = self.lock();
+            if let Some(summary) = g.blocks.get(&height) {
+                return Ok(Some(summary.clone()));
+            }
+            g.store.clone()
+        };
+        match store {
+            Some(store) => store.block_summary(height),
+            None => Ok(None),
         }
     }
 
-    /// The history caches' estimated bytes (summaries plus receipts).
+    /// A finalized receipt after eviction, without growing the cache.
+    pub fn receipt(&self, hash: &TxHash) -> Result<Option<(u64, Receipt)>, StoreError> {
+        let store = {
+            let g = self.lock();
+            if let Some(receipt) = g.receipts.get(hash) {
+                return Ok(Some(receipt.clone()));
+            }
+            // A tiny budget may evict the pseudo-receipt map entry, but the
+            // finalized head's bounded ids still prove its confirmation.
+            if g.finalized.registration_ids.contains(hash) {
+                return Ok(Some((g.finalized.height, registration_receipt(*hash))));
+            }
+            g.store.clone()
+        };
+        match store {
+            Some(store) => store.receipt(hash),
+            None => Ok(None),
+        }
+    }
+
+    /// Finalized summaries in a caller-bounded inclusive range. One read
+    /// transaction backs archived ranges; memory-only chains use their maps.
+    pub fn block_summaries(&self, from: u64, to: u64) -> Result<Vec<BlockSummary>, StoreError> {
+        if from > to {
+            return Ok(Vec::new());
+        }
+        let store = {
+            let g = self.lock();
+            match &g.store {
+                Some(store) => store.clone(),
+                None => return Ok(g.blocks.range(from..=to).map(|(_, b)| b.clone()).collect()),
+            }
+        };
+        store.block_summaries(from..=to)
+    }
+
+    /// The newest finalized summaries, newest first, including evicted rows.
+    pub fn recent_block_summaries(&self, limit: usize) -> Result<Vec<BlockSummary>, StoreError> {
+        let limit = limit.min(100);
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let head = self.finalized_height();
+        let mut summaries = self.block_summaries(head.saturating_sub(limit as u64 - 1), head)?;
+        summaries.reverse();
+        Ok(summaries)
+    }
+
+    /// Estimated history bytes, including full states and compact proving inputs.
     pub fn caches_bytes(&self) -> u64 {
+        retained_bytes(&self.lock())
+    }
+
+    /// Estimated bytes of cached summaries and receipts only. Full execution
+    /// states and compact proving inputs are included by `caches_bytes`.
+    pub fn history_rows_bytes(&self) -> u64 {
         self.lock().caches_bytes
     }
 
@@ -2055,6 +2591,7 @@ impl Chain {
         // Still open after the (slow) check: not proven or expired meanwhile.
         open(&g, claim.height)?;
         if !g.proof_pool.iter().any(|c| c.height == claim.height) {
+            g.notice_proof(claim.height);
             g.proof_pool.push(claim);
         }
         Ok(())
@@ -2398,7 +2935,10 @@ impl Chain {
             payouts,
             registration_ids,
         });
-        self.lock().executed.insert(block.digest(), exec.clone());
+        let bytes = execution_bytes(&exec);
+        let mut g = self.lock();
+        g.executed.insert(block.digest(), exec.clone());
+        g.execution_sizes.insert(block.digest(), bytes);
         exec
     }
 
@@ -2642,16 +3182,18 @@ impl Chain {
         // store's re-opens tick too, so a healing node never reads as stuck.
         tick();
         let height = block.height().get();
-        {
+        let already_finalized = {
             let g = self.lock();
-            if height <= g.finalized.height && height != 0 {
-                // At-least-once delivery, or already restored from disk: must be the same block.
-                let ours = g.blocks.get(&height).map(|b| b.hash.clone());
-                if ours.is_some_and(|h| h != format!("{}", block.digest())) {
-                    return Err(ChainError::ConflictingFinality { height });
-                }
-                return Ok(());
+            height <= g.finalized.height && height != 0
+        };
+        if already_finalized {
+            // At-least-once delivery must still match the durable hash after
+            // its memory copy was evicted.
+            let ours = self.block_summary(height).map_err(|e| ChainError::Store(e.to_string()))?;
+            if ours.is_some_and(|b| b.hash != format!("{}", block.digest())) {
+                return Err(ChainError::ConflictingFinality { height });
             }
+            return Ok(());
         }
         let exec = match self.get(&block.digest()) {
             Some(e) => e,
@@ -2666,10 +3208,46 @@ impl Chain {
         };
         let payload = block.payload().ok_or(ChainError::BadPayload)?;
         let summary = summary(block, &exec, payload.parent_state_root);
-        let (store, history_v2, compact_swaps, previous_history, relaxed) = {
+        let exec_bytes = execution_bytes(&exec);
+        // Optional proving work stays outside the consensus mutex, including
+        // for locally proposed blocks whose execution was already remembered.
+        let retain_input = self.lock().prover_window > 0 && exec.statement != Statement::default();
+        let proving_input = if retain_input {
+            self.get(&block.parent).and_then(|parent| {
+                let result = crate::prover::input_for(self, &exec, &parent, block, Address::ZERO)
+                    .and_then(|input| crate::prover_input::encode(&input).map_err(|e| (exec.height, e)));
+                match result {
+                    Ok(encoded) => {
+                        let bytes = encoded.len() as u64 + block.data.len() as u64
+                            + std::mem::size_of::<ProvingInput>() as u64 + std::mem::size_of::<Block>() as u64 + 256;
+                        Some(Arc::new(ProvingInput { encoded: encoded.into_boxed_slice(), commitment: exec.statement.commitment, bytes }))
+                    }
+                    Err((height, error)) => {
+                        tracing::warn!(height, %error, "could not retain a compact proving input");
+                        None
+                    }
+                }
+            })
+        } else { None };
+        let search = self.lock().search.clone();
+        let search_sources = self.lock().search_sources.clone();
+        let mut search_index = search.lock().expect("search index");
+        let search_events = crate::search_events::block_events(&exec.receipts, &exec.state, &search_sources, block.timestamp / 1000);
+        let search_delta = search_index.apply_batch(&search_events);
+        let (store, history_v2, compact_swaps, previous_history, relaxed, mut release_watcher, previous, chain_id) = {
             let g = self.lock();
-            (g.store.clone(), g.cfg.history_v2, g.cfg.node_rewards || g.cfg.history_v2, g.finalized.history.clone(), g.relaxed)
+            (g.store.clone(), g.cfg.history_v2, g.cfg.node_rewards || g.cfg.history_v2,
+                g.finalized.history.clone(), g.relaxed, g.release_watcher.clone(), g.finalized.clone(), g.cfg.chain_id)
         };
+        // The next finalized header certifies its parent's post-state. Event
+        // bytes from this block remain discovery until that anchor exists.
+        if release_watcher.pin.is_some() {
+            if previous.height.checked_add(1) == Some(exec.height) && payload.parent_state_root == previous.state.root() {
+                release_watcher.certify(&previous.state, chain_id, previous.height, block.timestamp);
+            }
+            release_watcher.discover(&exec.receipts, &exec.state, chain_id, exec.height);
+        }
+        let release_cache = release_watcher.cache_if_dirty();
         let mut upgrade_notices = self.lock().upgrade_notices.clone();
         upgrade_notices.retain(|s| s.upgrade.activate_at > exec.height);
         if let Some(s) = &payload.upgrade {
@@ -2686,6 +3264,13 @@ impl Chain {
                 }
             });
         if let Some(store) = store {
+            // Save only bounded raw payloads, never a cached approval. A crash
+            // before the state commit leaves a future candidate that fails
+            // verification on restore; the previous valid payload stays too.
+            if let Some(bytes) = release_cache {
+                store.put_meta(crate::release::CACHE_KEY, &bytes)
+                    .map_err(|e| ChainError::Store(e.to_string()))?;
+            }
             // Disk first: the in-memory head never runs ahead of what survives a crash.
             let mut account_rows = Vec::new();
             let mut account_delegations = {
@@ -2757,8 +3342,10 @@ impl Chain {
                     era_start: era_start.as_ref(),
                 }),
             };
-            store.commit_with_history(write, &account_rows, relaxed)
-                .map_err(|e| ChainError::Store(e.to_string()))?;
+            if let Err(error) = store.commit_with_search(write, &account_rows, &search_delta, &search_index, search_sources.fingerprint(), relaxed) {
+                search_index.undo(&search_delta);
+                return Err(ChainError::Store(error.to_string()));
+            }
             // An era's last block: seal it into a file, off the consensus path.
             // Below the free-space floor the seal waits — the blocks stay
             // staged in the store, and a later start's `seal_pending` catches up.
@@ -2772,6 +3359,11 @@ impl Chain {
             }
         }
         let mut g = self.lock();
+        // A concurrent byte-budget trim can evict a remembered candidate
+        // while its input is being built. Finality must charge and retain it.
+        g.executed.insert(exec.digest, exec.clone());
+        g.execution_sizes.insert(exec.digest, exec_bytes);
+        g.release_watcher = release_watcher;
         g.upgrade_notices = upgrade_notices;
         for (h, r) in exec.tx_hashes.iter().zip(&exec.receipts) {
             let rb = receipt_bytes(r);
@@ -2927,7 +3519,8 @@ impl Chain {
                     };
                     // Founder reserve keys join or leave with the draw too.
                     let drawn = match reserve {
-                        Some(r) => crate::rotation::with_reserve(
+                        Some(r) => crate::rotation::with_reserve_for(
+                            crate::upgrade::protocol_at(&exec.schedule, exec.height),
                             drawn,
                             &pool,
                             &seed,
@@ -2953,8 +3546,6 @@ impl Chain {
             keep(&g.store, POOL, &g.pool);
             keep(&g.store, PROPOSAL, &g.proposal);
         }
-        let floor = exec.height.saturating_sub(64);
-        g.executed.retain(|_, e| e.height >= floor);
         for (proven, prover, amount) in &exec.payouts {
             let kind = if *proven == exec.height {
                 "node"
@@ -2980,17 +3571,34 @@ impl Chain {
             g.proof_backoff_until = exec.height + PROOF_BACKOFF;
             g.proof_proposal = None;
         }
-        g.recent.push_back(block.clone());
-        while g.recent.len() > 32 {
+        for claim in &payload.proofs {
+            g.notice_proof(claim.height);
+        }
+        g.finalized_block = Some(block.clone());
+        // Retain compact witnesses only for an enabled prover. Neither an
+        // unpaid statement nor its parent exempts a full state from eviction.
+        g.recent.retain(|b| aether_execution::proofs::claimable(&exec.state, b.height().get(), exec.height + 1).is_ok());
+        if g.prover_window > 0 && proving_input.is_some() {
+            g.recent.push_back(block.clone());
+            g.proving_inputs.insert(block.digest(), proving_input.expect("retained input"));
+        }
+        while g.recent.len() > g.prover_window {
             g.recent.pop_front();
         }
+        trim_proving_inputs(&mut g);
+        let floor = exec.height.saturating_sub(64);
+        g.executed.retain(|_, e| e.height >= floor);
+        let retained: std::collections::HashSet<_> = g.executed.keys().copied().collect();
+        g.execution_sizes.retain(|digest, _| retained.contains(digest));
         // Proofs of blocks now proven (or expired) leave the pool.
         let now = exec.height;
         let state = &exec.state;
         g.proof_pool.retain(|c| {
             aether_execution::proofs::claimable(state, c.height, now + 1).is_ok() || c.height == now
         });
-        g.attempted.retain(|h| *h + 64 >= now);
+        let oldest = g.recent.front().map_or(now, |b| b.height().get());
+        g.attempted.retain(|h| *h >= oldest);
+        g.lost_proofs.retain(|h| *h >= oldest);
         // Answers recorded, or of slots whose window closed, leave the pool.
         if !g.beacon_pool.is_empty() {
             use aether_rewards::beacons;
@@ -3013,18 +3621,10 @@ impl Chain {
         // expired leave the pool.
         if !exec.registration_ids.is_empty() {
             for id in &exec.registration_ids {
-                g.receipts.insert(*id, (exec.height, Receipt {
-                    tx_hash: *id,
-                    success: true,
-                    gas_used: 0,
-                    prove_gas: 0,
-                    state_gas: 0,
-                    state_fee: U256::ZERO,
-                    contract_address: None,
-                    logs: 0,
-                    output: Default::default(),
-                    events: vec![],
-                }));
+                let receipt = registration_receipt(*id);
+                let bytes = receipt_bytes(&receipt);
+                let old = g.receipts.insert(*id, (exec.height, receipt)).map(|(_, r)| receipt_bytes(&r));
+                g.caches_bytes = g.caches_bytes.saturating_add(bytes).saturating_sub(old.unwrap_or(0));
             }
         }
         if !g.registration_pool.is_empty() {
@@ -3037,11 +3637,14 @@ impl Chain {
         // both commit their roster in state (see `pre_state_with`); only the
         // node-local reserve rule of the other networks runs here.
         reserve_step(&mut g, &previous, &exec);
-        // Last: keep the history caches inside their memory budget (a no-op
-        // when nothing is over or no monitor was installed).
-        if let Some(budget) = crate::resources::monitor().map(|m| m.limits.max_memory) {
-            trim_caches(&mut g, budget);
-        }
+        // Last: keep optional retention and durable history caches within
+        // their budgets, preserving the finalized head and its parent.
+        let budget = g.history_budget;
+        trim_caches(&mut g, budget);
+        // Disk and execution succeeded. Registration takes this same lock to
+        // capture its watermark, so replay/live cannot miss a commit. This
+        // bounded synchronous send never waits for a client or builds a proof.
+        g.push.publish(exec.height);
         Ok(())
     }
 }
@@ -3251,6 +3854,12 @@ fn first_missing_nonces(pool: &BTreeMap<TxHash, TxEnvelope>, state: &WorldState)
 }
 
 impl Inner {
+    fn notice_proof(&mut self, height: u64) {
+        self.lost_proofs.insert(height);
+        let seen = Instant::now();
+        self.proof_observers.retain(|observer| observer.send((height, seen)).is_ok());
+    }
+
     /// Count `tx`'s nonce in its sender's index (before it enters the pool).
     fn index_nonce(&mut self, tx: &TxEnvelope) {
         *self.nonces_by_sender.entry(tx.header.sender).or_default().entry(tx.header.nonce).or_default() += 1;
@@ -3419,6 +4028,43 @@ fn rebuild_history_index(
     Some(idx)
 }
 
+/// Rebuild the compact history index with at most one era of hashes in
+/// memory, so an archival legacy database does not become a giant cache
+/// during restart. Missing or inconsistent rows disable history proofs.
+fn rebuild_history_index_from_store(
+    store: &Store,
+    era_roots: &[[u8; 32]],
+    pruned_below: u64,
+    head: u64,
+    history: &aether_state::mmr::Mmr,
+) -> Option<aether_state::mmr::EraIndex> {
+    use aether_state::mmr::ERA_LEN;
+    let h = ChainHasher::new();
+    let pruned_eras = pruned_below / ERA_LEN;
+    if !pruned_below.is_multiple_of(ERA_LEN) || (era_roots.len() as u64) < pruned_eras {
+        return None;
+    }
+    let mut index = aether_state::mmr::EraIndex {
+        eras: era_roots[..pruned_eras as usize].to_vec(),
+        open: Vec::new(),
+    };
+    let end = head.checked_add(1)?;
+    let mut from = pruned_below;
+    while from < end {
+        let to = from.saturating_add(ERA_LEN).min(end);
+        let hashes = store.block_hashes(from..to).ok()?;
+        for (offset, hash) in hashes.iter().enumerate() {
+            index.push(&h, aether_state::mmr::leaf(&h, from + offset as u64, hash));
+        }
+        from = to;
+    }
+    if index.mmr(&h) != *history {
+        tracing::warn!("archival summaries do not match the committed history; history proofs are off");
+        return None;
+    }
+    Some(index)
+}
+
 fn summary(block: &Block, e: &Executed, parent_state_root: B256) -> BlockSummary {
     BlockSummary {
         height: e.height,
@@ -3488,7 +4134,8 @@ fn reserve_step(g: &mut Inner, previous: &Executed, exec: &Executed) {
     );
     let ops = crate::rotation::operators(&exec.state);
     let availability = crate::rotation::availability(&exec.state);
-    let next = crate::rotation::with_reserve(
+    let next = crate::rotation::with_reserve_for(
+        crate::upgrade::protocol_at(&exec.schedule, exec.height),
         None,
         &pool,
         exec.digest.as_ref(),
@@ -3533,6 +4180,39 @@ fn current_draw(state: &WorldState, height: u64) -> u64 {
     let p = aether_execution::registry::params(state);
     // Saturating: a genesis is bounded (roster.rs), but a state word is read here.
     height / p.epoch_blocks.saturating_mul(p.draw_epochs).max(1)
+}
+
+/// Upgrade backfill streams kept receipt events in canonical block/tx/log
+/// order. Older stores do not retain every signed transaction alongside its
+/// receipt, so the activity signal stays unavailable for one complete week.
+fn rebuild_search_cache(cp: &crate::store::Checkpoint, sources: &crate::search_sources::SearchSources) -> crate::search::SearchIndex {
+    use crate::search::{SearchEvent, SearchIndex};
+    let mut index = SearchIndex::new();
+    let mut missing = cp.pruned_below != 0;
+    let mut expected_height = 0;
+    for block in cp.blocks.values() {
+        if block.height != expected_height || (block.height != 0 && block.timestamp_ms == 0) {
+            // Pre-gap resolver facts may have been changed by missing events.
+            index = SearchIndex::new();
+            missing = true;
+        }
+        expected_height = block.height.saturating_add(1);
+        let at = block.timestamp_ms / 1000;
+        index.apply(SearchEvent::Tick { at });
+        for hash in &block.txs {
+            if let Some((_, receipt)) = cp.receipts.get(hash).filter(|(height, _)| *height == block.height) {
+                if receipt.success {
+                    for event in &receipt.events {
+                        for decoded in crate::search_events::decode_from_source(event, &cp.state, sources, at) { index.apply(decoded); }
+                    }
+                }
+            } else { missing = true; }
+        }
+    }
+    missing |= expected_height != cp.height.saturating_add(1);
+    if missing { index.mark_history_incomplete(); }
+    if cp.height != 0 { index.mark_usage_incomplete(); }
+    index
 }
 
 fn keep<T: Serialize + ?Sized>(store: &Option<Arc<Store>>, key: &str, value: &T) {
@@ -4161,6 +4841,7 @@ mod pool_tests {
         config.history_v2 = true;
         let (chain, genesis) = Chain::new(config);
         let prover = Address::repeat_byte(0xc1);
+        chain.set_prover_window(crate::prover_assignment::Config::default().window);
         let mut parent = chain.get(&genesis.digest()).unwrap();
         let mut last = genesis.clone();
         for _ in 0..4 {
@@ -4209,6 +4890,140 @@ mod pool_tests {
             "the proof would state what the chain recorded"
         );
         assert!(matches!(crate::prover::next_job(&chain, prover), Ok(None)), "each block is taken once");
+    }
+
+    #[test]
+    fn quiet_heads_keep_their_authenticated_parent_metadata() {
+        for (protocol, history_v2) in [(1, false), (3, true)] {
+            let mut config = cfg(vec![]);
+            config.protocol = protocol;
+            config.history_v2 = history_v2;
+            let (chain, genesis) = Chain::new(config);
+            let mut parent = chain.lock().finalized.clone();
+            let mut last = genesis;
+            for _ in 0..3 {
+                let (block, exec) = build(&chain, &parent, &last, vec![]);
+                chain.finalize(&block).unwrap();
+                assert_eq!(exec.statement, Statement::default());
+                let witness = upgrade_metadata(&chain.lock()).expect("quiet finalized heads still authenticate their parent's metadata");
+                assert_eq!(witness["height"], parent.height);
+                let encoded = aether_light::from_hex(witness["encoded"].as_str().unwrap()).unwrap();
+                assert_eq!(aether_light::chain_meta_digest(&encoded, witness["archive_excess"].as_u64().unwrap()), block.payload().unwrap().parent_meta);
+                (parent, last) = (exec, block);
+            }
+        }
+    }
+
+    #[test]
+    fn h04_disabled_proving_keeps_only_the_ordinary_state_versions() {
+        let mut config = cfg(vec![]);
+        config.protocol = 2;
+        let (chain, mut last) = Chain::new(config);
+        let mut parent = chain.lock().finalized.clone();
+        for _ in 0..160 {
+            let (block, exec) = build(&chain, &parent, &last, vec![]);
+            chain.finalize(&block).unwrap();
+            (parent, last) = (exec, block);
+        }
+        let g = chain.lock();
+        assert_eq!(g.executed.len(), 65, "a node without a prover must not pin unpaid statements or parents");
+        assert!(g.recent.is_empty(), "disabled proving has no statement window");
+    }
+
+    fn h04_budgeted_rescue(sparse: bool, window: usize) {
+        let key = aether_crypto::P256Signer::from_seed(&[7; 32]).unwrap();
+        let sender = aether_crypto::address_of(&aether_crypto::Signer::public_key(&key)).unwrap();
+        let mut alloc = vec![(sender, U256::from(10u128.pow(21)))];
+        for i in 0..1024u64 {
+            let mut bytes = [0u8; 20];
+            bytes[12..].copy_from_slice(&i.to_be_bytes());
+            alloc.push((Address::from(bytes), U256::from(1)));
+        }
+        let mut config = cfg(alloc);
+        config.protocol = 3;
+        config.history_v2 = sparse;
+        let (chain, mut last) = Chain::new(config);
+        chain.set_prover_window(window);
+        // Scale the documented 8 GB Mac's 1 GB cache budget down by 128 to
+        // expose state-copy growth without allocating gigabytes in a test.
+        let budget = crate::resources::cache_budget_for(8 * crate::resources::GB) / 128;
+        assert_eq!(budget, 8 * 1024 * 1024);
+        chain.trim_history_caches_with(budget);
+        let mut parent = chain.lock().finalized.clone();
+        let mut nonce = 0;
+        let mut first_commitment = [0; 32];
+        for h in 1..=240 {
+            let txs = if sparse && h % 4 == 1 {
+                let mut transfer = transfers(&key, nonce..nonce + 1).remove(0);
+                nonce += 1;
+                transfer.header.gas.state = 1_000;
+                transfer.header.max_fee.state = Chain::next_base_fee(&chain.cfg(), &parent).state;
+                let mut signature = aether_crypto::Signer::sign(&key, &transfer.signing_bytes()).unwrap();
+                signature.extend_from_slice(&aether_crypto::Signer::public_key(&key).bytes);
+                transfer.signature = Bytes::from(signature);
+                vec![transfer]
+            } else { vec![] };
+            let (block, exec) = build(&chain, &parent, &last, txs);
+            chain.finalize(&block).unwrap();
+            if h == 1 { first_commitment = exec.statement.commitment; }
+            (parent, last) = (exec, block);
+        }
+        chain.trim_history_caches_with(budget);
+        let (states, versions) = {
+            let g = chain.lock();
+            let bytes = g.executed.values().map(|e| {
+                e.state.repo().entries().count() as u64 * 64
+                    + e.state.codes().values().map(|c| c.len() as u64).sum::<u64>()
+            }).sum::<u64>();
+            (bytes, g.executed.len())
+        };
+        let charged = chain.caches_bytes();
+        let measured = states.max(charged);
+        println!("H04 sparse={sparse} window={window}: state_payload={states}, charged={charged}, versions={versions}, budget={budget}");
+        assert!(measured <= budget * 3 / 4, "retention must fit the measured budget with 25% headroom: {measured} > {}", budget * 3 / 4);
+        assert!(charged >= states, "state versions must be charged to the history budget");
+        assert!(versions <= 65, "compact rescue inputs must not pin additional full states");
+        let prover = Address::repeat_byte(0xf0);
+        let assignment = crate::prover_assignment::Config { window, ..Default::default() };
+        let now_ms = last.timestamp + assignment.grace.as_millis() as u64 + 1;
+        let (height, _, input) = chain.proving_input_for(prover, &assignment, now_ms).unwrap().expect("a grace rescue still has a usable compact input");
+        assert_eq!(height, 1, "the oldest unpaid statement survives quiet blocks and budget trimming");
+        assert_eq!(aether_proving::block::execute(&input).unwrap().commitment(), first_commitment);
+        assert_eq!(aether_proving::block::output(&input).unwrap(), aether_proving::block::claim(first_commitment, prover));
+    }
+
+    #[test]
+    fn h04_adjacent_unpaid_history_fits_budget_and_can_rescue() {
+        h04_budgeted_rescue(false, crate::prover_assignment::MAX_WINDOW);
+    }
+
+    #[test]
+    fn h04_sparse_unpaid_history_fits_budget_and_can_rescue() {
+        h04_budgeted_rescue(true, crate::prover_assignment::MAX_WINDOW);
+    }
+
+    #[test]
+    fn a_checkpoint_proof_notifies_a_flight_evicted_from_a_small_window() {
+        let mut config = cfg(vec![]);
+        config.protocol = 2;
+        let (chain, genesis) = Chain::new(config);
+        chain.set_prover_window(1);
+        let parent = chain.lock().finalized.clone();
+        let (first, parent) = build(&chain, &parent, &genesis, vec![]);
+        chain.finalize(&first).unwrap();
+        chain.lock().attempted.insert(1);
+        chain.set_proving_height(Some(1));
+        let notices = chain.observe_proofs();
+        let (second, _) = build(&chain, &parent, &first, vec![]);
+        chain.finalize(&second).unwrap();
+        assert!(!chain.lock().attempted.contains(&1), "the pending window already evicted this job");
+        // Adopt's input is certified by its caller. Here construct the paid
+        // proof marker directly to isolate the notification bookkeeping.
+        let mut imported = (*chain.lock().finalized).clone();
+        aether_execution::proofs::pay(&mut imported.state, 1, 3, Address::repeat_byte(0x88)).unwrap();
+        let summary = chain.lock().blocks[&2].clone();
+        chain.adopt(Arc::new(imported), summary);
+        assert_eq!(notices.recv_timeout(std::time::Duration::from_secs(1)).unwrap().0, 1);
     }
 
     #[test]

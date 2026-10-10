@@ -67,6 +67,77 @@ impl Application {
         self.chain.finalized_height()
     }
 
+    /// Prepare pooled extras without losing an accepted proof because an
+    /// unrelated item became invalid, such as a registration at key rotation.
+    #[allow(clippy::type_complexity)]
+    fn proposal_pre_state<'a>(
+        &self,
+        parent: &'a Executed,
+        extras: &mut Extras,
+    ) -> Result<
+        (
+            std::borrow::Cow<'a, aether_execution::WorldState>,
+            Vec<(u64, aether_types::Address, aether_types::U256)>,
+        ),
+        crate::chain::ChainError,
+    > {
+        let attempt = self.chain.pre_state_with(
+            parent,
+            parent.next_protocol(),
+            &extras.proofs,
+            &extras.beacons,
+            &extras.registrations,
+            extras.seed.as_ref(),
+            false,
+        );
+        let attempt = match attempt {
+            Err(e) if !extras.beacons.is_empty() || !extras.registrations.is_empty() => {
+                warn!(
+                    ?e,
+                    "retrying proposal without beacon answers and registrations"
+                );
+                extras.beacons.clear();
+                extras.registrations.clear();
+                // Verified pool admission stops competing jobs permanently.
+                // Keep that claim available unless the proof itself also fails.
+                self.chain.pre_state(
+                    parent,
+                    parent.next_protocol(),
+                    &extras.proofs,
+                    extras.seed.as_ref(),
+                    false,
+                )
+            }
+            other => other,
+        };
+        match attempt {
+            // An unavailable verifier gives no verdict on accepted claims.
+            // Keep them for a proposal after the sidecar has recovered.
+            Err(e @ crate::chain::ChainError::Exec(_)) => Err(e),
+            Err(e) if !extras.proofs.is_empty() => {
+                // Establish that the proof-free block works before deleting
+                // claims: a failing activation or seed cannot invalidate them.
+                let fallback = self.chain.pre_state(
+                    parent,
+                    parent.next_protocol(),
+                    &[],
+                    extras.seed.as_ref(),
+                    false,
+                )?;
+                warn!(
+                    ?e,
+                    "dropping pooled proofs that failed proposal construction"
+                );
+                self.chain
+                    .drop_proofs(&extras.proofs.iter().map(|c| c.height).collect::<Vec<_>>());
+                extras.proofs.clear();
+                // The seed remains in the payload and in its pre-state.
+                Ok(fallback)
+            }
+            other => other,
+        }
+    }
+
     /// Re-execute an already finalized block during startup recovery.
     pub fn replay(&self, block: &Block) -> Result<(), crate::chain::ChainError> {
         self.chain.finalize(block)
@@ -153,28 +224,8 @@ where
             warn!(height = %height, "deferring control payload until archive budget refills");
         }
         // Under the parent's next protocol, with its one-time changes if it activates here.
-        let attempt = self.chain.pre_state_with(&parent, parent.next_protocol(), &extras.proofs, &extras.beacons, &extras.registrations, extras.seed.as_ref(), false);
-        let mut extras = extras;
-        let (pre, payouts) = match attempt {
+        let (pre, payouts) = match self.proposal_pre_state(&parent, &mut extras) {
             Ok(pre) => pre,
-            // Pooled proofs that no longer verify here: drop them and propose without.
-            // (Beacon answers and registrations were checked against this
-            // parent: they go too, only for this block.)
-            Err(e) if !extras.proofs.is_empty() || !extras.beacons.is_empty() || !extras.registrations.is_empty() => {
-                warn!(?e, "dropping pooled proofs, beacon answers and registrations from this proposal");
-                self.chain.drop_proofs(&extras.proofs.iter().map(|c| c.height).collect::<Vec<_>>());
-                extras.proofs.clear();
-                extras.beacons.clear();
-                extras.registrations.clear();
-                // The seed stays: this block still carries it, so its commitment still happens.
-                match self.chain.pre_state(&parent, parent.next_protocol(), &[], extras.seed.as_ref(), false) {
-                    Ok(pre) => pre,
-                    Err(e) => {
-                        warn!(?e, "not proposing");
-                        return None;
-                    }
-                }
-            }
             Err(e) => {
                 warn!(?e, "not proposing");
                 return None;
@@ -368,5 +419,389 @@ mod timestamp_tests {
         assert_eq!(proposal_delay_ms(100, true), MIN_BLOCK_INTERVAL_MS);
         assert_eq!(proposal_delay_ms(100, false), 100);
         assert_eq!(proposal_delay_ms(1_500, true), 1_500);
+    }
+}
+
+#[cfg(test)]
+mod proof_recovery_tests {
+    use super::*;
+    use crate::block::EPOCH;
+    use crate::chain::{ChainConfig, ProofVerifier};
+    use crate::upgrade::{combine, sign_emergency_partial, Upgrade};
+    use aether_crypto::{P256Signer, Signer as _};
+    use aether_execution::{proofs, registry, WorldState};
+    use aether_light::block::{NodeRegistration, ProofClaim};
+    use aether_types::{Address, GasVector, U256};
+    use commonware_codec::Encode as _;
+    use commonware_consensus::types::{Round, View};
+    use commonware_cryptography::{ed25519, Signer as _};
+
+    const CHAIN_ID: u64 = 7_797;
+    const EPOCH_BLOCKS: u64 = 10;
+    const PROOF_BYTES: usize = 32 << 10;
+
+    struct PaddedEcho;
+
+    impl ProofVerifier for PaddedEcho {
+        fn verify(&self, proof: &[u8], output: [u8; 32]) -> bool {
+            proof.len() == PROOF_BYTES
+                && proof[..32] == output
+                && proof[32..].iter().all(|byte| *byte == 0)
+        }
+    }
+
+    struct Unavailable;
+
+    impl ProofVerifier for Unavailable {
+        fn verify(&self, _: &[u8], _: [u8; 32]) -> bool {
+            false
+        }
+        fn decide(&self, _: &[u8], _: [u8; 32]) -> Option<bool> {
+            None
+        }
+    }
+
+    struct Net {
+        chain: Chain,
+        parent: Arc<Executed>,
+        last: Block,
+        registrar: P256Signer,
+        prover: P256Signer,
+        commitment: [u8; 32],
+    }
+
+    impl Net {
+        /// An authenticated registrar upgrade is announced at height 1 and
+        /// activates at 11. The prover registers at 1; its proof is still unpaid.
+        fn before_rotation() -> Self {
+            let registrar = P256Signer::from_seed(&[7; 32]).unwrap();
+            let prover = P256Signer::from_seed(&[8; 32]).unwrap();
+            let keys: Vec<_> = (1..=4).map(ed25519::PrivateKey::from_seed).collect();
+            let cfg = ChainConfig {
+                chain_id: CHAIN_ID,
+                limits: GasVector {
+                    exec: 30_000_000,
+                    state: u64::MAX,
+                    prove: 200_000_000,
+                },
+                alloc: vec![],
+                fees: false,
+                registrar: Some(aether_crypto::p256_xy(&registrar.public_key().bytes).unwrap()),
+                epoch_blocks: EPOCH_BLOCKS,
+                min_streak: Some(0),
+                draw_epochs: Some(7),
+                history_v2: false,
+                protocol: 2,
+                node_rewards: true,
+                committee: keys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, key)| {
+                        (
+                            hex::encode(key.public_key().encode()),
+                            aether_net::SecretKey::from_bytes(&[i as u8 + 1; 32])
+                                .public()
+                                .to_string(),
+                        )
+                    })
+                    .collect(),
+                reserve: None,
+                group: 0,
+                max_committee: crate::rotation::GROW_UNTIL,
+            };
+            let (chain, genesis) = Chain::new(cfg);
+            let (_, sharing, shares) = aether_light::devnet_threshold(4);
+            {
+                let mut g = chain.lock();
+                g.identity = Some(*sharing.public());
+                g.protocol = 3;
+                g.verifier = Some(Arc::new(PaddedEcho));
+            }
+            chain.set_prover_window(crate::prover_assignment::Config::default().window);
+            let parent = chain.lock().finalized.clone();
+            let mut net = Self {
+                chain,
+                parent,
+                last: genesis,
+                registrar,
+                prover,
+                commitment: [0; 32],
+            };
+            let next_registrar = P256Signer::from_seed(&[9; 32]).unwrap();
+            let (x, y) = aether_crypto::p256_xy(&next_registrar.public_key().bytes).unwrap();
+            let upgrade = Upgrade {
+                chain_id: CHAIN_ID,
+                protocol: 3,
+                activate_at: EPOCH_BLOCKS + 1,
+                emergency: true,
+                releases: vec![],
+                notes: String::new(),
+                registrar: Some((x.into(), y.into())),
+            };
+            let approvals: Vec<_> = shares
+                .iter()
+                .zip(&keys)
+                .take(3)
+                .map(|((_, share), key)| sign_emergency_partial(&upgrade, share, key))
+                .collect();
+            let registration = net.registration(&net.prover, 1);
+            net.step(Extras {
+                upgrade: Some(combine(&sharing, &approvals).unwrap()),
+                registrations: vec![registration],
+                ..Extras::default()
+            });
+            net.commitment = net.parent.statement.commitment;
+            while net.parent.height < EPOCH_BLOCKS {
+                net.step(Extras::default());
+            }
+            net
+        }
+
+        fn address(&self) -> Address {
+            aether_crypto::address_of(&self.prover.public_key()).unwrap()
+        }
+
+        fn registration(&self, operator: &P256Signer, index: u8) -> NodeRegistration {
+            let address = aether_crypto::address_of(&operator.public_key()).unwrap();
+            let key: [u8; 32] = ed25519::PrivateKey::from_seed(u64::from(index))
+                .public_key()
+                .encode()
+                .as_ref()
+                .try_into()
+                .unwrap();
+            let node = *aether_net::SecretKey::from_bytes(&[index; 32])
+                .public()
+                .as_bytes();
+            let attestation = self
+                .registrar
+                .sign(&registry::attestation_message(
+                    CHAIN_ID, address, key, node, address,
+                ))
+                .unwrap();
+            let message = registry::relay_message(
+                CHAIN_ID,
+                address,
+                &key,
+                &node,
+                address,
+                &attestation,
+                0,
+                100,
+            );
+            NodeRegistration {
+                operator: address,
+                validator_key: key.into(),
+                node_id: node.into(),
+                beaconer: address,
+                signature: operator.sign(&message).unwrap().into(),
+                attestation: attestation.into(),
+                operator_key: operator.public_key().bytes.into(),
+                nonce: 0,
+                expiry: 100,
+            }
+        }
+
+        fn claim(&self) -> ProofClaim {
+            let mut proof = vec![0; PROOF_BYTES];
+            proof[..32].copy_from_slice(&aether_proving::block::claim(
+                self.commitment,
+                self.address(),
+            ));
+            ProofClaim {
+                height: 1,
+                prover: self.address(),
+                proof: hex::encode(proof),
+            }
+        }
+
+        fn pooled_extras(&self) -> Extras {
+            let other = P256Signer::from_seed(&[10; 32]).unwrap();
+            assert!(self
+                .chain
+                .add_registration(self.registration(&other, 5))
+                .unwrap());
+            Extras {
+                proofs: self.chain.proofs_for(&self.parent),
+                registrations: self.chain.registrations_for(&self.parent),
+                ..Extras::default()
+            }
+        }
+
+        fn block(&self, pre: &WorldState, extras: Extras) -> Block {
+            let height = self.last.height.next();
+            let context = Context {
+                round: Round::new(EPOCH, View::new(height.get())),
+                leader: ed25519::PrivateKey::from_seed(1).public_key(),
+                parent: (View::new(height.get() - 1), self.last.digest()),
+            };
+            let timestamp = height.get() * MIN_BLOCK_INTERVAL_MS;
+            let skeleton = Block::new(
+                context.clone(),
+                self.last.digest(),
+                height,
+                timestamp,
+                bytes::Bytes::new(),
+            );
+            let ctx = Chain::block_context(&self.chain.cfg(), &skeleton, &self.parent);
+            let (payload, _) = build_payload(&self.parent, pre, &ctx, vec![], extras);
+            Block::new(
+                context,
+                self.last.digest(),
+                height,
+                timestamp,
+                payload.to_bytes(),
+            )
+        }
+
+        fn commit(&mut self, block: Block) -> Arc<Executed> {
+            let executed = self.chain.execute(&block, &self.parent).unwrap();
+            self.chain.finalize(&block).unwrap();
+            self.parent = executed.clone();
+            self.last = block;
+            executed
+        }
+
+        fn step(&mut self, extras: Extras) -> Arc<Executed> {
+            let block = {
+                let (pre, _) = self
+                    .chain
+                    .pre_state_with(
+                        &self.parent,
+                        self.parent.next_protocol(),
+                        &extras.proofs,
+                        &extras.beacons,
+                        &extras.registrations,
+                        extras.seed.as_ref(),
+                        false,
+                    )
+                    .unwrap();
+                self.block(&pre, extras)
+            };
+            self.commit(block)
+        }
+    }
+
+    #[test]
+    fn old_registrar_registration_keeps_verified_proof_includable_and_paid_once() {
+        let mut net = Net::before_rotation();
+        let claim = net.claim();
+        net.chain.add_own_proof(claim.clone()).unwrap();
+        let mut extras = net.pooled_extras();
+        assert_eq!((extras.proofs.len(), extras.registrations.len()), (1, 1));
+        let error = net
+            .chain
+            .pre_state_with(
+                &net.parent,
+                net.parent.next_protocol(),
+                &extras.proofs,
+                &[],
+                &extras.registrations,
+                None,
+                false,
+            )
+            .err()
+            .expect("the old registrar's registration fails at activation");
+        assert!(
+            matches!(error, crate::chain::ChainError::Protocol(ref reason) if reason.contains("registrar"))
+        );
+
+        let before = net.parent.state.balance(&net.address());
+        let app = Application::new(net.chain.clone(), 0);
+        let (pre, payouts) = app.proposal_pre_state(&net.parent, &mut extras).unwrap();
+        assert_eq!(
+            extras.proofs.len(),
+            1,
+            "a rejected registration must not discard a verified unpaid proof"
+        );
+        assert!(extras.registrations.is_empty());
+        assert_eq!(
+            net.chain.proofs_for(&net.parent).len(),
+            1,
+            "the accepted proof remains available to subsequent proposals"
+        );
+        assert_eq!(payouts.len(), 1);
+        assert_eq!((payouts[0].0, payouts[0].1), (1, net.address()));
+        let paid = payouts[0].2;
+        assert!(paid > U256::ZERO);
+        assert_eq!(pre.balance(&net.address()), before + paid);
+        let block = net.block(&pre, extras);
+        drop(pre);
+        let executed = net.commit(block.clone());
+        assert_eq!(executed.payouts, payouts);
+        assert_eq!(proofs::prover(&executed.state, 1), Some(net.address()));
+        assert_eq!(executed.state.balance(&net.address()), before + paid);
+        assert!(net.chain.add_own_proof(claim.clone()).is_err());
+        assert!(net
+            .chain
+            .pre_state(
+                &net.parent,
+                net.parent.next_protocol(),
+                &[claim],
+                None,
+                false
+            )
+            .is_err());
+        net.chain.finalize(&block).unwrap();
+        net.step(Extras::default());
+        assert_eq!(
+            net.parent.state.balance(&net.address()),
+            before + paid,
+            "replaying finality and the next block cannot pay the proof twice"
+        );
+    }
+
+    #[test]
+    fn sidecar_retry_preserves_pending_proof_after_registrar_rotation_failure() {
+        let mut net = Net::before_rotation();
+        let config = crate::prover_assignment::Config::default();
+        let now = net.last.timestamp;
+        let first = net.chain.provable_for(net.address(), &config, now).unwrap();
+        assert_eq!(first.0.height, 1);
+        // The service uses retry_proof when replacing a dead sidecar. A job
+        // with no accepted competitor must become dispatchable again.
+        net.chain.retry_proof(1);
+        net.chain.lock().verifier = Some(Arc::new(PaddedEcho));
+        assert_eq!(
+            net.chain
+                .provable_for(net.address(), &config, now)
+                .unwrap()
+                .0
+                .height,
+            1
+        );
+
+        net.chain.add_own_proof(net.claim()).unwrap();
+        let mut extras = net.pooled_extras();
+        let app = Application::new(net.chain.clone(), 0);
+        net.chain.lock().verifier = Some(Arc::new(Unavailable));
+        let error = app
+            .proposal_pre_state(&net.parent, &mut extras)
+            .err()
+            .expect("an unavailable verifier postpones the proposal without rejecting its proof");
+        assert!(matches!(error, crate::chain::ChainError::Exec(_)));
+        // Replacement after an accepted claim must keep cancellation intact,
+        // while the accepted proof still has a path to automatic inclusion.
+        net.chain.lock().verifier = Some(Arc::new(PaddedEcho));
+        net.chain.retry_proof(1);
+        assert!(net.chain.proof_seen(1));
+        assert_ne!(
+            net.chain
+                .provable_for(net.address(), &config, now + 60_001)
+                .map(|job| job.0.height),
+            Some(1)
+        );
+        assert_eq!(net.chain.proofs_for(&net.parent).len(), 1, "a sidecar restart must not leave the accepted height permanently suppressed without its pending claim");
+        assert_eq!(extras.proofs.len(), 1);
+        let (pre, _) = app.proposal_pre_state(&net.parent, &mut extras).unwrap();
+        drop(pre);
+        let paid = net.step(extras);
+        assert_eq!(proofs::prover(&paid.state, 1), Some(net.address()));
+        assert_eq!(
+            paid.payouts
+                .iter()
+                .filter(|(height, _, _)| *height == 1)
+                .count(),
+            1
+        );
     }
 }

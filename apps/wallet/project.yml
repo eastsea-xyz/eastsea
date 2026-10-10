@@ -22,6 +22,10 @@ targets:
       - path: Sources
         excludes: ["**/.omc/**", ".omc/**"]
       - path: Resources
+        excludes: ["LiveGlobe"]
+        buildPhase: resources
+      - path: Resources/LiveGlobe
+        type: folder
         buildPhase: resources
       - Assets.xcassets
       - path: Generated/aether_ffi.swift
@@ -43,10 +47,10 @@ targets:
         # gate rejects missing translations and keys.
         SWIFT_EMIT_LOC_STRINGS: YES
         LOCALIZATION_PREFERS_STRING_CATALOGS: YES
-        MARKETING_VERSION: 0.7.3.2
+        MARKETING_VERSION: 0.7.4
         # Build numbers never repeat across the product line: Aether 0.6.6 shipped
         # build 11 and the Aether 0.6.7 bridge (apps/bridge) ships build 12.
-        CURRENT_PROJECT_VERSION: 18
+        CURRENT_PROJECT_VERSION: 19
         # Sparkle keys (feed URL, EdDSA public key) merged into the generated Info.plist.
         INFOPLIST_FILE: Info-mac.plist
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
@@ -129,6 +133,10 @@ targets:
       - path: Sources
         excludes: ["**/.omc/**", ".omc/**"]
       - path: Resources
+        excludes: ["LiveGlobe"]
+        buildPhase: resources
+      - path: Resources/LiveGlobe
+        type: folder
         buildPhase: resources
       - Assets.xcassets
       - path: Generated/aether_ffi.swift
@@ -147,7 +155,7 @@ targets:
         SWIFT_EMIT_LOC_STRINGS: YES
         LOCALIZATION_PREFERS_STRING_CATALOGS: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        # The eastsea:// (and legacy aether://) URL scheme, merged into the generated Info.plist.
+        # sea://, eastsea:// and legacy aether://, merged into the generated Info.plist.
         INFOPLIST_FILE: Info-ios.plist
         INFOPLIST_KEY_NSFaceIDUsageDescription: Sign transactions with your device's Secure Enclave key.
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
@@ -184,6 +192,10 @@ targets:
       - path: Sources
         excludes: ["**/.omc/**", ".omc/**", "AetherWalletApp.swift"]
       - path: Resources
+        excludes: ["LiveGlobe"]
+        buildPhase: resources
+      - path: Resources/LiveGlobe
+        type: folder
         buildPhase: resources
       - Assets.xcassets
       - path: Generated/aether_ffi.swift

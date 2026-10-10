@@ -277,7 +277,6 @@ struct Requests {
 }
 
 struct ProxyState {
-    upstream: String,
     http: reqwest::Client,
     requests: Mutex<Requests>,
     held: AtomicBool,
@@ -286,7 +285,7 @@ struct ProxyState {
     generation: AtomicUsize,
 }
 
-async fn proxy_rpc(State(state): State<Arc<ProxyState>>, Json(body): Json<Value>) -> Json<Value> {
+async fn proxy_rpc(State((upstream, state)): State<(String, Arc<ProxyState>)>, Json(body): Json<Value>) -> Json<Value> {
     let method = body["method"].as_str().unwrap_or_default();
     if !matches!(
         method,
@@ -332,7 +331,7 @@ async fn proxy_rpc(State(state): State<Arc<ProxyState>>, Json(body): Json<Value>
     let answer = async {
         state
             .http
-            .post(&state.upstream)
+            .post(&upstream)
             .json(&body)
             .timeout(Duration::from_secs(10))
             .send()
@@ -367,23 +366,17 @@ struct Proxy {
     state: Arc<ProxyState>,
     url: String,
     runtime: Option<tokio::runtime::Runtime>,
-    task: tokio::task::JoinHandle<()>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Proxy {
-    fn start(upstream: String) -> Self {
-        // Keep the actual bound listener: unlike subprocess ports, this
-        // server does not need to release a reservation before starting.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        listener.set_nonblocking(true).unwrap();
+    fn start(upstreams: [String; 2]) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .unwrap();
         let state = Arc::new(ProxyState {
-            upstream,
             http: reqwest::Client::new(),
             requests: Default::default(),
             held: AtomicBool::new(false),
@@ -391,20 +384,29 @@ impl Proxy {
             stopped: AtomicBool::new(false),
             generation: AtomicUsize::new(0),
         });
-        let app = Router::new()
-            .route("/", post(proxy_rpc))
-            .with_state(state.clone());
-        let task = runtime.spawn(async move {
-            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-            axum::serve(listener, app)
-                .await
-                .expect("serve follower-only proxy");
-        });
+        let mut urls = Vec::new();
+        let mut tasks = Vec::new();
+        // Separate listener authorities witness two independent validators;
+        // share only the request log and the controlled backfill pause.
+        for upstream in upstreams {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            urls.push(format!("http://{}", listener.local_addr().unwrap()));
+            listener.set_nonblocking(true).unwrap();
+            let app = Router::new()
+                .route("/", post(proxy_rpc))
+                .with_state((upstream, state.clone()));
+            tasks.push(runtime.spawn(async move {
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                axum::serve(listener, app)
+                    .await
+                    .expect("serve follower-only proxy");
+            }));
+        }
         Self {
             state,
-            url,
+            url: urls.join(","),
             runtime: Some(runtime),
-            task,
+            tasks,
         }
     }
 
@@ -427,7 +429,7 @@ impl Proxy {
 impl Drop for Proxy {
     fn drop(&mut self) {
         self.state.stopped.store(true, Ordering::SeqCst);
-        self.task.abort();
+        for task in &self.tasks { task.abort(); }
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_timeout(Duration::from_secs(1));
         }
@@ -496,13 +498,16 @@ fn a_fresh_follower_jumps_to_head_and_resumes_backfill_after_sigkill() {
     net.wait_status(0, BLOCKS / 2, Duration::from_secs(300));
     net.transfer("222"); // Sampled history includes real state-root changes.
     net.wait_status(0, BLOCKS, Duration::from_secs(600));
-    let snapshot = net
-        .http
-        .call(&net.url(0), "aether_snapshot", json!([]))
-        .expect("build validator snapshot");
-    let snapshot_height = snapshot["height"].as_u64().expect("snapshot height");
+    let snapshots = [0, 1].map(|source| {
+        net.wait_status(source, BLOCKS, Duration::from_secs(30));
+        let snapshot = net.http.call(&net.url(source), "aether_snapshot", json!([]))
+            .expect("build validator snapshot");
+        snapshot["height"].as_u64().expect("snapshot height")
+    });
     // The next certificate authenticates the snapshot's post-state root.
-    net.wait_status(0, snapshot_height + 2, Duration::from_secs(30));
+    for source in [0, 1] {
+        net.wait_status(source, snapshots.iter().max().unwrap() + 2, Duration::from_secs(30));
+    }
     net.pause_consensus(true);
     std::thread::sleep(Duration::from_secs(1));
     let source_status = net
@@ -512,11 +517,11 @@ fn a_fresh_follower_jumps_to_head_and_resumes_backfill_after_sigkill() {
     let head = source_status["height"].as_u64().unwrap();
     assert!(head >= BLOCKS);
     println!(
-        "isolated devnet reached {head} blocks in {:.3}s; cached snapshot at {snapshot_height}",
+        "isolated devnet reached {head} blocks in {:.3}s; cached snapshots at {snapshots:?}",
         built.elapsed().as_secs_f64()
     );
 
-    let proxy = Proxy::start(net.url(0));
+    let proxy = Proxy::start([net.url(0), net.url(1)]);
     let started = Instant::now();
     net.spawn_follower(&proxy.url);
     let mut status = net.wait_status(4, head, HEAD_BOUND);
@@ -529,8 +534,9 @@ fn a_fresh_follower_jumps_to_head_and_resumes_backfill_after_sigkill() {
         status["state_root"], source_status["state_root"],
         "jumped follower serves the validator's actual post-state root"
     );
-    {
+    let snapshot_height = {
         let requests = proxy.state.requests.lock().unwrap();
+        let snapshot_height = requests.snapshot_height.expect("selected validator snapshot");
         let downloaded = requests
             .requests
             .iter()
@@ -542,7 +548,8 @@ fn a_fresh_follower_jumps_to_head_and_resumes_backfill_after_sigkill() {
                 .any(|r| { r.range.is_some_and(|(_, end)| end < snapshot_height) }),
             "a follower must request its snapshot before fetching historical blocks"
         );
-    }
+        snapshot_height
+    };
     let advertised = Instant::now();
     while !status["backfill"].is_object() && advertised.elapsed() < Duration::from_secs(3) {
         std::thread::sleep(Duration::from_millis(20));

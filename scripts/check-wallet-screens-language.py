@@ -38,15 +38,15 @@ SPEC = re.compile(r"%(?:\d+\$)?[-+ #0]*\d*(?:\.\d+)?(?:lld|llu|ld|lu|@|d|u|f|g|e
 # Brand/protocol names, fixture ticker symbols and measurements, not ordinary
 # English UI words. The declaration is explicit so a new exception is reviewed.
 NAMES = ("EastSea", "Doubloon", "Aether", "DBLN", "Mac", "Touch ID", "Face ID", "Secure Enclave", "Apple",
-         "DeviceCheck", "Pipln", "Sparkle", "Safari", "WebKit", "Ledger", "Trezor", "Samsung T7",
+         "DeviceCheck", "Pipln", "Sparkle", "Cloudflare", "GitHub", "Safari", "WebKit", "Ledger", "Trezor", "Samsung T7",
          "Finder", "FileVault", "iCloud", "iPhone", "macOS", "iOS", "Claude Code", "Codex", "Metal",
          "AI", "SSD", "BLS", "EIP-7864", "SHA-256", "ID", "PATH", "APFS", "Mac OS Extended", "OS",
-         "http", "https", "eastsea-earnings.csv",
+         "http", "https", "sea", "DuckDuckGo", "Google", "Bing", "Naver", "Brave", "eastsea-earnings.csv",
          "CSV", "GPU", "CPU", "RAM", "API", "RPC", "DHT", "EVM", "ERC-20", "HTTP", "HTTPS",
          "TCP", "UDP", "IP", "PID", "JSON", "ZIP", "USDX", "VVDBLN", "NEB", "ORB", "CMT", "WAETH", "AETH")
 NAME_RE = re.compile(r"(?<![A-Za-z])(?:" + "|".join(re.escape(name) for name in sorted(NAMES, key=len, reverse=True)) + r")(?![A-Za-z])", re.IGNORECASE)
 UNIT_RE = re.compile(r"(?<![A-Za-z])(?:[KMGT]i?B|[km]?s|Hz|GHz|MHz|MB/s|GB/s|UTC|W|kWh)(?![A-Za-z])")
-DATA_RE = re.compile(r"(?:https?://[^\s]+|(?:[A-Za-z0-9-]+\.)+(?:xyz|com|org|net)(?:/[^\s]*)?"
+DATA_RE = re.compile(r"(?:(?:https?|sea|eastsea-page)://[^\s]+|(?:[A-Za-z0-9-]+\.)+(?:xyz|com|org|net|sea)(?:/[^\s]*)?"
                      r"|0x[0-9a-fA-F…\.]*|(?<!\w)[0-9a-fA-F]{8,}(?!\w)"
                      r"|~?/\.local/bin|(?:~?/Applications/|~?/Library/Application Support/)(?:EastSea|Aether)(?:\.app|/[^\s]*)?)", re.IGNORECASE)
 # Human supplied data is not app copy. Exceptions are confined to the screens
@@ -58,6 +58,7 @@ MEMOS = {"sheet-send-link": ("Coffee beans · order 1042",), "sheet-call": ("Swa
 MEMO_LINES = {"sheet-send-link": re.compile(r"(?<![A-Za-z])(?:Coffee\s+beans|order\s+1042)(?![A-Za-z])", re.IGNORECASE)}
 # The legacy-app alert displays this path as data, not instructions.
 FIXTURE_DATA = {"alert-legacy-aether": ("/Applications/Aether.app",),
+                "sea-search-web": ("ocean weather",),
                 "security": ("Shop",),
                 "developer": ("Shop", "localhost", "127.0.0.1")}
 RECOVERY_CODE_RE = re.compile(r"(?<![A-Za-z0-9])ae1[0-9a-z]{8,}(?:…|\.*)", re.IGNORECASE)
@@ -65,8 +66,8 @@ RECOVERY_CODE_RE = re.compile(r"(?<![A-Za-z0-9])ae1[0-9a-z]{8,}(?:…|\.*)", re.
 # copy. An address-shaped token must have hex content or a placeholder; a
 # nearby ordinary word ("Send", "Copy") is never consumed.
 OCR_ADDRESS_RE = re.compile(r"(?<![A-Za-z0-9])(?:[0-9a-zø@日][x×])(?:[0-9a-fgiloq]{4,}(?:[.…⋯]+[0-9a-fgiloq]*)?|[.…⋯]{2,})", re.IGNORECASE)
-ICON_GLYPHS = {"く", "ロロ", "ロ：", "ロ:", "ロ円", "ロ3", "ロ口", "口口", "口0", "口：", "口:", "谷", "凸", "仚", "㕣", "园", "跆"}
-ICON_LETTERS = set("ACDFGNOQUVYacmnouv")
+ICON_GLYPHS = {"く", "っ", "ㄱ", "么", "刁", "30e", "7I", "ロロ", "ロ：", "ロ:", "ロ円", "ロ3", "ロ口", "口口", "口0", "口：", "口:", "谷", "凸", "仚", "㕣", "园", "跆"}
+ICON_LETTERS = set("ACDFGNOQSUVYacmnouv")
 NATIVE_NAMES = {"en": "English", "ko": "한국어", "ja": "日本語", "zh-Hans": "简体中文", "zh-Hant": "繁體中文"}
 LEGAL_SCREENS = {"sheet-terms"}
 # These are the nonsecret address fixtures DesignPreview places in each real
@@ -78,6 +79,12 @@ FEATURE_COPY = {
     "retire-blocked": ("Retire account", "Check balance again",
                        "This account still has funds. Move its balance and tokens before retiring it so you can keep using them."),
     "menubar-qr": ("Receive", "Copy address", "Share"),
+    "browser-start": ("EastSea Search", "Built-in"),
+    "browser-tabs": ("EastSea Search", "Private tab"),
+    "browser-tabs-narrow": ("EastSea Search", "Private tab"),
+    "browser-permissions": ("Site permissions", "Connected account", "Requested permissions",
+                            "Read your address", "Request transactions"),
+    "browser-find": ("Find in page",),
 }
 FEATURE_ACCOUNTS = {"switcher": (1, 2), "two-accounts": (2,), "retire-blocked": (2,), "menubar-qr": (2,)}
 
@@ -96,7 +103,7 @@ def mask_allowed(text, screen, language):
     if screen.startswith("settings"):
         phrases.append(NATIVE_NAMES[language])
     for phrase in sorted(phrases, key=len, reverse=True):
-        text = text.replace(phrase, "")
+        text = re.sub(re.escape(phrase), "", text, flags=re.IGNORECASE)
     if screen in MEMO_LINES:
         text = MEMO_LINES[screen].sub("", text)
     text = re.sub(r"[⇧⌘⌥⌃]+[A-Za-z]", "", text)
@@ -264,6 +271,21 @@ def observation_text(line, screen, fragments):
     if not isinstance(text, str) or observation_box(line) is None:
         return text
     original = unicodedata.normalize("NFKC", text)
+    if screen.startswith("sea-search-"):
+        # The typed query/registry metadata is fixture data, not UI copy.
+        # Vision can join the search glyph to it or split a long hex address.
+        data = re.sub(r"^[Qqą@]_?\s*", "", original)
+        compact = re.sub(r"\s+", "", data).casefold()
+        address = "0x5397a1c0de4b1b8f6a3cb2d1e0f9c7a6b5d4e502"
+        if screen == "sea-search-address" and difflib.SequenceMatcher(None, compact, address).ratio() >= 0.9:
+            return ""
+        if screen == "sea-search-tx" and re.fullmatch(r"(?:[0o]x)?b?(?:ab){3,}a?[bkt]?", compact):
+            return ""
+        if screen == "sea-search-name" and compact in {"harbor.sea", "harborsea"}:
+            return ""
+        remainder = mask_allowed(data, screen, "en").strip()
+        if not remainder or (screen == "sea-search-block" and remainder.isdecimal()):
+            return ""
     text = OCR_ADDRESS_RE.sub("", original)
     if text != original and text.strip() in ICON_LETTERS:
         return ""
@@ -278,6 +300,8 @@ def observation_text(line, screen, fragments):
             (HAN.match(text[1]) or KANA.match(text[1]) or HANGUL.match(text[1]) or text[1] in "‘’'\"「“")
             and catalog_fragment(text[1:], fragments)):
         return text[1:]
+    if text[-1:] in ICON_GLYPHS and catalog_fragment(text[:-1], fragments):
+        return text[:-1]
     return text
 
 
@@ -342,7 +366,8 @@ def catalog_script_problems(catalog):
 
 def renderer_screens(path):
     text = path.read_text(encoding="utf-8")
-    return set(re.findall(r'\b(?:page|stagePage|window|alert)\(\s*"([^"\n]+)"', text))
+    literal = set(re.findall(r'\b(?:page|stagePage|window|alert)\(\s*"([^"\n]+)"', text))
+    return literal | set(re.findall(r'\(\s*"(sea-search-[^"\n]+)"\s*,', text))
 
 
 def feature_problems(payload, screen, language, catalog):
@@ -390,7 +415,7 @@ def run(args):
     checked, lines_checked = 0, 0
     for screen in sorted(screens):
         for language in LANGUAGES:
-            modes = ("light", "dark") if language in ("en", "ko") else ("light",)
+            modes = ("light", "dark") if language in ("en", "ko") or screen.startswith("sea-search-") else ("light",)
             for mode in modes:
                 stem = f"{screen}-{language}-{mode}"
                 png, sidecar = args.out / f"{stem}.png", args.out / f"{stem}.text.json"
@@ -450,7 +475,7 @@ def run(args):
     if problems:
         print(f"wallet-screens-language: FAIL ({len(problems)} problems; {checked} screens checked)", file=sys.stderr)
         return 1
-    print(f"wallet-screens-language: OK {checked} screens ({len(screens)} views × 7 language/appearance pairs), "
+    print(f"wallet-screens-language: OK {checked} screens ({len(screens)} views; complete required language/appearance pairs), "
           f"{lines_checked} visible text lines; catalog en/ko/ja/zh-Hans/zh-Hant complete")
     return 0
 
@@ -514,6 +539,12 @@ def self_test():
     assert not icon_observation(observation("Send"), (1000, 1000))
     assert not icon_observation(observation("資產"), (1000, 1000))
     assert not icon_observation({"text": "く"}, (1000, 1000))
+    assert observation_text(observation("Q https://eastsea.xyz"), "sea-search-url", []) == ""
+    assert observation_text(observation("Q Ocean weather"), "sea-search-web", []) == ""
+    assert observation_text(observation("Oxabababababababak"), "sea-search-tx", []) == ""
+    assert text_problems(observation_text(observation("Q Send"), "sea-search-web", []), "sea-search-web", "ko", [], [])
+    assert text_problems(observation_text(observation("0xabababab Send"), "sea-search-tx", []), "sea-search-tx", "ja", [], [])
+    assert not icon_observation(observation("ㄱ", [0.1, 0.2, 0.2, 0.1]), (1000, 1000))
     assert text_problems("く", "catalog", "zh-Hant", [], [])
     for value in ("Øx5397..e502", "8x5397.e502", "0×5397.e502", "日x5397.e502", "0x5397a1clde4b1b8f6a3cb2d1e0f9c7a6b5d4e502"):
         assert not text_problems(observation_text(observation(value), "home", []), "home", "ko", [], [])

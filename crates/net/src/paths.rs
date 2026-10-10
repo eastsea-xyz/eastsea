@@ -27,14 +27,29 @@ fn rank(path: &FourTuple, rtt: Duration) -> Option<(u8, Duration)> {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct RelayPathSelector;
+
 impl PathSelector for PublicPathSelector {
     fn select(&self, ctx: &PathSelectionContext<'_>) -> PathSelection {
+        select(ctx, false)
+    }
+}
+
+impl PathSelector for RelayPathSelector {
+    fn select(&self, ctx: &PathSelectionContext<'_>) -> PathSelection {
+        select(ctx, true)
+    }
+}
+
+fn select(ctx: &PathSelectionContext<'_>, prefer_relay: bool) -> PathSelection {
         let current = ctx.current();
         let mut best = None;
         let mut current_rank = None;
         for p in ctx.paths() {
             let Some(stats) = p.stats() else { continue };
-            let Some(r) = rank(p.network_path(), stats.rtt) else { continue };
+            let Some((tier, rtt)) = rank(p.network_path(), stats.rtt) else { continue };
+            let r = (if prefer_relay { 1 - tier } else { tier }, rtt);
             if Some(p.network_path()) == current && current_rank.is_none_or(|c| r < c) {
                 current_rank = Some(r);
             }
@@ -51,7 +66,6 @@ impl PathSelector for PublicPathSelector {
             sel.set(&p);
         }
         sel
-    }
 }
 
 #[cfg(test)]

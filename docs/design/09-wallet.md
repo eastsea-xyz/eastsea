@@ -114,6 +114,20 @@ Aether.app (SwiftUI)
 - **토큰 수신 훅**: `onERC721Received`·`onERC1155Received`·`onERC1155BatchReceived`가 각자 셀렉터를 돌려준다 — 위임 계정도 `safeTransferFrom`·`_safeMint`·ERC-1155 전송을 받는다(위임 뒤엔 코드가 있어 훅이 없으면 거부됐다). 받기는 지출이 아니므로 상태 변경·권한 없음. ERC-165 `supportsInterface`: `0x01ffc9a7`(165), `0x1626ba7e`(1271), `0x150b7a02`(721 수신), `0x4e2312e0`(1155 수신).
 - 검증: Foundry `EastSeaAccount1271.t.sol`(실제 P256VERIFY, 원래 키·소유자 키 유효, 다른 해시·잘린 서명·high-s·다른 계정·다른 체인·세션·가디언·구형 셀렉터), 툴박스 `AccountReceiver.t.sol`(OZ ERC721/1155 safe 전송, 고정된 v2 바이트 그대로), Rust 실행기 `contracts_onchain::account`(7702 위임 P-256 계정이 NFT를 `safeTransferFrom`으로 받고, OZ `SignatureChecker.isValidSignatureNow`가 그 계정 키의 1271 서명만 받는다 — 주소 파생을 `address_of`와 대조).
 
+#### 표준 permit 호환과 재위임 규약 (2026-10-08)
+
+고정된 v2 런타임(`0xdeaca4e6cc9787c233aeec5034a8884cf5ced4c6899299b3e76027a03f85288a`)이 이미 B1·B2를 처리한다. 이 호환 작업은 v2 주소·코드·storage layout을 바꾸지 않는다. `EastSeaAccountCompat.t.sol`과 실행기 `evm_compat`는 이 바이트에 실제 `0xef0100 || 0x…7702` 위임을 붙여 P-256 서명, safe mint/transfer, Permit2의 `permitTransferFrom`을 검사한다. Permit2는 제네시스의 정본 주소에 있고, 소유자는 먼저 토큰의 `approve(Permit2, amount)`를 자기 계정 트랜잭션으로 해야 한다. 서명은 Permit2의 체인·spender·nonce·deadline을 담은 해시를 위의 계정 `signatureMessage`로 감싸서 만든다. 세션 키·가디언은 이 소유자 서명을 대신하지 않는다.
+
+[ERC-2612](https://eips.ethereum.org/EIPS/eip-2612)의 원래 `permit(owner, spender, value, deadline, v, r, s)`는 secp256k1 서명 규약이다. ERC-1271 fallback을 제공하는 호출자와 [Permit2 SignatureTransfer](https://developers.uniswap.org/docs/protocols/permit2/concepts/signature-transfer)는 P-256 계정 서명을 검증할 수 있지만, `ecrecover`만 호출하는 기존 토큰은 그대로 이 서명을 받을 수 없다. 해당 토큰은 일반 `approve` 또는 Permit2 경로를 쓴다. 테스트의 `bytes` permit overload는 fallback 호출자용 fixture이며 토큰을 수정하거나 원래 ERC-2612 규약을 바꾸는 제네시스 계약이 아니다.
+
+이 작업에 새 계정 구현은 필요 없다. 향후 v3로 옮기는 지갑 릴리스는 설계 36의 CREATE2 배포 규약을 따른다: 새 구현 주소와 런타임 해시를 고정하고, 체인에서 코드를 읽어 해시를 확인한 뒤, **소유자가 서명한** `EvmCall { to: account, delegate: Some(v3_address), input: encode_execute(calls), ... }`로 재위임한다. 호출 목록은 비우거나 사용자가 승인한 다음 작업을 담는다. 재위임이 최종화되고 계정 코드가 `0xef0100 || v3_address`인지 확인한 뒤에만 지갑의 대상 버전을 갱신한다. 포함된 트랜잭션은 내부 호출이 revert해도 위임 자체가 남을 수 있으므로 성공 receipt만으로 판단하지 않고, 실패·미포함·재시도 때마다 최종화된 코드와 트랜잭션 nonce를 다시 조회한다. 주소·토큰 보유·ERC-7201 상태·소유자·가디언·세션 설정과 그 서명 nonce는 그대로이며, 트랜잭션 nonce는 실행과 위임 인증으로 2 증가하고 네이티브 잔액에서 수수료가 빠진다. 노드 인덱서의 계정 대상 목록과 FFI의 네트워크별 `ACCOUNT_TARGET`도 같은 릴리스에서 갱신한다. UI는 후속 작업이다. 7780의 기존 구현과 위임은 이 릴리스가 바꾸지 않는다.
+### dApp 서명 검토와 계정 이전 (E5b·E7b)
+
+- 앱의 Explore 제공자와 브라우저 확장은 거래 승인 전에 실제 보내는 주소로 `eth_call`, `eth_estimateGas`, 읽기 전용 `aether_simulateTransaction`을 실행한다. 호출 대상, 수수료와 별개인 잔액 변화, 토큰별 이동, 지출 승인, 실행 실패 이유를 보여 준다. ERC-20 변화는 실행 전후 잔액을 우선하고, 읽지 못한 토큰·계약 이벤트·해석하지 못한 효과는 한계를 표시한다. 상태는 쓰지 않으며 미리보기는 포함 시점의 결과를 보장하지 않는다.
+- 실행 실패가 예상되는 거래는 별도 확인을 요구한다. 시뮬레이션 자체를 읽을 수 없으면 서명하지 않는다. 서명 직전에 결과를 다시 비교하고, 결과·계정·체인·사이트 권한·승인 요청이 달라졌으면 다시 검토한다.
+- `eth_signTypedData_v4`는 도메인·선언된 계약·체인·중첩 필드를 읽기 쉬운 형태로 보여 준다. 큰 정수와 주소는 그대로 표시하고 바이트는 길이와 펼쳐 보기로 보여 준다. 명시적인 도메인 `chainId`가 현재 체인과 다르면 거부한다. 실제 계정의 위임과 배포된 정본 v2 코드를 확인하고 위의 계정·체인 바인딩 ERC-1271 형식으로 답한다. 메시지 서명은 거래를 제출하지 않는다.
+- 보안의 **계정 업그레이드와 이전**은 정본 계정 코드로 같은 주소를 재위임하거나, 새 주소로 자산별 일반 송금 검토를 연다. 7780의 구형 코드는 업그레이드 대상이 아니다. 토큰을 먼저 옮기고 남은 네이티브 잔액에서 수수료를 뺀 정확한 금액을 마지막으로 옮긴다. 각 검토는 보낸 계정·체인·승인 수명에 묶인다. 업그레이드·가디언 복구는 노출된 원래 키를 폐기하지 않으며, NFT·승인·주문·세션·저장된 지급 주소·앞으로 들어올 입금은 따로 확인해야 한다.
+
 ## Mac 앱 동작 — 구현됨 (2026-09-27)
 
 - 첫 실행 때 버튼 없이 Secure Enclave 키를 만들고 바로 대시보드를 연다.
@@ -195,7 +209,15 @@ Aether.app (SwiftUI)
 
 창업자(2026-10-05): "지갑에 브라우저가 있어야 하는 것 아닌가?" — 공개 HTTPS 탐색기는 사용자의 로컬 노드를 못 읽는다(Chrome 로컬 네트워크 접근 프롬프트, Safari 혼합 콘텐츠 — [docs/research/public-read-access-2026-10-05.md](../research/public-read-access-2026-10-05.md) §3.4). iOS에는 확장이 없고, dApp(이름 서비스, 이후 DEX·런치패드)에는 사이너가 필요하다. `Sources/ExploreTab.swift`·`BrowserController.swift`.
 
-**탭 구성.** 사이드바(macOS)·하단 탭(iOS)에 Explore가 붙는다. 홈은 큐레이티드 항목 두 개 — 블록 탐색기(번들)와 프로젝트 사이트. 주소창은 스킴 없는 입력을 `https://` 호스트로 취급한다.
+**탭 구성.** 사이드바(macOS)·하단 탭(iOS)에 Explore가 붙는다. 홈은 큐레이티드 항목 두 개 — 블록 탐색기(번들)와 프로젝트 사이트. 주소창은 `harbor`, `harbor.sea`, `sea://harbor/path?q=1`, `eastsea://harbor.sea/path?q=1`를 같은 이름으로 읽고 `sea://harbor.sea/path?q=1`로 표시한다. 이름 문법은 [26-name-service.md](26-name-service.md)의 소문자 DNS LDH 규칙이다. `.aeth`는 체인 7780에서만 읽는 별칭이고 표시에는 `.sea`를 쓴다. HTTPS 웹 주소는 `https://`를 명시해서 연다. 스킴 없는 `.com`·`.xyz`·`.net` 등과 그런 호스트를 가진 `sea://` 링크에는 “웹 주소(.com 등)는 동해 이름이 아니에요. https://로 여세요.”를 표시하고, 사용자가 **HTTPS로 열기**를 선택하면 기존 외부 사이트 경고를 거쳐 브라우저에 연다. 이 문구는 영어·한국어·일본어·중국어 간체·중국어 번체로 제공한다.
+
+**짧은 스킴과 승인 (0.7.4, 2026-10-08).** macOS·iOS는 `sea`, `eastsea`, `aether`를 모두 `CFBundleURLSchemes`에 등록한다. `sea://`와 `eastsea://`의 이름·액션 의미는 같다. 기존 `eastsea://pay|call|connect|tx`와 `aether://` 액션 링크는 쿼리·콜백 바이트를 다시 쓰지 않고 같은 요청 파서로 전달한다. `pay`, `call`, `connect`, `tx`, `app`, `follow`, `name`, `wallet`, `settings`와 `send`, `receive`, `sign`, `deploy`, `open`은 등록할 수 없는 액션 이름이다(주소창에서 액션과 이름이 충돌하지 않게 한다).
+
+`sea`는 짧은 커스텀 스킴이므로 다른 앱도 등록할 수 있고, OS가 어느 앱을 여는지 지갑이 보장할 수 없다. 링크에는 비밀·키·세션을 넣지 않는다. 링크를 열었다는 사실은 승인이나 인증이 아니다. 지갑은 결제·컨트랙트 호출을 요청 상태에만 저장하고 **지갑 자체의 승인 시트와 Touch ID 서명**을 통과해야 전송한다. 연결도 지갑 자체의 승인 시트를 거치며, 예약된 다른 액션은 구현된 승인 흐름이 없으면 실행하지 않는다. 링크 발신자나 웹 페이지가 승인 UI를 대신할 수 없다.
+
+**이름 → 앱 (0.7.4).** `SeaURL.swift`는 Foundation만 쓰는 순수 파서이며 Swift·JavaScript·Rust가 `tests/fixtures/sea-urls.json` 하나를 테스트한다. 이름 조회는 이름 레지스트리의 살아 있는 레코드와 `app` 텍스트를 읽은 뒤 [31-app-registry.md](31-app-registry.md)의 `currentRelease(appId)`를 읽는다. 앱은 활성 릴리스의 식별자와 manifest/bundle 해시만 보여 주고 **“Content delivery comes next.”**로 멈춘다. P2P 전달의 연결점은 `ContentSource` 프로토콜이다. 아직 manifest의 양방향 `name_binding`을 검증하지 않았으므로 이 화면은 앱 실행이나 게시자 인증을 의미하지 않고, 어떤 콘텐츠나 트랜잭션도 실행하지 않는다.
+
+레지스트리는 번들의 `name-sources.json`에 체인별 주소와 런타임 코드 SHA-256을 함께 고정한다. 각 이름 조회는 코드 바이트를 확인한 뒤 같은 확정 블록에서 레코드를 읽는다. 없는 배포를 추측하지 않는다: 현재 번들에는 배포된 이름/앱 레지스트리 핀이 없고 “Name registry is not available on this network.”가 나온다. 코드가 바뀐 불변 계약은 새 주소와 핀을 공표해야 한다(26/A5-8). 이 lane은 공개 배포를 하지 않는다.
 
 **번들 탐색기.** `apps/explorer`를 앱 리소스로 복사해(postBuildScript `Bundle explorer`, test/·package.json·README.md 제외) `eastsea-page://` 개인 스킵으로 서빙한다(`BundledPageScheme`). `file://`에 문을 열지 않고, 경로 탐색(`..`)은 거부하며(`BundledPagePath`), 모든 응답에 CSP가 붙는다 — `default-src 'none'; script-src 'self'; …; connect-src 'self' http://127.0.0.1:18545 http://127.0.0.1:18546`. 탐색기의 노드 엔드포인트(`localStorage` `aether-explorer.node`)는 매 로드마다 이 앱의 노드 포트(통상 18545, 개발망 18546)로 지정된다: 노드가 임의 오리진을 허용하므로 페이지가 직접 fetch한다.
 

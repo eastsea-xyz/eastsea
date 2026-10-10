@@ -1,0 +1,1022 @@
+{
+  "accountIconVersion": 3,
+  "seedDomain": "eastsea-account-icon-v2",
+  "smallReefYBase": 5,
+  "renderer": "SwiftUI ImageRenderer / macOS",
+  "command": "scripts/render-account-icons.sh",
+  "baselineCommit": "20e669a",
+  "scale": 1,
+  "sourceSha256": {
+    "apps/wallet/Sources/AccountIconSpec.swift": "8f43742d40045e38bb89d005a5cb4ab1f711d210f19976bce8b18c958ccc7c04",
+    "apps/wallet/Sources/AccountIconView.swift": "6c718d48a679adc78db765c78ab56b81f8140a4b94f683afce553ff081b369c8",
+    "apps/wallet/Screens/AccountIconSnapshots.swift": "6d33f2024542c1a0807fd46b7b61150a21fa2411e02a9e9348f0e2015905d942"
+  },
+  "sharedVectorsSha256": "210015ba73eadad228e8977f1d7c1abd07a4efe6872cf0e60e7fa581079443ce",
+  "vectorCount": 16,
+  "sizes": [
+    16,
+    32,
+    64
+  ],
+  "themes": [
+    "light",
+    "dark"
+  ],
+  "pngCount": 106,
+  "changedPngCount": 83,
+  "unchangedPngCount": 23,
+  "baseline16pxComparison": {
+    "comparisonCount": 32,
+    "byteIdenticalCount": 17,
+    "pixelIdenticalCount": 17,
+    "maximumChannelDifference": 1,
+    "worstMeanAbsoluteChannelDifference": 0.01171875,
+    "comparisons": [
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-00-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-01-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-02-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-03-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-04-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-05-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-06-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-07-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-08-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-09-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-10-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-11-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-12-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-13-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-14-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/dark/vector-15-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-00-16.png",
+        "byteIdentical": true,
+        "pixelIdentical": true,
+        "maximumChannelDifference": 0,
+        "meanAbsoluteChannelDifference": 0.0
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-01-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.005208333333333333
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-02-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.00390625
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-03-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.00390625
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-04-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.006510416666666667
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-05-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.005208333333333333
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-06-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.0026041666666666665
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-07-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.006510416666666667
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-08-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.009114583333333334
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-09-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.010416666666666666
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-10-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.0078125
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-11-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.00390625
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-12-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.005208333333333333
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-13-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.00390625
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-14-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.010416666666666666
+      },
+      {
+        "path": "docs/design/46-account-icon/swiftui/light/vector-15-16.png",
+        "byteIdentical": false,
+        "pixelIdentical": false,
+        "maximumChannelDifference": 1,
+        "meanAbsoluteChannelDifference": 0.01171875
+      }
+    ],
+    "caveat": "The 16px geometry and palette are unchanged; native rendering introduces at most 1/255 channel rounding in this capture."
+  },
+  "roundingOnlyChanges": [
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/menubar-image-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0013020833333333333
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/placeholder-64.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0006510416666666666
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-01-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.005208333333333333
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-02-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.00390625
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-03-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.00390625
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-04-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.006510416666666667
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-05-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.005208333333333333
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-06-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0026041666666666665
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-07-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.006510416666666667
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-08-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.009114583333333334
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-09-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.010416666666666666
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-10-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.0078125
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-11-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.00390625
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-12-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.005208333333333333
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-13-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.00390625
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-14-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.010416666666666666
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-15-16.png",
+      "byteIdentical": false,
+      "pixelIdentical": false,
+      "maximumChannelDifference": 1,
+      "meanAbsoluteChannelDifference": 0.01171875
+    }
+  ],
+  "snapshotErrors": [],
+  "images": [
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/menubar-image-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "0847c0ccb3fd6df86ba9d2310f38f474bafea8124caecf993f5e482eb286328d"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/placeholder-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "2aca5711389eb97ae085cd6477f53bb0e7d6ffcd9e58c55f6d0a411ad3e3bd97"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/placeholder-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "4ff9bd7ee8d2ac712352382035df827a94a083215725987d589752b969f898a7"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/placeholder-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "e2f04dacecc7b229e05b04b5a6e2a9843ccca75db633268ff60c470ab35defc6"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-00-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "9bf9f201b1922ea0291be8eef484b5dcdf44e7e483f0a308545e5c9a57fa1b6e"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-00-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "85276419b326b7286b67c5ea8dc88ee03015d80d7eefa9aa96e008a9fca29956"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-00-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "cbc8cd696a43c4d2c2123ad09504f30ac0e9f525e971e74c84d991b20d1e27a8"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-01-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "5a10994f3e00aae792df899dc0a486ff4f6e82417bcffcbd505fcd0bb00d2e29"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-01-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "97da5caaadf0318d3a29ea6da7ee457d15e1c1bb1dd29bcfa68e696b3295c528"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-01-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "8e32bb1d330fbe3b64883fa1627aec65c26e0efca768fc6b196684c8b4589b39"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-02-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "b03a9096465a42f07dc30f23d89f732f6e3a696392e21476dcca6c1c96dfe375"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-02-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "1db533a232530fde94be2d3350f4344137dde2805558f73b11ab1356b3bff914"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-02-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "d6816bde93f919e43332c2d63addcf8bfe59939424d5cf694eb209d45ff1328c"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-03-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "d629ef74b15ea5b78f0618e3843deb771b271c33963e62791b862bb2f884325f"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-03-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "0073e9a484dd51dd83cd89b9a60dba54d1f7497bcddf4401c5d18a26aeeeaa63"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-03-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "3a0fc2c0938a5ec7a61f4a3d1eff9acbceeb445f63612721d509629c39c5e41f"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-04-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "464f4c5afc760eab9b82c33ca397088f286b7f7bca325f3ee019a8fa3469e060"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-04-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "ec3fd574d924b5e65d48268fcdd2a2fc660f6fc4bd49b86e923fa265c1593087"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-04-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "e543afcc0858e259baf9439d9b9d85a0ab61aa4683f7e91d081bb612befe21ee"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-05-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "e5913567e978a05aaa343e24e6ba236d6490ce037e122b704536f5c9c2cde3d4"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-05-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "166be79b060dca98f78f3cc14969daf4f58234b8b5330f8ee80b7b4dfd74396a"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-05-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "dd717adb39f6357b582af33ead556e7f5c4c3d3eae5cc924e5c85522a2d50d35"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-06-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "2e45982e2d48238a295db159ac51b0e65a7a72c26a64b7efebd1de32428d1936"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-06-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "d75aadcf8db4043e882ad722d00395bd8d6cae8078c650bc1a182daf04c96a1c"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-06-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "134bcd8fab792c47ba6dbdc17b0b91014fb938a90b915bbd082ed0dc243e8845"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-07-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "4ab087f1a539305d1ca83d424b69d554de49cea63bb0c6a40923b296a4a6d86c"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-07-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "5459a94b759ae26840ec0d4232a0d2fc0ea2925e2d5db5941f744c4c738b7fff"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-07-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "711c4f178e8f2533b4f62fbdb65c1b4dbd306fb110b1cb05a4d26a57ab8d7fc8"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-08-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "6dfff2dcc7194019de42ecc5e2cdeb8a1208f07f8eb843508a4c0324d408bf4e"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-08-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "4c295efd342641b9bc3463a1ff64d08183504ee6d8e8ee9adad769a5f661f666"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-08-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "767d0381f260e6248742c74f80808f33b6938cea108fbf5996a99413cf116322"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-09-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "0848549022a99a0c6519304e5bcd8ad46e581883175e27049e2dfcb041df5d57"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-09-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "da77322b4feee81a9762d6f50f9a0cf166445c8cba2e399884ca61fb0b634d3a"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-09-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "3d5ec1fcf834adf34dd6cda421f46c9f93ad5381be8f3ffcab18276297a407c3"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-10-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "667cbf17eb14d8679e6c48ad4129765b419784ee019ea3bee1979cec6feddb71"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-10-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "37a1bfa6143b1b001f49b5a768309605b1759920dba525863c0013d36f1d60e1"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-10-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "ada0ddb9a7c0e59f378a5f95723a4e78ee0e781d4e7a324df57542f70e46f52a"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-11-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "967c703b7cdad3e86d7ae753f1183e46b83d1b1d0f67e75afc68167400aa8e56"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-11-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "91c46e71400a7084b116a1bd411e66edffaf15d9200d31f9ed3344544fd33e28"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-11-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "05a4c80f1e164696d307fbf7fb21a16de3c4886c3044671acc4b67b3cf9fc063"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-12-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "5299ecf05b269bca61a5683bee38aef78e6e3bd5437d407a550a45f3a95b928e"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-12-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "559e150a6927187f79f8d2e7e169c81785cf5a75dc76a5b0a1caa652cfc3538c"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-12-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "6ced6631f85d38b77e77af3989b68ee460a6baadb610b7a9f185f8427df02364"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-13-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "bab26f5d79ae3e64decd01e17dbeefb7b17727649d5fb13f0d667a0099b56c4f"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-13-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "27e056be43d874a5ec019d845318dc3506141c9252ae72d116715fe2f292003c"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-13-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "795c92aaab3acfbd389311efe9fa5489332d4e568ecc3456731ed543b7bc4c7d"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-14-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "f17620c543c2af302f7edb63b036b0ee0590168c28a5a19b04ae6df3fbff8469"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-14-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "fcb40f320cfdc739ceea3a3a03e25d186dad58042b4dbdb4abbb7c67c4ce86a9"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-14-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "01c88c7d5865b0e0fa15b16bb696b630c7f154ecdc6642315434a51ff4aefaa6"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-15-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "75430c4b22db4d8525389b048daeae1fdb10f502ae04d36b773b7f34ddfa3d36"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-15-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "bea2b5dfe4c675a726d0c2f2aaa9a8a545f90534db604a0069fbcd55f8ab641d"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/dark/vector-15-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "0e2283c38beb30655e8ad08847e8ba2ddd1c32129f537a10ebd10ae2c1256363"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/menubar-image-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "35418b3bc8980c6cd0f576656b552aa0d368b904670a44f1defe39ad0c8b1778"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/placeholder-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "8f0218ba7af8020471b425389b36ada7f40052524832fbdfc42ef64dad7567c3"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/placeholder-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "708f283b878cccd251c9b46fba599a56588339b7dc5de0d63d92854e5287a805"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/placeholder-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "737472e5a5fe77106566e7a8a8bedb1575515e1dc5a9dd3cb631357632a87bb4"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-00-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "49848e08f479a1333c17ff6ea9b689ff409979c78ca7ea9462736f728d9e3232"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-00-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "be1fa70bebcbca38239a6639e7b847c3bf120645baa49954389faf95ec354306"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-00-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "8cddd34a23dc50f8e92dcbbd0813ef35d943f5e198522c4d884a6bd60f8873b3"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-01-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "8aa36135aa8168db819619806a2352482edff681c211d76533d9e1ff061b127f"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-01-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "b42345ea2b460163c299da94e40dd747cb582bfe310e2ef23f38a456108d4bb1"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-01-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "be74f73dd1bf0aa2194f6e98f68954a5acb61bbf90322e77134de50571b3582e"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-02-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "d0a7ca524db353c078ffd3860678b292a6993e52b2b81c26dfa90b042dfbe155"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-02-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "f2f1a03b3116336f2790cbfeb27e166820976928425743a30d31d90b001e4c9b"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-02-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "bf23be75c91a260392b728904c0337a4ff89b25f0e957856e74c698a3f4f25c1"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-03-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "dfa71c9f01ee298e7094c17bb94f19bf383cb69751539ef3812113d2efc53878"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-03-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "a33c066fa09fa12cfc52bc24a002fb20c9b7d9a4f62f68ab180ad3e4fd06fd1b"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-03-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "5519a110f6896183c03e62dce42ca11d2ff84c5dbc822432d148ce0b874f1f64"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-04-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "5500211c316718df209e0109f9f9e5a6f9bf51794c6c0ae985098ba9e64f8465"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-04-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "4312e83c0c0c84c03cf50b395c96e7d016b8efa709448f0eac881ba80036c1c5"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-04-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "a6eaed1df4bf6e623e8e3c1c4e4e37eda9be15a386b2d109b98e90f6e67c3b0e"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-05-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "eff70560b9822fff93adb022e740258438c1b0d7a70f76f25084fe313fe9b0f4"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-05-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "fc46a36db129d77ed7ce831b42aa2c07d1cf34f6c61ccbfb2c20bafc0ab85826"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-05-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "d3fb625a21a5dda69252d08e91e29c3ce436e506d092f2787003740feef191ff"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-06-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "3b6ee6bfc1c06b8c4ed78dd33229fd945bf44063b207260de362d469073d6090"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-06-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "1a84254d973db0f5635bb0b500e6e8518c7e182bebcfd5eaa2448a91988121d1"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-06-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "8e6f3bb5f6b9c7a0f3edbc2de24b1c50d58caf81029badfd1ecebd3a508cedc7"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-07-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "f913b6f4bcd05d91d60dba846d42e33872fa58e270f8d989cc4ad4259a969a08"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-07-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "cbfbde217c4a0793f524d111166f1768941a943c47ac225c37385604e5d49dc1"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-07-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "6663ff39dd1473193b3d726cbc906aaa0dbbf1df2dda76063f7b66f7ad7f2093"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-08-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "7cb18757f680a7e04c3a10e12d42588b92332caf0611ec720032adb5f2322db5"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-08-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "8c55dee855d8a6fcc283606e8985f0658db9d2d5373a4fab26302ff6393ba39e"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-08-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "8dc50e8eb3262559faba0d74e983d41ecf979884d473c7fb808b39d412c67f2c"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-09-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "1db47ad54e386cd9e0545ee9c9107134ebb257559a739e38732e8900d4a6aed9"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-09-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "1b17ac04d858a78b94155caff5e9d8b5be6e37f8a730a3f0b3b4acb03682cba8"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-09-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "282546667765d796827fdff0ee6937a98b3b6fded75b50e309d3a3d7cc32598c"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-10-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "e90bc35dff056e783fef6ad40b3f05b59b76afbbad97a93eecb84fb1682b4523"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-10-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "8978a72ae290702587b73e337260aca4fb7b54489c0a5b0681c303342d50d957"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-10-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "20c1bb9a453f3a195c8a1458dfe6dfe3b7dc4f6d6a693e7c239debc9e9996b64"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-11-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "d86cf67026656970f5993e863732639e17f94b9b090ca3448f67b374225771a8"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-11-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "3b348cd120c35f5440c523047fca47f81cef45825f19a5531d3bc1f9f71a00fb"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-11-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "52622106599f3787ef023b2fc74358962f8059ea2e7b950de214721fd2defa53"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-12-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "d3bc5387e15c1c20017b80699968f7340b732b2abd0043b3076da5811173f927"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-12-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "a903ef2f7e478cc76ff1a4eda3ff14ac039cbf8c61dd5866e3cc03540d1dfc82"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-12-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "cbbe10269c13ad179c8fffb9ee55d633f654f7cc2ff81413dfec875556dd2ef5"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-13-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "d09383a8e61663a66cd358e4ae130cfacad9e0fb0c37a87ecec63c952686a5ed"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-13-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "74303d6f3ecb5946de563a0cfc641bc5a065c3cdb42d2405fc97bb7b16fbd204"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-13-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "1ecd440c301fd7ee7218b9c51a4a0048c8ad6161e29b7c782fbd2db9995e3812"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-14-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "d33930be43debb5967a340bf8bab18b0418c4d31d8c9346900c30f5a44938ca3"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-14-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "47ef03b57cd00303988f6d1065868bf3a29635adcaeccd4d4f6e1d7546a22eab"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-14-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "4dc82915f4717f068a6b87729b6a4f218bfce06e1b102b40ae9ab02d6bd35a7f"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-15-16.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "67c3c8633eecccca73c9f7ada807cba2bad0eeaa614696e57578f92cf87591db"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-15-32.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "3f28ec2955826325c30f4a82d19bc6847651be9a9cad2fb399742867860b09df"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/light/vector-15-64.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "f869f3f7e5055d48c10a201b177cdde916dcbec750fd64bdb705b2001bd231f3"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/swiftui-review-dark.png",
+      "width": 1216,
+      "height": 837,
+      "sha256": "9770921e920d495a733e0a89c989ee37ef50ff77ef04b69cde847f0c75a726d8"
+    },
+    {
+      "path": "docs/design/46-account-icon/swiftui/swiftui-review-light.png",
+      "width": 1216,
+      "height": 837,
+      "sha256": "2b09366151691ec2b4f77fd19ad1e1a1471b0be3874ce34cb9dc1c671e751e40"
+    }
+  ]
+}

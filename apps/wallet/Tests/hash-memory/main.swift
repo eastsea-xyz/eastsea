@@ -10,6 +10,8 @@ let fixtureBytes: Int64 = (2 << 30) + 73
 // Independently generated with Python hashlib over 2048 zeroed 1 MiB blocks
 // followed by 73 zero bytes. The unaligned tail exercises incremental padding.
 let fixtureDigest = "4f82ac3c99c5294fcfbda4d2b040c589ff4d1a12596346dd3352a735da31833c"
+// Independent Python hashlib vector over exactly 2048 zeroed 1 MiB blocks.
+let artifactLimitDigest = "a7c744c13cc101ed66c29f672f92455547889cc586ce6d44fe76ae824958ea51"
 let memoryLimit = 64 * mebibyte
 
 func footprint() -> UInt64 {
@@ -85,12 +87,19 @@ func measure(_ algorithm: String, file: URL, bytes: Int64, expected: String?) ->
             let memory = PeakMemory(algorithm)
             let start = ProcessInfo.processInfo.systemUptime
             let digest: String?
+            var sizeLimitRefused = false
             if algorithm == "migration" {
                 var progress = 0.0
                 let meter = DataMigration.ProgressMeter(reportEvery: 1) { progress = $0 }
                 meter.expect(bytes)
                 digest = DataMigration.streamSHA256(file, meter: meter)
                 precondition(progress == 1, "hashing must report all file bytes")
+            } else if algorithm.hasPrefix("artifact") {
+                do { digest = try ReleaseArtifact.digest(file: file) }
+                catch {
+                    digest = nil
+                    sizeLimitRefused = (error as? ChainReleaseFailure) == .hashMismatch
+                }
             } else {
                 digest = try? ReleaseUpdateGate.archiveSHA256(file)
             }
@@ -103,8 +112,11 @@ func measure(_ algorithm: String, file: URL, bytes: Int64, expected: String?) ->
                          algorithm, bytes, Double(memory.before) / Double(mebibyte),
                          Double(result.peak) / Double(mebibyte),
                          Double(result.after) / Double(mebibyte), Double(growth) / Double(mebibyte), elapsed,
-                         Double(bytes) / elapsed / 1_000_000, digest ?? "READ FAILED"))
-            let passed = digest != nil && (expected == nil || digest == expected) && growth < memoryLimit
+                         Double(bytes) / elapsed / 1_000_000, digest ?? (sizeLimitRefused ? "SIZE LIMIT" : "READ FAILED")))
+            let digestPassed = algorithm == "artifact-over-limit"
+                ? sizeLimitRefused && digest == nil
+                : digest != nil && (expected == nil || digest == expected)
+            let passed = digestPassed && growth < memoryLimit
             status = passed ? 0 : 1
             let verdict = status == 0 ? "ok  " : "FAIL"
             print("\(verdict) \(algorithm) digest and memory <64 MiB")
@@ -158,6 +170,7 @@ func verifyBoundaries(_ file: URL, check: (Bool, String) -> Void) throws {
             try data.write(to: file)
             check(DataMigration.streamSHA256(file) == expected, "migration file boundary \(count)")
             check((try? ReleaseUpdateGate.archiveSHA256(file)) == expected, "release file boundary \(count)")
+            check((try? ReleaseArtifact.digest(file: file)) == expected, "artifact file boundary \(count)")
         }
     }
 }
@@ -183,17 +196,28 @@ func runTests() throws -> Int32 {
           "migration fails closed on open/read errors")
     check((try? ReleaseUpdateGate.archiveSHA256(missing)) == nil
           && (try? ReleaseUpdateGate.archiveSHA256(directory)) == nil, "release fails closed on open/read errors")
+    check((try? ReleaseArtifact.digest(file: missing)) == nil
+          && (try? ReleaseArtifact.digest(file: directory)) == nil, "artifact fails closed on open/read errors")
 
-    try makeSparse(file, size: fixtureBytes)
-    for algorithm in ["migration", "release"] {
+    check(ChainReleasePolicy.maximumArchiveSize == 2 << 30, "artifact retains the 2 GiB archive cap")
+    let measurements: [(String, Int64, String?)] = [
+        ("migration", fixtureBytes, fixtureDigest),
+        ("release", fixtureBytes, fixtureDigest),
+        ("artifact", Int64(ChainReleasePolicy.maximumArchiveSize), artifactLimitDigest),
+        ("artifact-over-limit", fixtureBytes, nil),
+    ]
+    for (algorithm, bytes, expected) in measurements {
+        try makeSparse(file, size: bytes)
         fflush(stdout)
         let child = Process()
         child.executableURL = URL(fileURLWithPath: arguments[0]).standardizedFileURL
-        child.arguments = ["--measure", algorithm, file.path, String(fixtureBytes), fixtureDigest]
+        var measurementArguments = ["--measure", algorithm, file.path, String(bytes)]
+        if let expected { measurementArguments.append(expected) }
+        child.arguments = measurementArguments
         try child.run()
         child.waitUntilExit()
         check(child.terminationReason == .exit && child.terminationStatus == 0,
-              "\(algorithm) hashes >=2 GiB within memory budget")
+              "\(algorithm) handles >=2 GiB within memory budget and artifact size policy")
     }
     return Int32(failures)
 }

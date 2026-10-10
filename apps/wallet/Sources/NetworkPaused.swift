@@ -15,15 +15,17 @@ enum NetworkPausedText {
 /// In place of "Verified" while the chain makes no blocks: neutral, not an error.
 struct NetworkPausedBadge: View {
     let since: Date
+    var onPlate = false
 
     var body: some View {
         // Re-read every half minute so "3 min ago" stays true (no continuous animation).
         TimelineView(.periodic(from: .now, by: 30)) { tl in
             Label(NetworkPausedText.line(since: since, now: tl.date), systemImage: "pause.circle.fill")
         }
-        .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
-        .padding(.horizontal, 10).padding(.vertical, 4)
-        .background(Color.warn.opacity(0.14), in: Capsule())
+        .font(.aeCaption.weight(.semibold))
+        .foregroundStyle(onPlate ? DesignTokens.Palette.plateWarn.color : DesignTokens.Palette.warn.color)
+        .padding(.horizontal, DesignTokens.Space.s3).padding(.vertical, DesignTokens.Space.s1)
+        .background(onPlate ? DesignTokens.Palette.plate2.color : DesignTokens.Palette.surfaceSunken.color, in: Capsule())
         .help(NetworkPausedText.help)
         .accessibilityHint(NetworkPausedText.help)
     }

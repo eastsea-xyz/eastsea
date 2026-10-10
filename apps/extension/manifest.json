@@ -12,7 +12,7 @@
     { "matches": ["http://*/*", "https://*/*"], "js": ["src/content.js"], "run_at": "document_start", "all_frames": false }
   ],
   "permissions": ["storage", "alarms"],
-  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "https://pkarr.pubky.app/*", "https://pkarr.pubky.org/*", "https://relay.pkarr.org/*"],
   "optional_host_permissions": ["https://*/*", "http://*/*"],
   "content_security_policy": { "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'" },
   "minimum_chrome_version": "111"

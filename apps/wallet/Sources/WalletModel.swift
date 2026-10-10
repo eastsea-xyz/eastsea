@@ -13,6 +13,7 @@ final class WalletModel: ObservableObject {
     let accountStore: AccountStore
     private var accountSubscription: AnyCancellable?
     private var operationGate = WalletOperationGate()
+    private var migrationReview: UUID?
     private struct Operation {
         let token: WalletOperationGate.Token
         let generation: UInt64
@@ -32,11 +33,15 @@ final class WalletModel: ObservableObject {
     @Published private(set) var contacts: [WalletContact] = []
 
     init(accountStore: AccountStore? = nil) {
+        #if os(macOS)
+        _ = LaunchRecovery.shared
+        #endif
         self.accountStore = accountStore ?? AccountStore.wallet()
         self.accountStore.canChangeAccount = { [weak self] in
             guard let self else { return false }
             return !self.busy && !self.sendSheetOpen && self.paymentRequest == nil
                 && self.callRequest == nil && self.connectRequest == nil && self.registration != .working
+                && self.migrationReview == nil
                 && !self.operationGate.blocksAccountChange
         }
         // No cached zero can destroy a key. A fresh verified native balance
@@ -68,6 +73,13 @@ final class WalletModel: ObservableObject {
     @Published var address = ""
     @Published var account: VerifiedAccount?
     @Published var status: ChainStatus?
+    /// Recent presence as seen by this Mac's node; nil when it cannot answer.
+    @Published private(set) var livePresence: LivePresence?
+    /// Privacy-projected presence for the bundled globe; never individual pings.
+    @Published private(set) var liveGlobePresence: LiveGlobePresence?
+    @Published private(set) var liveGlobeState: LiveGlobePresenceState = .loading
+    /// A menu-bar action can request Network before its window is created.
+    @Published var networkRequested = false
     var scheduledUpgrades: [NetworkUpgrade] {
         guard let status else { return [] }
         return NetworkUpgrade.parse(status.upgradesJson, height: max(status.height, (try? verifiedHeight()) ?? 0))
@@ -80,6 +92,9 @@ final class WalletModel: ObservableObject {
     @Published var networkOutdated = false
     /// Called once when the network looks outdated (the app checks for its update).
     var onOutdated: (() -> Void)?
+    /// Push only schedules discovery; ReleaseUpdateGate still verifies approval.
+    var onReleaseNotice: (() -> Void)?
+    var onPushHead: (() -> Void)?
     /// A payment a web page or another app asked for (`aether://pay?...`), shown for approval.
     @Published var paymentRequest: PaymentRequest?
     /// A contract call or deployment a page asked for (`aether://call?...`).
@@ -155,6 +170,12 @@ final class WalletModel: ObservableObject {
 
     // MARK: Explore tab (the in-app browser)
 
+    struct BrowserLinkRequest: Equatable {
+        let id = UUID()
+        let raw: String
+    }
+    @Published var browserLinkRequest: BrowserLinkRequest?
+
     /// While this is true, the Explore tab's provider answers nothing — reads
     /// included — exactly as the extension's vault does while locked.
     var exploreLocked: Bool { enclave == nil || keyError != nil }
@@ -162,6 +183,49 @@ final class WalletModel: ObservableObject {
     /// The port this Mac's own node serves JSON-RPC on (the dev network gets
     /// its own port). The Explore tab's unverified reads go here.
     var nodeRpcPort: UInt16 { developmentNetwork ? developmentPort : 18545 }
+    var browserChainID: UInt64 { networkChainId == 0 ? Brand.networkChainId : networkChainId }
+
+    var dappContext: DappRequestContext? {
+        guard !exploreLocked, !address.isEmpty, let chain = try? configuredChainId() else { return nil }
+        return .init(account: address, chainId: chain, port: nodeRpcPort, generation: networkGeneration,
+                     permissionGeneration: dappPermissionGeneration)
+    }
+
+    func isCurrentDappContext(_ context: DappRequestContext, origin: String? = nil) -> Bool {
+        guard let now = dappContext,
+              context.matches(account: now.account, chainId: now.chainId, port: now.port, generation: now.generation,
+                              permissionGeneration: now.permissionGeneration) else { return false }
+        return origin.map { connectedSiteAddress(origin: $0)?.lowercased() == context.account.lowercased() } ?? true
+    }
+
+    var migrationReviewOpen: Bool { migrationReview != nil }
+
+    func beginMigrationReview(context: DappRequestContext) -> UUID? {
+        guard !busy, !sendSheetOpen, migrationReview == nil, isCurrentDappContext(context) else { return nil }
+        let review = UUID()
+        migrationReview = review
+        return review
+    }
+
+    func isCurrentMigrationReview(_ review: UUID, context: DappRequestContext) -> Bool {
+        migrationReview == review && isCurrentDappContext(context)
+    }
+
+    func endMigrationReview(_ review: UUID) {
+        if migrationReview == review { migrationReview = nil }
+    }
+
+    func simulatePageTransaction(_ tx: PageTransaction, context: DappRequestContext) async throws -> SimulatedPageTransaction {
+        guard let enclave, isCurrentDappContext(context) else {
+            throw ProviderError(code: ProviderErrorCode.locked,
+                                message: String(localized: "This approval is no longer valid. Ask the site to try again."))
+        }
+        let result = try await DappRPC.simulate(tx, context: context, publicKey: enclave.publicKey)
+        guard isCurrentDappContext(context) else {
+            throw ProviderError(code: 4901, message: String(localized: "The wallet network changed. Ask the site to try again."))
+        }
+        return result
+    }
 
     /// The address a site may see, nil unless this exact origin was granted
     /// the account the wallet holds right now (a switched account disconnects
@@ -172,19 +236,22 @@ final class WalletModel: ObservableObject {
     }
 
     /// Remember (or replace) a site's grant after the user approved the sheet.
-    func grantSitePermission(origin: String, address: String) {
-        sitePermissions.grant(origin: origin, address: address)
+    func grantSitePermission(origin: String, address: String, displayOrigin: String? = nil) {
+        dappPermissionGeneration &+= 1
+        sitePermissions.grant(origin: origin, address: address, displayOrigin: displayOrigin)
         sitePermissions.save()
     }
 
     /// Forget one site's grant (the site's next request asks again).
     func revokeSitePermission(origin: String) {
+        dappPermissionGeneration &+= 1
         sitePermissions.revoke(origin: origin)
         sitePermissions.save()
     }
 
     /// Forget every site (Security's "Disconnect all").
     func revokeAllSitePermissions() {
+        dappPermissionGeneration &+= 1
         sitePermissions.revokeAll()
         sitePermissions.save()
     }
@@ -194,49 +261,134 @@ final class WalletModel: ObservableObject {
     /// is the maximum the sheet displayed, and a rise since then refuses the
     /// send instead of silently signing above it. A contract call runs with
     /// the gas the page asked for (its default when it asked for none).
+    /// `stillApproved` rechecks the originating document and its tab-owned grant,
+    /// including private grants that are never persisted in sitePermissions.
+    /// `beginSubmission` synchronously makes that request non-cancellable before
+    /// starting a broadcast; its original reply still receives the outcome.
     /// Returns the tx hash once submitted (the page watches it with
-    /// aether_getReceipt); a refusal comes back as text and nothing is signed.
+    /// aether_getReceipt); stale consent prevents the broadcast.
     func sendPageTransaction(_ tx: PageTransaction, origin: String, title: String,
-                             shownFeeWei: String?) async -> (hash: String?, refusal: String?) {
+                             shownFeeWei: String?, simulation: SimulatedPageTransaction,
+                             extraConfirmation: Bool, stillApproved: () -> Bool,
+                             beginSubmission: () -> Bool) async -> (hash: String?, refusal: String?) {
         guard let enclave else { return (nil, String(localized: "The wallet key is not ready yet.")) }
+        guard !busy, stillApproved(), simulation.transaction == tx,
+              isCurrentDappContext(simulation.context),
+              simulation.result.canSign(extraConfirmation: extraConfirmation) else {
+            return (nil, String(localized: "Review the simulation before signing this transaction."))
+        }
         guard let operation = beginOperation() else { return (nil, AccountStore.Failure.operationInProgress.localizedDescription) }
+        var submitted = false
+        defer { if !submitted { releaseOperation(operation) } }
         let pk = enclave.publicKey
-        let validatorsNow = validators
-        let action = CallDescribe.action(to: tx.to, data: tx.data)
+        let action = CallDescribe.action(to: tx.to, data: tx.data, ticker: Brand.coinTicker(chainId: simulation.context.chainId))
         let who = tx.to.isEmpty ? "a new contract" : Short.address(tx.to)
-        let item = ActivityItem(kind: .sent, title: "\(action) at \(origin)",
+        let item = ActivityItem(kind: .sent, title: "\(action) at \(title)",
                                 amount: Double(Wei.format(tx.valueWei)).map { -$0 },
                                 recipients: tx.to.isEmpty ? [] : [tx.to.lowercased()])
         do {
-            let prepared: PreparedTx
-            if tx.isPlainTransfer {
-                prepared = try prepareTransfer(p256PublicKey: pk, to: tx.to, valueWei: tx.valueWei,
-                                               shownFeeWei: shownFeeWei, validators: validatorsNow)
-            } else {
-                let gas: UInt64 = tx.gas == 0 ? 3_000_000 : tx.gas
-                prepared = try prepareCall(p256PublicKey: pk, to: tx.to, valueWei: tx.valueWei,
-                                           dataHex: tx.data, gasLimit: gas)
+            let prepared = try await Task.detached {
+                try prepareDappTransaction(p256PublicKey: pk, to: tx.to, valueWei: tx.valueWei,
+                                           dataHex: tx.data, gasLimit: tx.gas, shownFeeWei: shownFeeWei)
+            }.value
+            guard stillApproved(), isCurrentDappContext(simulation.context) else {
+                return (nil, String(localized: "The wallet network changed. Ask the site to try again."))
             }
             let sig = try enclave.sign(prepared.signingMessage)   // Secure Enclave, may prompt
-            let h = try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk)
+            guard stillApproved(), isCurrentDappContext(simulation.context), beginSubmission() else {
+                return (nil, String(localized: "This approval is no longer valid. Ask the site to try again."))
+            }
+            let h = try await Task.detached { try submitSigned(envelopeJson: prepared.envelopeJson, signature: sig, p256PublicKey: pk) }.value
             note("\(title): \(action) to \(who) submitted \(h.prefix(14))…")
             // The page gets its hash now; finality lands in the activity feed.
+            submitted = true
             Task.detached { await self.track(h, operation: operation, label: "\(title): \(action) to \(who)", item: item) }
             return (h, nil)
         } catch {
-            releaseOperation(operation)
             let refusal = WalletModel.ffiMessage(error)
             note("\(title) was not sent: \(refusal)")
             return (nil, refusal)
         }
     }
 
+    /// Only canonical, schema-checked typed data enters the owner signing flow.
+    /// The controller rechecks its document and origin grant through `stillApproved`.
+    func signPageTypedMessage(_ reviewed: PreparedTypedMessage, origin: String,
+                              context: DappRequestContext, stillApproved: () -> Bool) async throws -> String {
+        guard let enclave, !busy, stillApproved(), isCurrentDappContext(context) else {
+            throw ProviderError(code: ProviderErrorCode.locked, message: String(localized: "This approval is no longer valid. Ask the site to try again."))
+        }
+        guard let operation = beginOperation() else { throw AccountStore.Failure.operationInProgress }
+        defer { releaseOperation(operation) }
+        let publicKey = enclave.publicKey
+        let prepared = try await Task.detached { try prepareTypedMessage(p256PublicKey: publicKey, typedDataJson: reviewed.typedDataJson) }.value
+        guard prepared.account.lowercased() == context.account.lowercased(), prepared.chainId == context.chainId,
+              prepared.signingMessage == reviewed.signingMessage, prepared.typedDataJson == reviewed.typedDataJson,
+              stillApproved(), isCurrentDappContext(context) else {
+            throw ProviderError(code: 4901, message: String(localized: "The wallet network changed. Ask the site to try again."))
+        }
+        let signature = try enclave.sign(prepared.signingMessage)
+        let result = try await Task.detached {
+            try attachTypedSignature(typedDataJson: prepared.typedDataJson, expectedChain: context.chainId,
+                                     account: context.account, signature: signature, p256PublicKey: publicKey)
+        }.value
+        guard stillApproved(), isCurrentDappContext(context) else {
+            throw ProviderError(code: ProviderErrorCode.denied, message: String(localized: "This approval is no longer valid. Ask the site to try again."))
+        }
+        return result
+    }
+
+    func preparePageTypedMessage(_ json: String) async throws -> PreparedTypedMessage {
+        guard let enclave else {
+            throw ProviderError(code: ProviderErrorCode.locked, message: String(localized: "The wallet key is not ready yet."))
+        }
+        let publicKey = enclave.publicKey
+        let owner = address
+        return try await Task.detached {
+            guard try accountSigningSupport(address: owner) else {
+                throw ProviderError(code: ProviderErrorCode.unsupported,
+                                    message: String(localized: "This account cannot sign messages yet. Open Security for account upgrade options."))
+            }
+            return try prepareTypedMessage(p256PublicKey: publicKey, typedDataJson: json)
+        }.value
+    }
+
+    /// Redelegation installs only the pinned account implementation. It never
+    /// promises to revoke an original signer that may have been stolen.
+    func redelegateAccount(context: DappRequestContext, stillApproved: () -> Bool) async -> (hash: String?, refusal: String?) {
+        guard let enclave, !busy, stillApproved(), isCurrentDappContext(context) else {
+            return (nil, String(localized: "This approval is no longer valid. Ask the site to try again."))
+        }
+        guard let operation = beginOperation() else { return (nil, AccountStore.Failure.operationInProgress.localizedDescription) }
+        var submitted = false
+        defer { if !submitted { releaseOperation(operation) } }
+        do {
+            let publicKey = enclave.publicKey
+            let prepared = try await Task.detached { try prepareAccountRedelegation(p256PublicKey: publicKey) }.value
+            guard stillApproved(), isCurrentDappContext(context) else {
+                return (nil, String(localized: "The wallet network changed. Ask the site to try again."))
+            }
+            let signature = try enclave.sign(prepared.signingMessage)
+            let hash = try await Task.detached { try submitSigned(envelopeJson: prepared.envelopeJson, signature: signature, p256PublicKey: publicKey) }.value
+            submitted = true
+            Task.detached { await self.track(hash, operation: operation, label: String(localized: "Account upgrade"),
+                                             item: ActivityItem(kind: .sent, title: String(localized: "Account upgrade"), amount: nil, recipients: [])) }
+            return (hash, nil)
+        } catch { return (nil, WalletModel.ffiMessage(error)) }
+    }
+
     private var refreshes = 0
     private var refreshInFlight = false
+    #if os(macOS)
+    private var presenceRefreshRequest: UUID?
+    private var lastPresenceAttempt = Date.distantPast
+    #endif
     private var networkGeneration: UInt64 = 0
+    private var dappPermissionGeneration: UInt64 = 0
     private var lastHeight: UInt64?
     private var heightChangedAt: Date?
     private var tokenScanRunning = false
+    private var tokenRefreshWork = WalletPushReconciliation()
     private var activityLoading = false
     private var lastActivityHeight: UInt64?
     private var activityCursors: [String: String] = [:]
@@ -261,18 +413,75 @@ final class WalletModel: ObservableObject {
     /// app started: the Secure Enclave only makes keys while it is unlocked).
     @Published var keyError: String?
     private var lastKeyAttempt = Date.distantPast
-    private var timer: Timer?
+    private var started = false
+    private let push = WalletPushClient()
+    private var pushRefreshPending = false
+    private var pushBalancePending = false
+    private var pushTransactionsPending = false
+    private var lastRecoveryCheck = Date.distantPast
+    private var lastReleaseHintHeight: UInt64?
+    private var reconciliation = WalletPushReconciliation()
+    private var reconciliationTask: Task<Void, Never>?
+    private var reconciliationID: UUID?
 
     func start() {
-        guard timer == nil else { return }
+        #if os(macOS)
+        guard !LaunchRecovery.shared.isSafeMode else { return }
+        #endif
+        guard !started else { return }
         #if DEBUG
         if DesignPreview.on { return loadPreview() }
         #endif
+        started = true
         pinCommittee()
         loadKey()
+        push.onDelivery = { [weak self] delivery in self?.receivePush(delivery) }
+        push.onPulse = { [weak self] in
+            self?.reevaluateCachedProgress()
+            #if os(macOS)
+            self?.refreshPresence()
+            #endif
+        }
+        updatePushSubscription()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+        push.start()
+    }
+
+    /// iOS only owns an active subscription while foregrounded. Foregrounding
+    /// receives one fresh snapshot; there is no background polling task.
+    func suspendPush() {
+        push.stop()
+        resetUnresolvedReconciliation()
+    }
+    func resumePush() {
+        guard started else { return start() }
+        updatePushSubscription()
+        push.start()
+    }
+
+    private func updatePushSubscription(resetStream: Bool = false) {
+        let hashes = unresolvedHashes()
+        push.configure(port: nodeRpcPort, address: address, transactions: hashes, resetStream: resetStream)
+    }
+
+    private func receivePush(_ delivery: WalletPushDelivery) {
+        switch delivery {
+        case .connected, .gap, .fallback:
+            // Initial attach, reconnect and a detected gap each get one bounded
+            // current-state reconciliation through the ordinary verified reads.
+            reconcileUnresolved(force: true)
+            refresh()
+            onReleaseNotice?()
+        case .notice(let notice):
+            if notice.transactionsChanged { reconcileUnresolved(force: true) }
+            if !notice.transactionsChanged, notice.topics.contains("head") { reconcileHeadOpportunity() }
+            refresh(readBalance: notice.balanceChanged || verifyError != nil,
+                    reconcileTransactions: notice.transactionsChanged)
+            if notice.releaseChanged, lastReleaseHintHeight != notice.height {
+                lastReleaseHintHeight = notice.height
+                onReleaseNotice?()
+            }
+            onPushHead?()
         }
     }
 
@@ -293,6 +502,9 @@ final class WalletModel: ObservableObject {
     }
 
     private func activateAccount() {
+        #if os(macOS)
+        guard !LaunchRecovery.shared.isSafeMode else { return }
+        #endif
         #if DEBUG
         if DesignPreview.on { loadPreview(); return }
         #endif
@@ -318,6 +530,7 @@ final class WalletModel: ObservableObject {
             loadSaved()
             loadTokens()
             loadTokenChoices(chain: networkChainId)
+            updatePushSubscription()
             keyLabel = acct.isSecureEnclave ? String(localized: "Key in the Secure Enclave") : String(localized: "Simulator: software key (no Secure Enclave)")
             note(acct.isSecureEnclave ? "Secure Enclave key ready. Signing asks for Touch ID / Face ID or your passcode." : "Simulator: software key (no Secure Enclave here). Use a real device for hardware-bound keys.")
         } catch { reportKeyError(error) }
@@ -344,7 +557,7 @@ final class WalletModel: ObservableObject {
     }
 
 
-    /// The migration callback and the refresh timer share one identity path.
+    /// The migration callback and pushed refresh share one identity path.
     /// Success reloads the authoritative handle; a pending replacement closes
     /// signing immediately without initiating another migration from here.
     func migrationFinished(_ outcome: DataMigration.Outcome) {
@@ -371,11 +584,18 @@ final class WalletModel: ObservableObject {
         enclave = nil
         address = ""
         recoveryCode = ""
+        updatePushSubscription()
     }
 
     /// Account reads in flight use networkGeneration; resetting it together
     /// with this state prevents the previous wallet's results reappearing.
     private func clearWalletAccountState() {
+        push.resetCursor()
+        pushRefreshPending = false
+        pushBalancePending = false
+        pushTransactionsPending = false
+        resetUnresolvedReconciliation()
+        lastRecoveryCheck = .distantPast
         account = nil
         verifyError = nil
         verifyFailingSince = nil
@@ -412,9 +632,11 @@ final class WalletModel: ObservableObject {
         pendingBalanceRises = []
         activityLoading = false
         tokenScanRunning = false
+        tokenRefreshWork = WalletPushReconciliation()
         tokenChoicesForChain = nil
         tokensUpdated = nil
         tokensError = nil
+        lastReleaseHintHeight = nil
     }
 
     /// Validators' node ids and the committee key, from the bundled network.json
@@ -471,10 +693,23 @@ final class WalletModel: ObservableObject {
         }
         save()
         networkGeneration &+= 1
+        push.resetCursor()
+        pushRefreshPending = false
+        pushBalancePending = false
+        pushTransactionsPending = false
+        resetUnresolvedReconciliation()
+        lastRecoveryCheck = .distantPast
         UserDefaults.standard.set(development, forKey: "useDevelopmentNetwork")
         if development { UserDefaults.standard.set(Int(port), forKey: "developmentNetworkPort") }
         pinCommittee()
         status = nil
+        livePresence = nil
+        liveGlobePresence = nil
+        liveGlobeState = .loading
+        #if os(macOS)
+        presenceRefreshRequest = nil
+        lastPresenceAttempt = .distantPast
+        #endif
         account = nil
         blocks = []
         verifyError = nil
@@ -493,12 +728,15 @@ final class WalletModel: ObservableObject {
         pendingBalanceRises = []
         activityLoading = false
         tokenScanRunning = false
+        tokenRefreshWork = WalletPushReconciliation()
         tokenChoicesForChain = nil
         tokensUpdated = nil
         tokensError = nil
         loadSaved()
         loadTokens()
         loadTokenChoices(chain: networkChainId)
+        lastReleaseHintHeight = nil
+        updatePushSubscription(resetStream: true)
         refresh()
     }
 
@@ -716,15 +954,25 @@ final class WalletModel: ObservableObject {
         if log.count > 50 { log.removeLast() }
     }
 
-    func refresh() {
-        guard !refreshInFlight else { return }
+    func refresh(readBalance: Bool = true, reconcileTransactions: Bool = true) {
+        #if os(macOS)
+        refreshPresence()
+        #endif
+        guard !refreshInFlight else {
+            pushRefreshPending = true
+            pushBalancePending = pushBalancePending || readBalance
+            pushTransactionsPending = pushTransactionsPending || reconcileTransactions
+            return
+        }
         refreshInFlight = true
         if enclave == nil, Date().timeIntervalSince(lastKeyAttempt) > 5 { loadKey() }
         let addr = address, n = validators, generation = networkGeneration
         refreshes += 1
-        reconcileUnresolved()
-        // Recovery status needs several proofs; every 30 s is enough to warn within the delay.
-        let checkRecovery = refreshes % 15 == 1 && !addr.isEmpty
+        if reconcileTransactions { reconcileUnresolved() }
+        // Head delivery also advances recovery/expiry checks. The stream's
+        // cadence must not change this proof reader's thirty-second bound.
+        let checkRecovery = !addr.isEmpty && Date().timeIntervalSince(lastRecoveryCheck) >= 30
+        if checkRecovery { lastRecoveryCheck = Date() }
         Task.detached {
             if checkRecovery, let rs = try? recoveryStatus(account: addr, validators: n) {
                 await MainActor.run { if self.networkGeneration == generation { self.incomingRecovery = rs.pending ? rs : nil } }
@@ -735,13 +983,14 @@ final class WalletModel: ObservableObject {
             let bl = (try? recentBlocks(n: 24)) ?? []
             var acc: VerifiedAccount?
             var err: String?
-            if !addr.isEmpty {
+            if readBalance, !addr.isEmpty {
                 do { acc = try verifiedAccount(address: addr, validators: n) } catch { err = "\(error)" }
             }
             let verified = acc, readError = err
             await MainActor.run {
                 self.refreshInFlight = false
-                guard self.networkGeneration == generation else { return }
+                defer { self.drainPushRefresh() }
+                guard self.networkGeneration == generation, self.address == addr else { return }
                 // Published only when something actually changed: an unchanged set
                 // would still invalidate every view watching this model (the whole
                 // window), which lands right on top of live resizes.
@@ -754,6 +1003,7 @@ final class WalletModel: ObservableObject {
                         self.pendingBalanceRises.append((acc.stateHeight, rise))
                     }
                     if self.account != acc { self.account = acc }
+                    self.push.verified(height: acc.stateHeight)
                     if self.verifyError != nil { self.verifyError = nil }
                     self.record(balanceWei: acc.balanceWei)
                 }
@@ -764,14 +1014,48 @@ final class WalletModel: ObservableObject {
                 if st == nil { self.setVerifyError(String(localized: "The network cannot be reached yet.")) } else if let readError, !behindNode { self.setVerifyError(readError) }
                 self.trackChainProgress(st, blocks: bl)
                 self.trackVerification()
-                self.refreshTokens()
-                if let st, !self.activityLoading,
+                if readBalance { self.refreshTokens(force: true) }
+                if readBalance || reconcileTransactions, let st, !self.activityLoading,
                    (st.height != self.lastActivityHeight || self.refreshes % 15 == 1) {
                     self.lastActivityHeight = st.height
                     self.refreshChainActivity()
                 }
             }
         }
+    }
+
+    #if os(macOS)
+    /// The local push pulse drives this separate 10 s read. A slow
+    /// verified balance read never holds up the live observation, or vice versa.
+    private func refreshPresence() {
+        guard presenceRefreshRequest == nil, Date().timeIntervalSince(lastPresenceAttempt) >= 10 else { return }
+        let request = UUID()
+        presenceRefreshRequest = request
+        lastPresenceAttempt = Date()
+        let port = nodeRpcPort, generation = networkGeneration
+        Task {
+            let result = await LocalRPC.call(port: port, method: "aether_presence", params: [])
+            // A network switch may already have started its own read. The old
+            // completion cannot publish data or clear the new request's guard.
+            guard presenceRefreshRequest == request else { return }
+            presenceRefreshRequest = nil
+            guard networkGeneration == generation, nodeRpcPort == port else { return }
+            let value = LivePresence.parse(result)
+            if livePresence != value { livePresence = value }
+            let reading = LiveGlobePresence.read(result, retaining: liveGlobePresence)
+            if liveGlobePresence != reading.presence { liveGlobePresence = reading.presence }
+            if liveGlobeState != reading.state { liveGlobeState = reading.state }
+        }
+    }
+    #endif
+
+    private func drainPushRefresh() {
+        guard pushRefreshPending else { return }
+        let balance = pushBalancePending, transactions = pushTransactionsPending
+        pushRefreshPending = false
+        pushBalancePending = false
+        pushTransactionsPending = false
+        refresh(readBalance: balance, reconcileTransactions: transactions)
     }
 
     /// The chain is paused when its height has not moved for `pauseAfter`, or its
@@ -785,29 +1069,38 @@ final class WalletModel: ObservableObject {
             heightChangedAt = now
         }
         let newest = blocks.max(by: { $0.height < $1.height }).map { Date(timeIntervalSince1970: TimeInterval($0.timestampMs) / 1000) }
-        let still = heightChangedAt.map { now.timeIntervalSince($0) } ?? 0
-        let oldBlock = newest.map { now.timeIntervalSince($0) > Self.pauseAfter } ?? false
-        let paused = still > Self.pauseAfter || (oldBlock && still > 20)
-        let since = paused ? min(newest ?? heightChangedAt ?? now, heightChangedAt ?? now) : nil
+        let since = WalletPushProgress.pauseSince(now: now, changedAt: heightChangedAt,
+                                                 newest: newest, after: Self.pauseAfter)
         if since != chainPausedSince { chainPausedSince = since }
+    }
+
+    private func reevaluateCachedProgress() {
+        // Pongs only attest transport liveness. The chain's cached age must
+        // still reach the pause threshold when no new finalized heads arrive.
+        trackChainProgress(status, blocks: blocks)
+        trackVerification()
     }
 
     // MARK: tokens
 
-    /// Read token balances again if the last read is older than `tokenRefreshSeconds`
-    /// (`force`: a few seconds, e.g. when the Assets sheet opens).
+    /// Balance hints/catch-up and explicit asset actions force a fresh scan.
+    /// A transfer during an active scan remains dirty for one follow-up read.
     func refreshTokens(force: Bool = false) {
-        let minAge = force ? 5 : Self.tokenRefreshSeconds
         #if DEBUG
         if DesignPreview.on { return }
         #endif
-        guard !tokenScanRunning, !address.isEmpty, let chain = status?.chainId,
-              tokensUpdated.map({ Date().timeIntervalSince($0) >= minAge }) ?? true else { return }
+        if force { tokenRefreshWork.invalidate(["tokens"]) }
+        guard !tokenScanRunning, !address.isEmpty, let chain = status?.chainId else { return }
+        guard force || tokenRefreshWork.hasReadyWork
+                || (tokensUpdated.map({ Date().timeIntervalSince($0) >= Self.tokenRefreshSeconds }) ?? true) else { return }
         guard let sources = TokenSources.bundled(chainId: chain) else {
+            tokenRefreshWork = WalletPushReconciliation()
             tokensError = nil
             tokensUpdated = Date()
             return
         }
+        if !tokenRefreshWork.hasReadyWork { tokenRefreshWork.invalidate(["tokens"]) }
+        guard !tokenRefreshWork.nextBatch().isEmpty else { return }
         tokenScanRunning = true
         let owner = address, catalogKey = "tokenCatalog.\(chain)", catalog = tokenCatalog, generation = networkGeneration
         Task.detached {
@@ -815,9 +1108,14 @@ final class WalletModel: ObservableObject {
             await MainActor.run {
                 guard self.networkGeneration == generation else { return }
                 self.tokenScanRunning = false
-                guard owner == self.address else { return }
+                guard owner == self.address else {
+                    self.tokenRefreshWork = WalletPushReconciliation()
+                    return
+                }
+                let retry: [String]
                 switch result {
                 case .success(let (cat, held)):
+                    retry = []
                     UserDefaults.standard.set(try? JSONEncoder().encode(cat), forKey: catalogKey)
                     self.tokenCatalog = cat
                     self.tokens = held
@@ -825,10 +1123,13 @@ final class WalletModel: ObservableObject {
                     self.tokensUpdated = Date()
                     UserDefaults.standard.set(try? JSONEncoder().encode(held), forKey: self.tokensKey)
                 case .failure(let e):
+                    retry = ["tokens"]
                     self.tokensError = "\(e)"
-                    // Try again on the normal cadence, not every 2 s.
+                    // A later balance hint, catch-up or explicit read retries.
                     self.tokensUpdated = Date()
                 }
+                self.tokenRefreshWork.finish(retry: retry)
+                if self.tokenRefreshWork.hasReadyWork { self.refreshTokens() }
             }
         }
     }
@@ -937,13 +1238,26 @@ final class WalletModel: ObservableObject {
     /// `aether://pay?to=0x…&amount=1.5&memo=…&callback=https://…` from a web page
     /// (no extension needed): the payment is shown for approval, never sent by itself.
     func open(url: URL) {
-        // The rename kept every existing aether:// payment link alive: both
-        // schemes stay registered and both are parsed the same way.
-        guard url.scheme == "eastsea" || url.scheme == "aether",
-              let c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        open(link: url.absoluteString)
+    }
+
+    /// Names go to Explore. Action parameters keep their original bytes and
+    /// enter the existing approval sheets; opening a link never signs it.
+    func open(link raw: String) {
+        let parsed: SeaURL.Link
+        do { parsed = try SeaURL.parse(raw, chainID: browserChainID) }
+        catch {
+            browserLinkRequest = BrowserLinkRequest(raw: raw)
+            return
+        }
+        if case .name = parsed {
+            browserLinkRequest = BrowserLinkRequest(raw: raw)
+            return
+        }
+        guard case .action(let action, let original) = parsed,
+              let c = URLComponents(string: original) else { return }
         // A repeated parameter keeps its first value (never a crash on odd links).
         let q = Dictionary((c.queryItems ?? []).compactMap { i in i.value.map { (i.name, $0) } }, uniquingKeysWith: { first, _ in first })
-        let action = c.host ?? c.path
         // One request at a time, never written into what the user is typing.
         guard paymentRequest == nil, callRequest == nil, connectRequest == nil else {
             note("Ignored a link while another request is waiting for approval")
@@ -1221,7 +1535,7 @@ final class WalletModel: ObservableObject {
     /// may still include it (B5 review round 2, finding 5) — so the row then
     /// reads "not on chain yet" and keeps its context; only a receipt, or the
     /// nonce used by another transaction, makes it done or failed. A later
-    /// receipt supersedes a drop: polling continues, and the chain-history
+    /// receipt supersedes a drop: push keeps following, and the chain-history
     /// refresh and `reconcileUnresolved` pick it up after this returns.
     private func follow(_ hash: String, operation: Operation, label: String, item: ActivityItem) async -> TxTrack.Row {
         let generation = operation.generation
@@ -1240,8 +1554,15 @@ final class WalletModel: ObservableObject {
         var unknownSince: Date?
         var last: TxStatus?
         var lastRow = TxTrack.Row.pending
+        var readRevision: UInt64?
         while Date().timeIntervalSince(start) < Self.trackLimit {
             guard networkGeneration == generation else { releaseOperation(operation); return .notIncluded }
+            guard push.shouldReadTransaction(lastRevision: readRevision) else {
+                if Date().timeIntervalSince(start) > 30 { releaseOperation(operation) }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                continue
+            }
+            readRevision = push.revision
             let st = try? txStatus(txHash: hash)
             if st == nil || st?.state == "unknown" { unknownSince = unknownSince ?? Date() } else { unknownSince = nil }
             let row = TxTrack.row(state: st?.state, success: st?.receipt?.success,
@@ -1296,37 +1617,94 @@ final class WalletModel: ObservableObject {
         return .notIncluded
     }
 
-    /// Rows a past session left not-included or pending (bug #5, round 2):
-    /// asked again — with the sender and nonce they were signed at, when the
-    /// row kept them — and settled only on a chain fact. A few per refresh.
-    private func reconcileUnresolved() {
-        let own = address
-        let generation = networkGeneration
-        guard !own.isEmpty, Date().timeIntervalSince(lastReconcile) > 30 else { return }
-        lastReconcile = Date()
-        let open = activity.filter {
-            ($0.state == .notIncluded || ($0.state == .pending && Date().timeIntervalSince($0.date) > Self.trackLimit))
-                && $0.hash?.hasPrefix("0x") == true
-        }.prefix(8).map { ($0.id, $0.hash!, $0.nonce) }
-        guard !open.isEmpty else { return }
-        Task.detached { [weak self] in
-            for (id, hash, nonce) in open {
-                let st = nonce.map { try? txStatusFor(txHash: hash, sender: own, nonce: $0) } ?? (try? txStatus(txHash: hash))
-                guard let st else { continue }
+    private func unresolvedActivity() -> [ActivityItem] {
+        let own = address.lowercased()
+        return Array(activity.lazy.filter {
+            ($0.state == .pending || $0.state == .notIncluded) && $0.hash?.hasPrefix("0x") == true
+                && ($0.owner == nil || $0.owner?.lowercased() == own)
+        }.prefix(WalletPushReconciliation.maxPending))
+    }
+
+    private func unresolvedHashes() -> [String] {
+        var seen = Set<String>()
+        return unresolvedActivity().compactMap { $0.hash?.lowercased() }.filter { seen.insert($0).inserted }
+    }
+
+    /// Every saved pending row needs catch-up, including one submitted moments
+    /// before a prior launch ended. A hint overrides the ordinary manual-read
+    /// throttle and remains dirty until all bounded batches have completed.
+    private func reconcileUnresolved(force: Bool = false) {
+        guard !address.isEmpty else { return }
+        let hashes = unresolvedHashes()
+        reconciliation.retain(available: hashes)
+        if force || Date().timeIntervalSince(lastReconcile) > 30 {
+            lastReconcile = Date()
+            reconciliation.invalidate(hashes)
+        }
+        drainUnresolvedReconciliation()
+    }
+
+    private func reconcileHeadOpportunity() {
+        guard !address.isEmpty else { return }
+        let hashes = unresolvedHashes()
+        let filter = WalletPushFilter(address: address, transactions: hashes)
+        reconciliation.headOpportunity(available: hashes, subscribed: Set(filter.transactions))
+        drainUnresolvedReconciliation()
+    }
+
+    private func resetUnresolvedReconciliation() {
+        reconciliationTask?.cancel()
+        reconciliationTask = nil
+        reconciliationID = nil
+        reconciliation = WalletPushReconciliation()
+        lastReconcile = .distantPast
+    }
+
+    private func drainUnresolvedReconciliation() {
+        guard reconciliationTask == nil, !address.isEmpty else { return }
+        let own = address, generation = networkGeneration, rows = unresolvedActivity()
+        reconciliation.retain(available: unresolvedHashes())
+        let batch = reconciliation.nextBatch()
+        guard !batch.isEmpty else { return }
+        let requests = batch.map { hash in
+            (hash, rows.first { $0.hash?.lowercased() == hash && $0.nonce != nil }?.nonce)
+        }
+        let job = UUID()
+        reconciliationID = job
+        reconciliationTask = Task.detached { [weak self] in
+            var failed = [String]()
+            for (hash, nonce) in requests {
+                guard !Task.isCancelled else { return }
+                let status: TxStatus?
+                if let nonce { status = try? txStatusFor(txHash: hash, sender: own, nonce: nonce) }
+                else { status = try? txStatus(txHash: hash) }
+                guard let st = status else { failed.append(hash); continue }
                 let row = TxTrack.row(state: st.state, success: st.receipt?.success, unknownFor: 0)
                 await MainActor.run {
-                    guard let self, self.networkGeneration == generation else { return }
-                    switch row {
-                    case .done, .failed: self.settle(id, state: row == .done ? .done : .failed, why: row == .done ? nil : TxStatusText.sentence(st))
-                    case .notIncluded: self.settle(id, state: .notIncluded, why: TxStatusText.sentence(st), canResend: st.canResend)
-                    case .pending: self.explain(id, why: TxStatusText.sentence(st))
+                    guard let self, self.networkGeneration == generation, self.address == own,
+                          self.reconciliationID == job else { return }
+                    for item in self.unresolvedActivity() where item.hash?.lowercased() == hash {
+                        switch row {
+                        case .done, .failed: self.settle(item.id, state: row == .done ? .done : .failed, why: row == .done ? nil : TxStatusText.sentence(st))
+                        case .notIncluded: self.settle(item.id, state: .notIncluded, why: TxStatusText.sentence(st), canResend: st.canResend)
+                        case .pending: self.explain(item.id, why: TxStatusText.sentence(st))
+                        }
                     }
                 }
+            }
+            let retry = failed
+            await MainActor.run {
+                guard let self, self.networkGeneration == generation, self.address == own,
+                      self.reconciliationID == job else { return }
+                self.reconciliationTask = nil
+                self.reconciliationID = nil
+                self.reconciliation.finish(retry: retry)
+                self.drainUnresolvedReconciliation()
             }
         }
     }
 
-    /// When `reconcileUnresolved` last asked (at most every 30 s).
+    /// Manual reads remain throttled; stream dirtiness bypasses this timestamp.
     private var lastReconcile = Date.distantPast
 
     /// How long `track` follows a transaction: the node's mempool lifetime
@@ -1390,6 +1768,7 @@ final class WalletModel: ObservableObject {
         let d = UserDefaults.standard
         d.set(try? JSONEncoder().encode(history), forKey: historyKey)
         d.set(try? JSONEncoder().encode(Array(activity.prefix(500))), forKey: activityKey)
+        updatePushSubscription()
     }
 
     func addLinkedWallet(_ input: String) -> Bool {
@@ -1793,9 +2172,24 @@ struct ConnectRequest: Equatable {
 
 #if DEBUG
 extension WalletModel {
+    /// Screenshot-only fixture, shared byte-for-byte with the web regression data.
+    func loadPreviewGlobe() {
+        guard let url = Bundle.main.url(forResource: "presence-example", withExtension: "json", subdirectory: "LiveGlobe"),
+              let data = try? Data(contentsOf: url),
+              let value = try? JSONSerialization.jsonObject(with: data) else {
+            liveGlobePresence = nil
+            liveGlobeState = .unavailable
+            return
+        }
+        let reading = LiveGlobePresence.read(value, retaining: nil)
+        liveGlobePresence = reading.presence
+        liveGlobeState = reading.state
+    }
+
     /// Design preview only (DesignPreview.loadPreview): the sample state whose
     /// setters are private to this file.
     func loadPreviewExtras() {
+        loadPreviewGlobe()
         let secondary = accountStore.activeAccount?.id == 2
         let primaryBreakdown = """
             {"proof_rewards_wei":"2500000000000000000","node_rewards_wei":"0","faucet_wei":"10000000000000000000",

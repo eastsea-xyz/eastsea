@@ -1,0 +1,13 @@
+[package]
+name = "aether-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure client-side EastSea account icon derivation"
+
+[dependencies]
+# Already locked in this workspace; the SDK adds no chain/prover dependency.
+sha2 = "=0.10.9"
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,0 +1,58 @@
+{
+  "accountIconVersion": 2,
+  "canonicalSourceSha256": "e4e574a6c848fe7170a565ffa0a543507e86609cdd286886992dcccbdeda1329",
+  "sharedVectorsSha256": "81f8ffae02a923e01c4c521a0b521f6505a620bff9f50c773bf2e4f126810874",
+  "baselineCommit": "6cd6fee",
+  "renderer": "Chromium / Playwright",
+  "chromium": "155.0.8059.39",
+  "scale": 1,
+  "prototype": false,
+  "addresses": {
+    "sender": "0x1234567890abcdef1234567890abcdef12345678",
+    "recipient": "0x1234567890abcdef0000000000abcdef12345678",
+    "contract": "0xa2521982a17474cb2f8741c85de653b5282d72b0"
+  },
+  "staticAlternatives": [
+    "Waves",
+    "Navigation"
+  ],
+  "externalRequests": [],
+  "sheets": [
+    {
+      "path": "docs/design/46-account-icon/round2/atlas.png",
+      "viewportWidth": 1536,
+      "documentWidth": 1536,
+      "height": 1161,
+      "pageErrors": []
+    },
+    {
+      "path": "docs/design/46-account-icon/round2/directions.png",
+      "viewportWidth": 1536,
+      "documentWidth": 1536,
+      "height": 1276,
+      "pageErrors": []
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/browser-review-light.png",
+      "viewportWidth": 1440,
+      "documentWidth": 1440,
+      "height": 1133,
+      "pageErrors": []
+    },
+    {
+      "path": "docs/design/46-account-icon/browser/browser-review-dark.png",
+      "viewportWidth": 1440,
+      "documentWidth": 1440,
+      "height": 1133,
+      "pageErrors": []
+    },
+    {
+      "path": "docs/design/46-account-icon/round2/before-after.png",
+      "viewportWidth": 1536,
+      "documentWidth": 1536,
+      "height": 1698,
+      "pageErrors": []
+    }
+  ],
+  "surfaceCount": 8
+}

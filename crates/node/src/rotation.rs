@@ -686,8 +686,10 @@ pub fn replace_unavailable(
 
 /// Founder reserve keys (docs/design/12-launch-plan.md, "창업자 Mac 안전망"): the
 /// founder's one extra right is running up to three voting keys on one Mac.
-/// They are not registry candidates (no beacons, no rewards) and are seated
-/// only while fewer than `MIN_OPEN_COMMITTEE` independent operators qualify.
+/// They are not registry candidates (no beacons, no rewards). Through four
+/// independent operators they stay eligible standby: missing seats only,
+/// never added to a full four-seat committee. Larger committees also use the
+/// night-time survival rule. Unseating never retires the genesis reserve set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reserve {
     /// The founder's operator address (lowercase 0x hex): its own Macs are not independent.
@@ -712,9 +714,55 @@ pub fn independent(pool: &[(String, String)], candidate: impl Fn(&str) -> Option
         .len()
 }
 
+/// Replace exactly one unavailable seat of a four-seat bootstrap committee.
+/// The other three keep its old quorum; missing or stale silence is not proof
+/// of a vacancy. Qualified Macs get first refusal, then the genesis reserves.
+/// Reserve keys retain their documented exemption from the operator seat cap.
+#[allow(clippy::too_many_arguments)]
+pub fn reserve_replacement(
+    running: &Committee,
+    pool: &[(String, String)],
+    seed: &[u8],
+    candidate: impl Fn(&str) -> Option<String>,
+    hours: impl Fn(&str) -> Option<Hours>,
+    recent: impl Fn(&str) -> Option<(u64, u64, u64)>,
+    leaving: impl Fn(&str) -> bool,
+    epoch: u64,
+    reserve: &Reserve,
+) -> Option<Vec<(String, String)>> {
+    if running.members.len() != MIN_OPEN_COMMITTEE
+        || reserve.members.is_empty()
+        || epoch == 0
+        || independent(pool, &candidate, reserve) > aether_rewards::RESERVE_STANDBY_MAX_OPERATORS
+    {
+        return None;
+    }
+    let unavailable: Vec<&String> = running.members.iter().filter_map(|(k, _)| {
+        (!reserve.has(k) && (leaving(k) || matches!(recent(k), Some((e, last, prev))
+            if e.checked_add(1) == Some(epoch) && last != beacons::NO_COUNT && prev != beacons::NO_COUNT
+                && last < SILENT_BELOW && prev < SILENT_BELOW))).then_some(k)
+    }).collect();
+    let [gone] = unavailable.as_slice() else { return None };
+    // This proven vacancy uses the existing one-departure swap budget. Do not
+    // relax the conservative small-committee rule on networks without reserves.
+    let replace = |pool: &[(String, String)]| replace_unavailable(
+        running, pool, seed, &candidate, &hours, &recent, |k| k == gone.as_str(), epoch,
+    );
+    if let Some(members) = replace(pool) {
+        return Some(members);
+    }
+    let mut spares = pool.to_vec();
+    for m in &reserve.members {
+        if !spares.iter().any(|(k, _)| *k == m.0) {
+            spares.push(m.clone());
+        }
+    }
+    replace(&spares)
+}
+
 /// The next voting set with the founder's reserve keys applied to `drawn`
-/// (the draw's result, or None: the running set). While fewer than
-/// `MIN_OPEN_COMMITTEE` independent operators qualify, reserve keys fill only
+/// (the draw's result, or None: the running set). Through four independent
+/// operators the keys remain eligible standby. They fill only
 /// the seats the committee is short of `MIN_OPEN_COMMITTEE` — never more: a
 /// committee that already stands at four seats takes none, because growing it
 /// to seven would put three seats on the founder's one Mac and raise the
@@ -723,8 +771,9 @@ pub fn independent(pool: &[(String, String)], candidate: impl Fn(&str) -> Option
 /// takes qualifying Macs (ticket order, one seat per operator) and reserve
 /// keys make up the rest; keys seated beyond the shortfall step down.
 ///
-/// From four independent operators on, the seats are the Macs' own to hold —
-/// but the keys are also a liveness safety net (docs/design/13-roadmap.md, F):
+/// At five independent operators the ordinary exit applies. Unneeded seats
+/// return to qualifying Macs, while the keys remain registered. On committees
+/// larger than four the keys are also a liveness safety net (13-roadmap.md, F):
 /// they seat themselves, as many as the odds need, while the committee's
 /// worst hour of the day is likelier than `RESERVE_JOIN_BELOW` to lose its
 /// quorum, and step down once it is comfortably back above
@@ -741,10 +790,29 @@ pub fn with_reserve(
     running: &Committee,
     hours: impl Fn(&str) -> Option<Hours>,
 ) -> Option<Vec<(String, String)>> {
+    with_reserve_for(crate::upgrade::PROTOCOL, drawn, pool, seed, candidate, reserve, running, hours)
+}
+
+/// Apply the rules of the block's active protocol. Through protocol 3, retain
+/// the historical four-operator exit and four-seat survival additions exactly.
+#[allow(clippy::too_many_arguments)]
+pub fn with_reserve_for(
+    version: u32,
+    drawn: Option<Vec<(String, String)>>,
+    pool: &[(String, String)],
+    seed: &[u8],
+    candidate: impl Fn(&str) -> Option<String>,
+    reserve: &Reserve,
+    running: &Committee,
+    hours: impl Fn(&str) -> Option<Hours>,
+) -> Option<Vec<(String, String)>> {
     if running.members.is_empty() {
         return drawn;
     }
-    let needed = independent(pool, &candidate, reserve) < MIN_OPEN_COMMITTEE;
+    let operators = independent(pool, &candidate, reserve);
+    let bootstrap = operators < MIN_OPEN_COMMITTEE;
+    let floor = version >= crate::upgrade::RESERVE_FLOOR_PROTOCOL;
+    let standby = floor && operators <= aether_rewards::RESERVE_STANDBY_MAX_OPERATORS;
     // The keys seated right now, read from the running committee before the
     // draw's result replaces them: a normal draw orders non-candidate members
     // out first, so its set can carry none of the keys — and the hysteresis
@@ -755,7 +823,7 @@ pub fn with_reserve(
     // Qualifying Macs fill a committee that is short of seats (ticket order,
     // one seat per operator) — both when the reserve keys leave and while
     // they are seated.
-    next.retain(|(k, _)| needed || !reserve.has(k));
+    next.retain(|(k, _)| bootstrap || !reserve.has(k));
     let op = |k: &str| candidate(k).unwrap_or_else(|| k.to_string());
     let mut seated_ops: std::collections::BTreeSet<String> = next.iter().map(|(k, _)| op(k)).collect();
     let mut order: Vec<&(String, String)> = pool.iter().filter(|(k, _)| !next.iter().any(|(n, _)| n == k)).collect();
@@ -768,7 +836,7 @@ pub fn with_reserve(
             next.push(m.clone());
         }
     }
-    if needed {
+    if bootstrap || (standby && next.len() <= MIN_OPEN_COMMITTEE) {
         // Only as many reserve keys as the committee is still short of
         // MIN_OPEN_COMMITTEE seats, never more; keys seated beyond the
         // shortfall step down. The cap stays three (all of them).
@@ -793,7 +861,9 @@ pub fn with_reserve(
         // Dropping the reserve keys would leave the committee short and no
         // qualifying Mac can fill it: they stay seated for now.
         return drawn;
-    } else {
+    } else if !floor || next.len() > MIN_OPEN_COMMITTEE {
+        // A full four-seat committee never grows, even for survival (audit
+        // 1.1). Larger committees keep the existing correlated-Mac rule.
         // The committee stands on its own seats; the keys' staying is a
         // question of its predicted worst hour (the profiles are public
         // state, so every node asks the same question and gets the same
@@ -1266,6 +1336,18 @@ mod tests {
     }
 
     #[test]
+    fn a_full_four_seat_committee_never_grows_even_for_a_risky_night() {
+        let r = reserve();
+        let pool: Vec<_> = (1..=4).map(mac).collect();
+        let running = Committee { members: pool.clone() };
+        // Adding all three correlated keys could improve the probability,
+        // but would turn the founder Mac into a 5-of-7 quorum halt point.
+        let hours = |k: &str| Some([if k == "m3" || k == "m4" { SCALE / 2 } else { SCALE }; DAY_EPOCHS as usize]);
+        assert!(with_reserve(None, &pool, &seed(8), ops_of, &r, &running, hours).is_none());
+        assert_eq!(r.members.len(), 3, "standby membership is retained");
+    }
+
+    #[test]
     fn seated_reserve_keys_step_down_as_the_committee_fills() {
         // A committee that once carried every reserve key keeps fewer as other
         // seats stand, and none once four seats stand without them.
@@ -1531,6 +1613,42 @@ mod tests {
                 "no data: the ticket decides, as before"
             );
         }
+    }
+
+    #[test]
+    fn reserve_repair_requires_one_fresh_vacancy_and_prefers_a_qualified_spare() {
+        let r = reserve();
+        let running = Committee { members: (1..=4).map(mac).collect() };
+        let pool = running.members.clone();
+        let recent = |k: &str| Some((7, if k == "m4" { 0 } else { SLOTS }, if k == "m4" { 0 } else { SLOTS }));
+        let repaired = reserve_replacement(&running, &pool, &seed(1), ops_of, |_| None, recent, |_| false, 8, &r)
+            .expect("one proven silent seat is filled from standby");
+        assert_eq!(repaired.len(), 4);
+        assert!(!repaired.contains(&mac(4)));
+        assert!((1..=3).all(|i| repaired.contains(&mac(i))));
+        assert_eq!(repaired.iter().filter(|(k, _)| r.has(k)).count(), 1);
+
+        // Unknown, stale and first-epoch records never prove a vacancy.
+        for missing in [None, Some((6, 0, 0)), Some((7, 0, beacons::NO_COUNT)), Some((7, beacons::NO_COUNT, 0))] {
+            assert!(reserve_replacement(&running, &pool, &seed(1), ops_of, |_| None,
+                |k| if k == "m4" { missing } else { Some((7, SLOTS, SLOTS)) }, |_| false, 8, &r).is_none());
+        }
+        assert!(reserve_replacement(&running, &pool, &seed(1), ops_of, |_| None,
+            |k| Some((7, if k == "m3" || k == "m4" { 0 } else { SLOTS }, if k == "m3" || k == "m4" { 0 } else { SLOTS })),
+            |_| false, 8, &r).is_none(), "two missing seats cannot keep the old quorum");
+        assert!(reserve_replacement(&running, &pool, &seed(1), ops_of, |_| None, recent, |_| false, 0, &r).is_none());
+        assert!(reserve_replacement(&committee(3), &pool, &seed(1), ops_of, |_| None, recent, |_| false, 8, &r).is_none());
+        let five: Vec<_> = (1..=5).map(mac).collect();
+        assert!(reserve_replacement(&running, &five, &seed(1), ops_of, |_| None, recent, |_| false, 8, &r).is_none());
+
+        // A different eligible key of the departing operator fills its seat
+        // before any reserve does; it still counts as four operators.
+        let op = |k: &str| if k == "m5" { ops_of("m4") } else { ops_of(k) };
+        let spare = reserve_replacement(&running, &five, &seed(1), op, |_| None, recent, |_| false, 8, &r)
+            .expect("a qualified independent spare gets first refusal");
+        assert!(spare.contains(&mac(5)));
+        assert!(spare.iter().all(|(k, _)| !r.has(k)));
+        assert!(!spare.contains(&mac(4)));
     }
 
     #[test]

@@ -8,24 +8,30 @@ struct ReceiveAddressView: View {
     @State private var copied = false
 
     var body: some View {
-        VStack(spacing: compact ? 12 : 16) {
+        VStack(spacing: compact ? DesignTokens.Space.s3 : DesignTokens.Space.s4) {
             if address.isEmpty {
                 Text("The wallet key is not ready yet.")
-                    .font(.aeBody).foregroundStyle(.secondary)
+                    .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                QRCode(text: address)
+                AccountIcon(address: address, size: compact ? 32 : 64)
+                EastSeaReceiveCode(address: address, accessibilityText: String(localized: "Receive address QR code"))
                     .frame(width: compact ? 192 : 200, height: compact ? 192 : 200)
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(Text("Receive address QR code"))
                 Text(address)
                     .font(compact ? .aeCaption.monospaced() : .aeBody.monospaced())
+                    .foregroundStyle(DesignTokens.Palette.text.color)
                     .multilineTextAlignment(.center)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity)
+                    .padding(DesignTokens.Space.s3)
+                    .background(DesignTokens.Palette.surfaceSunken.color,
+                                in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
             }
-            HStack(spacing: 8) {
+            HStack(spacing: DesignTokens.Space.s2) {
                 Button {
                     Clipboard.copy(address)
                     copied = true
@@ -33,11 +39,11 @@ struct ReceiveAddressView: View {
                     Label(copied ? String(localized: "Copied") : String(localized: "Copy address"),
                           systemImage: copied ? "checkmark" : "doc.on.doc")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(EastSeaPrimaryButtonStyle())
                 ShareLink(item: address) {
                     Label("Share", systemImage: "square.and.arrow.up")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(EastSeaQuietButtonStyle())
             }
             .controlSize(compact ? .small : .regular)
             .disabled(address.isEmpty)
@@ -62,7 +68,7 @@ struct QRCode: View {
             }
         }
         .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
     }
 
     static func render(_ s: String) -> CGImage? {

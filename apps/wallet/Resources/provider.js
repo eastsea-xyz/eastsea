@@ -16,6 +16,7 @@
     'eth_requestAccounts', 'aether_requestAccounts', 'eth_accounts', 'aether_accounts',
     // methods.js SEND_METHODS — a transfer, only through a sheet.
     'eth_sendTransaction', 'aether_sendTransaction',
+    'eth_signTypedData_v4',
     // answered directly, as the extension's background does.
     'eth_chainId', 'wallet_disconnect', 'aether_disconnect',
   ]);

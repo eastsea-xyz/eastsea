@@ -187,7 +187,9 @@ fn rpc_state(chain: Chain, upstream: Option<Arc<Upstream>>, shards: Option<Arc<S
         snapshot: Default::default(),
         prover: None,
         shards,
+        presence: None,
         public_read_only: false,
+        app_bundles: None,
     }
 }
 

@@ -6,7 +6,8 @@
 //! while fewer than 16 are online, from 16 full-weight operators on the whole
 //! pool is shared, and what caps and absences leave is never minted. Warm-up
 //! climbs one step a day, and the founder's reserve keys join the voting set
-//! below four independent operators and leave at four — while they serve, the
+//! into missing seats, keep standby through four independent operators, and
+//! apply ordinary exit/expiry at five — while they serve, the
 //! epochs count as the founder's participation.
 
 mod common;
@@ -39,7 +40,7 @@ fn net(macs: u8, reserve: Option<Reserve>, committee: Option<Vec<(String, String
         macs,
         min_streak: Some(0),
         history_v2: true,
-        protocol: 3,
+        protocol: aether_node::upgrade::PROTOCOL,
         reserve,
         fees: false,
         committee,
@@ -303,7 +304,7 @@ fn final_file(chain: u64, round: u64, output: Option<String>, identity: Option<S
         min_streak: None,
         draw_epochs: None,
         history: Some(2),
-        protocol: Some(3),
+        protocol: Some(aether_node::upgrade::PROTOCOL),
         node_rewards: Some(true),
         reserve: Some(ReserveFile {
             operator: Address::repeat_byte(0x99),
@@ -315,6 +316,7 @@ fn final_file(chain: u64, round: u64, output: Option<String>, identity: Option<S
         max_committee: Some(aether_node::rotation::GROW_UNTIL as u64),
         genesis_validators: None,
         release: None,
+        search: None,
     }
 }
 
@@ -510,7 +512,7 @@ fn one_four_and_twenty_operators_get_exact_shares_and_the_rest_is_never_minted()
 }
 
 #[test]
-fn reserve_keys_join_under_four_independent_operators_and_leave_at_four() {
+fn reserve_keys_fill_short_committees_and_return_to_standby_at_four() {
     // Mac 4 is the founder's own registered Mac: not independent (docs/design/15).
     let founder = common::addr(&aether_crypto::P256Signer::from_seed(&common::seed(5)).unwrap());
     let reserve = Reserve { operator: founder, members: reserve_members() };
@@ -592,6 +594,7 @@ fn reserve_keys_join_under_four_independent_operators_and_leave_at_four() {
     run_to(&mut n, &mut minted, carried.height + aether_node::handoff::DELAY);
     assert_eq!(rewards::seated(&n.parent.state), (0, 0), "unseated: the word is cleared");
     assert!(no_reserve(&aether_rewards::committee(&n.parent.state)));
+    assert_eq!(Reserve::of(&n.parent.state).unwrap().members, reserve.members, "unseated keys remain registered standby");
     // They earned nothing: not candidates, no beacons.
     assert!(registry::candidates(&n.parent.state).iter().all(|c| !reserve.members.iter().any(|(k, _)| *k == hex::encode(c.validator_key))));
 }
@@ -623,14 +626,14 @@ fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     // over. Nothing before the switch (nothing is seated), nothing for the
     // epoch it lands inside, a full sixteenth for every epoch after it —
     // exactly as if the Mac had answered every slot, at the warm-up it
-    // reached, never a second share. Four independent operators qualifying
+    // reached, never a second share. Five independent operators qualifying
     // while the keys still sit ends it: two more epochs of grace (finding 6),
     // then the credit stops until a committee without the keys takes over.
     let founder = common::addr(&aether_crypto::P256Signer::from_seed(&common::seed(5)).unwrap());
     let (rkeys, rmembers): (Vec<ed25519::PrivateKey>, Vec<(String, String)>) = reserve_set().into_iter().unzip();
     let reserve = Reserve { operator: founder, members: rmembers.clone() };
     let seated_in = |m: &[(String, String)]| rmembers.iter().filter(|r| m.contains(r)).count();
-    let mut n = net(5, Some(reserve), Some(vec![common::mac_entry(0)]));
+    let mut n = net(6, Some(reserve), Some(vec![common::mac_entry(0)]));
     let mut minted = U256::ZERO;
     assert_eq!(n.operator(4), founder);
     // Two independent operators and the founder's Mac warm up together; the
@@ -691,9 +694,9 @@ fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     assert_eq!(rewards::mac(&n.parent.state, 2).level, WARMUP_STEPS, "the service moved no warm-up");
 
     // Macs 2 and 3 register partway through an epoch. After their next three
-    // full epochs, four independent operators qualify; that boundary commits
-    // a roster without reserve keys and starts the overdue count while they
-    // are still seated.
+    // full epochs, four independent operators qualify. The unused reserve
+    // seats can return to the Macs, but service cannot expire while a handoff
+    // is still outstanding at four.
     let regs = (2..4).map(|i| n.register(i)).collect::<Vec<_>>();
     step(&mut n, &mut minted, regs);
     let four = n.parent.height / E + 4;
@@ -701,22 +704,34 @@ fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     let (_, leave) = aether_rewards::next_roster(&n.parent.state).expect("the chain unseats them");
     assert_eq!(seated_in(&leave), 0, "every reserve key leaves at once");
     assert!(leave.contains(&common::mac_entry(0)) && leave.contains(&common::mac_entry(1)));
-    assert_eq!(rewards::overdue(&n.parent.state), (four, 1), "seats nobody needs start counting");
+    assert_eq!(rewards::overdue(&n.parent.state), (four, 0), "four operators never start expiry");
+    for e in four..four + 4 {
+        let (before, _) = paid_epoch(&mut n, &mut minted, e, 6);
+        assert_eq!(n.balance(4) - before[4], pool_of_epoch(e) / U256::from(MAX_SHARE), "epoch {e}: standby service does not expire at four");
+        assert_eq!(rewards::overdue(&n.parent.state), (e + 1, 0));
+    }
+
+    // Mac 5 is a fifth independent operator (Mac 4 remains the founder).
+    let reg = n.register(5);
+    step(&mut n, &mut minted, vec![reg]);
+    let five = n.parent.height / E + 4;
+    run_to(&mut n, &mut minted, five * E);
+    assert_eq!(rewards::overdue(&n.parent.state), (five, 1), "five operators start the existing grace");
 
     // Finding 6: the handoff home has not happened — the keys still sit. The
     // credit lasts the two epochs of grace and stops, on chain.
-    for e in [four, four + 1] {
-        let (before, exec) = paid_epoch(&mut n, &mut minted, e, 5);
+    for e in [five, five + 1] {
+        let (before, exec) = paid_epoch(&mut n, &mut minted, e, 6);
         let pool = pool_of_epoch(e);
         assert_eq!(n.balance(4) - before[4], pool / U256::from(MAX_SHARE), "epoch {e}: still inside the grace");
-        assert_eq!(exec.payouts.len(), 5, "the founder counts as one operator");
+        assert_eq!(exec.payouts.len(), 6, "the founder counts as one operator");
     }
-    assert_eq!(rewards::overdue(&n.parent.state), (four + 2, 3), "past the grace the count keeps climbing");
-    for e in [four + 2, four + 3] {
-        let (before, exec) = paid_epoch(&mut n, &mut minted, e, 5);
+    assert_eq!(rewards::overdue(&n.parent.state), (five + 2, 3), "past the grace the count keeps climbing");
+    for e in [five + 2, five + 3] {
+        let (before, exec) = paid_epoch(&mut n, &mut minted, e, 6);
         assert_eq!(n.balance(4), before[4], "epoch {e}: past the grace, no credit while the keys still sit");
         assert!(!exec.payouts.iter().any(|(_, op, _)| *op == founder), "the founder is off the payouts");
-        assert_eq!(exec.payouts.len(), 4, "only the answering operators");
+        assert_eq!(exec.payouts.len(), 5, "only the answering operators");
     }
 
     // A committee without the keys takes over: from its switch — inside an
@@ -728,9 +743,9 @@ fn reserve_service_pays_the_founder_while_its_mac_sleeps() {
     run_to(&mut n, &mut minted, unswitch);
     assert_eq!(rewards::seated(&n.parent.state), (0, 0), "unseated: the word is cleared");
     let gone = unswitch / E + 1;
-    let (before, exec) = paid_epoch(&mut n, &mut minted, gone, 5);
+    let (before, exec) = paid_epoch(&mut n, &mut minted, gone, 6);
     assert_eq!(n.balance(4), before[4], "unseated, no credit for a sleeping Mac");
     assert!(!exec.payouts.iter().any(|(_, op, _)| *op == founder), "the founder is off the payouts");
-    assert_eq!(exec.payouts.len(), 4, "only the answering operators");
+    assert_eq!(exec.payouts.len(), 5, "only the answering operators");
     assert_eq!(rewards::mac(&n.parent.state, 2).level, WARMUP_STEPS, "still no warm-up movement");
 }

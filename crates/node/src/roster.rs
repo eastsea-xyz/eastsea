@@ -106,6 +106,10 @@ pub struct NetworkFile {
     /// byte-identical and keeps the legacy Sparkle-only update path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleasePin>,
+    /// Public app/name protocol sources, preserved through committee handoffs.
+    /// Discovery metadata only; absent files retain their exact legacy JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search: Option<crate::search_sources::SearchSources>,
 }
 
 /// `network.json` `release`: what the wallet's updater trusts, and nothing
@@ -388,11 +392,13 @@ impl NetworkFile {
                     };
                     // Every key and node id must parse, or no genesis.
                     reserve.bytes()?;
-                    // No validator of this network is also a reserve key (red
-                    // team, finding 3): a key that is both would sit in the
-                    // committee and in the reserve, so the founder's Mac would
-                    // run it either way and the overlap would hide from the
-                    // independent-operator count.
+                    // No genesis validator is also a reserve key (red team,
+                    // finding 3). Also check the initial current roster: a clean
+                    // frozen list must not hide an initial reserve seat. Later
+                    // rounds legitimately seat reserves, even in staged files
+                    // with no epoch boundary recorded yet.
+                    let genesis = self.genesis_validators.as_ref().unwrap_or(&self.validators);
+                    let initial = (self.round == 0 || self.identity.is_none() || self.output.is_none()).then_some(&self.validators);
                     let plain = |k: &str| k.trim_start_matches("0x").to_lowercase();
                     let same_node = |a: &str, b: &str| {
                         match (a.parse::<EndpointId>(), b.parse::<EndpointId>()) {
@@ -401,12 +407,14 @@ impl NetworkFile {
                         }
                     };
                     for (key, node) in &reserve.members {
-                        for (i, v) in self.validators.iter().enumerate() {
-                            if plain(&v.key) == plain(key) {
-                                return Err(format!("validator {}: its key is also a reserve key", i + 1));
-                            }
-                            if same_node(&v.node, node) {
-                                return Err(format!("validator {}: its node id is also a reserve key's", i + 1));
+                        for roster in std::iter::once(genesis).chain(initial) {
+                            for (i, v) in roster.iter().enumerate() {
+                                if plain(&v.key) == plain(key) {
+                                    return Err(format!("validator {}: its key is also a reserve key", i + 1));
+                                }
+                                if same_node(&v.node, node) {
+                                    return Err(format!("validator {}: its node id is also a reserve key's", i + 1));
+                                }
                             }
                         }
                     }
@@ -474,6 +482,7 @@ impl NetworkFile {
         self.max_committee = from.max_committee.or(self.max_committee);
         self.genesis_validators = from.genesis_validators.clone().or(self.genesis_validators.take());
         self.release = from.release.clone().or(self.release.take());
+        self.search = from.search.clone().or(self.search.take());
     }
 }
 
@@ -601,6 +610,7 @@ impl Roster {
             max_committee: None,
             genesis_validators: None,
             release: None,
+            search: None,
         }
     }
 }
@@ -925,6 +935,21 @@ mod tests {
         assert_eq!(written.genesis().unwrap().protocol, 3);
         assert_eq!(written.genesis().unwrap().history, 2);
     }
+
+    #[test]
+    fn ceremonies_preserve_public_search_protocol_pins() {
+        let mut from = file(r#"{"chain_id":7799,"validators":[]}"#);
+        from.search = Some(crate::search_sources::SearchSources {
+            app_registries: vec![crate::search_sources::SearchSource {
+                address: aether_types::Address::repeat_byte(1), code_hash: aether_types::B256::repeat_byte(2),
+            }], name_services: vec![],
+        });
+        let roundtrip = serde_json::from_value::<NetworkFile>(serde_json::to_value(&from).unwrap()).unwrap();
+        let mut written = file(r#"{"chain_id":7799,"validators":[]}"#);
+        written.keep_genesis(&roundtrip);
+        assert_eq!(written.search, from.search);
+        assert!(serde_json::to_value(file(r#"{"chain_id":7799,"validators":[]}"#)).unwrap().get("search").is_none());
+    }
 }
 
 #[cfg(test)]
@@ -953,6 +978,7 @@ mod group_tests {
             max_committee,
             genesis_validators: None,
             release: None,
+            search: None,
         }
     }
 

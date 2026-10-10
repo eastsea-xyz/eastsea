@@ -9,7 +9,7 @@ import Foundation
 /// plain unit test (Tests/update-state).
 ///
 /// Causes and policy:
-/// - a network/download failure retries with backoff (1 min doubling, 6 h
+/// - a network/download failure retries with backoff (1 min doubling, 1 h
 ///   cap), with no limit on attempts but never a tight loop;
 /// - a signature or approval-gate refusal does not retry the same item — it
 ///   waits for a new appcast item (if Sparkle proceeds with that item anyway,
@@ -71,7 +71,7 @@ struct UpdateTracker {
 
     // Retry policy (docs/design/24-self-healing.md row 11).
     static let networkFirstBackoff: TimeInterval = 60
-    static let networkMaxBackoff: TimeInterval = 6 * 3600
+    static let networkMaxBackoff: TimeInterval = 3600
     static let installFirstBackoff: TimeInterval = 60
     static let installMaxBackoff: TimeInterval = 3600
     static let maxInstallAttempts = 3
@@ -83,7 +83,7 @@ struct UpdateTracker {
     /// future than its largest backoff. A `nextRetryAt` or health-window
     /// start beyond that (red team #6: the record was written while the
     /// Mac's clock was wrong, then the clock was corrected) is a clock
-    /// artifact, not a schedule — clamp it to now, so a retry or a health
+    /// artifact or an obsolete retry schedule — clamp it to now, so a retry or a health
     /// check can never be postponed for weeks.
     static let maxFutureTolerance: TimeInterval = networkMaxBackoff
 
@@ -98,7 +98,7 @@ struct UpdateTracker {
     private(set) var state: State = .idle
     /// The item this cycle is about (version·build·signature·URL, as the
     /// release gate identifies it), persisted with the state.
-    private var itemKey: String?
+    private(set) var itemKey: String?
     /// The item that must not be retried: a gate refusal, or an install that
     /// already failed three times.
     private var blockedKey: String?
@@ -175,7 +175,7 @@ struct UpdateTracker {
         itemKey = key
         currentVersion = version
         currentBuild = build
-        if key == blockedKey, case .failed = state {
+        if key == blockedKey {
             save()
             return false
         }
@@ -282,6 +282,29 @@ struct UpdateTracker {
         }
     }
 
+    /// Sparkle reports an ordinary current-feed check or a user cancellation
+    /// through its abort callback too. Neither is a failed update. Keep the
+    /// refused-item block and any installed update's health outcome intact.
+    /// Codes from SUErrors.h: SUNoUpdateError, SUInstallationCanceledError,
+    /// SUInstallationAuthorizeLaterError. No Sparkle import: this stays pure.
+    mutating func aborted(error: NSError) {
+        if error.domain == "SUSparkleErrorDomain", [1001, 4007, 4008].contains(error.code) {
+            switch state {
+            case .awaitingHealth, .healthy, .failed(.health, _, _):
+                return
+            default:
+                break
+            }
+            attempts = 0
+            lastCause = nil
+            state = .idle
+            save()
+            return
+        }
+        aborted(networkError: error.domain == NSURLErrorDomain
+            || error.underlyingErrors.contains { ($0 as? NSError)?.domain == NSURLErrorDomain })
+    }
+
     /// Sparkle gave up (`didAbortWithError`). Which bucket it belongs to is a
     /// fact about the phase it died in: a non-network abort while downloading
     /// means the verification refused the bytes.
@@ -290,7 +313,7 @@ struct UpdateTracker {
         case .downloading:
             if networkError { fail(.network) } else { refuseItem() }
         case .found, .idle, .failed:
-            fail(.network)  // the check itself failed: retry with backoff
+            if networkError { fail(.network) }  // only URL failures schedule a network retry
         case .verified, .installing:
             fail(.install)
         case .awaitingHealth, .healthy:
@@ -327,9 +350,9 @@ struct UpdateTracker {
     /// Whether a scheduled retry (network or install) is due now — the app
     /// then asks Sparkle to check again. Refusals, health failures and a
     /// given-up install schedule nothing. A retry scheduled *further* out
-    /// than the largest possible backoff cannot be one we wrote — only a
-    /// clock artifact (red team #6) — and is due now; exactly the cap is a
-    /// legal schedule (the 6 h network backoff) and still waits.
+    /// than the current largest backoff comes from an obsolete retry policy
+    /// or a clock artifact (red team #6) — and is due now; exactly the cap is a
+    /// legal schedule (the 1 h network backoff) and still waits.
     func retryDue() -> Bool {
         if case .failed(_, _, let next?) = state {
             return now() >= next || next.timeIntervalSince(now()) > Self.maxFutureTolerance

@@ -105,40 +105,52 @@ struct MigrationOverlay: View {
     var body: some View {
         if status.waitingForUnlock {
             card {
-                Text(String(localized: "Unlock this Mac to finish moving your wallet")).font(.headline)
+                Text(String(localized: "Unlock this Mac to finish moving your wallet")).font(.aeTitle)
                 Text(String(localized: "Your node data has already moved to EastSea. Your wallet key file can only be read while this Mac is unlocked, so it has not moved yet. Unlock the Mac and EastSea finishes by itself within a few seconds. Nothing was deleted; your wallet is safe."))
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     .multilineTextAlignment(.center)
                     .frame(width: 320)
             }
         } else if status.moving {
             card {
-                Text("Moving your data from Aether to \(Brand.name)").font(.headline)
+                Text("Moving your data from Aether to \(Brand.name)").font(.aeTitle)
                 ProgressView(value: status.fraction)
+                    .tint(DesignTokens.Palette.accent.color)
                     .frame(width: 280)
                 Text("Your wallet and node data are copied and checked, byte by byte. This can take a few minutes. Keep \(Brand.name) open; if it is closed, the move picks up where it left off next time.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     .multilineTextAlignment(.center)
                     .frame(width: 320)
             }
         } else if let problem = status.problem {
             card {
-                Text(String(localized: "Your data has not finished moving")).font(.headline)
+                Text(String(localized: "Your data has not finished moving")).font(.aeTitle)
                 Text(problem + (String(localized: " EastSea retries by itself; nothing was deleted.")))
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     .multilineTextAlignment(.center)
                     .frame(width: 320)
-                Button("OK") { status.problem = nil }
+                Button("OK") { status.problem = nil }.buttonStyle(EastSeaPrimaryButtonStyle())
             }
         }
     }
 
     private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         ZStack {
-            Rectangle().fill(.black.opacity(0.25)).ignoresSafeArea()
-            VStack(spacing: 12, content: content)
-                .padding(24)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            Rectangle().fill(DesignTokens.Palette.sea.color.opacity(0.55)).ignoresSafeArea()
+            VStack(spacing: DesignTokens.Space.s4) {
+                EastSeaDawnMark().frame(width: 40, height: 40)
+                content()
+            }
+            .frame(width: 320)
+            .multilineTextAlignment(.center)
+            .padding(DesignTokens.Space.s6)
+            .foregroundStyle(DesignTokens.Palette.text.color)
+            .background(DesignTokens.Palette.surface.color,
+                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
+            .overlay {
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.lg)
+                    .stroke(DesignTokens.Palette.line.color, lineWidth: 1)
+            }
         }
     }
 }

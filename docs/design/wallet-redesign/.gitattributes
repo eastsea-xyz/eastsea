@@ -1,0 +1,3 @@
+# Patch context prefixes are significant, including a space on blank lines.
+# The patch is independently checked with git apply --check.
+toolbox-redesign.patch -whitespace

@@ -11,6 +11,10 @@ uniffi::setup_scaffolding!();
 mod atomic_swap;
 mod paper;
 mod tx_status;
+mod typed_data;
+mod typed_wallet;
+#[cfg(test)]
+mod typed_data_tests;
 #[cfg(test)]
 #[path = "../tests/common/http.rs"]
 mod http_test;
@@ -22,6 +26,7 @@ use aether_types::{Address, Bytes, FeeVector, GasVector, SignerScheme, TxEnvelop
 pub use atomic_swap::*;
 pub use paper::*;
 pub use tx_status::*;
+pub use typed_wallet::*;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -56,6 +61,9 @@ pub struct ChainStatus {
     pub transfer_fee_wei: String,
     /// Scheduled notices reported by the selected node (JSON array).
     pub upgrades_json: String,
+    /// ReleaseLog discovery from the same status read (JSON object or null).
+    /// This is not approval: the wallet verifies the pinned storage proof and builders.
+    pub release_json: String,
     /// Highest chain protocol this wallet build knows how to display and submit to.
     pub supported_protocol: u32,
     /// The node's faucet, when it has one — so the wallet can name test grants
@@ -964,6 +972,7 @@ fn needs_a_validator(method: &str) -> bool {
         "aether_sendTransaction"
             | "aether_faucet"
             | "aether_registerDevice"
+            | "aether_registrarEncryptionKey"
             | "aether_sendBeacon"
             | "aether_sendRegistration"
             | "aether_reattest"
@@ -1206,10 +1215,82 @@ pub fn chain_status() -> R<ChainStatus> {
         mempool: v["mempool"].as_u64().unwrap_or_default(),
         transfer_fee_wei: quote_from_status(&v, None, state_price).fee_wei,
         upgrades_json: scheduled_upgrade_json(&v),
+        release_json: release_announcement_json(&v),
         // Bump with the bundled node/light-client release, not with a remote node's version.
         supported_protocol: 3,
         faucet: v["faucet"].as_str().map(str::to_string),
     })
+}
+
+/// Preserve the exact logged payload strings for the Swift proof gate, with
+/// a small bound on untrusted discovery data before crossing the FFI boundary.
+fn release_announcement_json(status: &Value) -> String {
+    let release = &status["release"];
+    if !release.is_object()
+        || !release["manifest"].as_str().is_some_and(|s| !s.is_empty() && s.len() <= 16_384)
+        || !release["signatures"].as_str().is_some_and(|s| !s.is_empty() && s.len() <= 4_096)
+    {
+        return "null".into();
+    }
+    // Status also exposes artifact/slot metadata for operators. It duplicates
+    // potentially large signed content; the wallet needs only these fields.
+    let mut fields = std::collections::BTreeMap::new();
+    for key in ["index", "chain_id", "log_address", "version", "build", "manifest_hash",
+        "archive_sha256", "signatures_hash", "manifest", "signatures", "approved_at_height",
+        "install_after_height", "restart_slot_height", "approvals", "required_approvals"] {
+        if let Some(value) = release.get(key) { fields.insert(key, value); }
+    }
+    struct BoundedJson(Vec<u8>);
+    impl std::io::Write for BoundedJson {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.0.len().saturating_add(bytes.len()) > 128 * 1_024 {
+                return Err(std::io::Error::other("release discovery is too large"));
+            }
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let mut encoded = BoundedJson(Vec::new());
+    if serde_json::to_writer(&mut encoded, &fields).is_err() { return "null".into(); }
+    String::from_utf8(encoded.0).unwrap_or_else(|_| "null".into())
+}
+
+#[cfg(test)]
+mod chain_release_discovery_tests {
+    use super::*;
+
+    #[test]
+    fn status_passes_release_payload_bytes_without_treating_them_as_approval() {
+        let release = json!({"index": 1, "version": "0.7.4", "build": "17",
+            "manifest": "{ \"version\": \"0.7.4\" }\n", "signatures": "[ ]\n",
+            "approvals": 0});
+        let decoded: Value = serde_json::from_str(&release_announcement_json(&json!({"release": release}))).unwrap();
+        assert_eq!(decoded, release);
+    }
+
+    #[test]
+    fn missing_or_oversized_release_discovery_stays_null() {
+        for status in [json!({}), json!({"release": null}), json!({"release": "approved"}),
+            json!({"release": {"manifest": "m".repeat(16_385), "signatures": "[]"}}),
+            json!({"release": {"manifest": "{}", "signatures": "s".repeat(4_097)}}),
+            json!({"release": {"manifest": "{}", "signatures": "[]", "version": "x".repeat(131_073)}})] {
+            assert_eq!(release_announcement_json(&status), "null");
+        }
+    }
+
+    #[test]
+    fn a_large_valid_manifest_is_forwarded_without_duplicate_operator_metadata() {
+        let manifest = format!("{}{{\"version\":\"0.7.4\"}}", "\n".repeat(16_000));
+        let status = json!({"release": {"manifest": manifest, "signatures": "[]",
+            "artifacts": {"duplicated_urls": "x".repeat(32_768)},
+            "restart_slot": {"operator_only": "x".repeat(32_768)}}});
+        let encoded = release_announcement_json(&status);
+        let payload: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(payload["manifest"], manifest);
+        assert!(payload.get("artifacts").is_none());
+        assert!(encoded.len() < 128 * 1_024);
+    }
 }
 
 #[cfg(test)]
@@ -1579,6 +1660,9 @@ fn check_anchor_chain(block: &[u8], links: &[Vec<u8>], chain_id: u64) -> R<()> {
 }
 
 static COMMITTEE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// The registrar signing identity from trusted network configuration. Even a
+/// valid empty-block certificate under a reused committee cannot select it.
+static PINNED_REGISTRAR: std::sync::Mutex<Option<PublicKey>> = std::sync::Mutex::new(None);
 static NODES: std::sync::Mutex<Option<Vec<aether_net::EndpointId>>> = std::sync::Mutex::new(None);
 /// The chain's consensus group (0 today): certificates verify under its
 /// namespace and every block must carry it.
@@ -1699,6 +1783,7 @@ pub fn configure_network(network_json: String) -> R<u32> {
     if let Some(id) = identity {
         ValidatorSet::from_hex(id).map_err(|e| WalletError::Invalid(format!("identity: {e}")))?;
     }
+    let registrar = registrar_config_pin(v.get("registrar"))?;
     // The old client, certificate floor and local route belong to the old
     // configuration. In particular, a devnet key must not survive a return
     // to the bundled network.
@@ -1706,6 +1791,7 @@ pub fn configure_network(network_json: String) -> R<u32> {
     NETWORK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     *cached = None;
     *COMMITTEE.lock().expect("committee lock") = identity.map(str::to_owned);
+    *PINNED_REGISTRAR.lock().expect("registrar pin lock") = registrar;
     DEVNET_KEYS.store(devnet, std::sync::atomic::Ordering::Relaxed);
     *CHAIN_ID.lock().expect("chain id lock") = chain;
     *LOCAL_NODE.lock().expect("local node lock") = None;
@@ -2075,12 +2161,27 @@ pub fn prepare_register_node(
     let beaconer: Address = beaconer.parse().map_err(|_| WalletError::Invalid("beaconer address".into()))?;
     let pk = p256_key(&p256_public_key)?;
     let operator = address_of(&pk).map_err(|e| WalletError::Invalid(e.to_string()))?;
-    let a = registrar_call(json!([device_token, operator, hex_lower(&key), hex_lower(&node), beaconer, ownership]))?;
+    let device_token = p256::elliptic_curve::zeroize::Zeroizing::new(device_token);
+    let status = call("aether_status", json!([]))?;
+    let chain_id = expected_chain(&status)?;
+    let registrar = authenticated_registrar()?;
+    let public_params = vec![json!(operator), json!(hex_lower(&key)), json!(hex_lower(&node)), json!(beaconer), json!(ownership)];
+    let mut attestation = None;
+    for _ in 0..2 {
+        let descriptor: aether_net::registrar::EncryptionKey = parse(&registrar_rpc_call("aether_registrarEncryptionKey", json!([]))?, "registrar encryption key")?;
+        let params = encrypted_registration_params(&device_token, chain_id, &registrar, &descriptor, &public_params)?;
+        match registrar_rpc_call("aether_registerDevice", params) {
+            Ok(a) => { attestation = Some(a); break; }
+            // A registrar restart destroys its recipient key. Retry with a
+            // newly authenticated descriptor, always re-encrypting the token.
+            Err(e) if e.to_string().contains("registrar encryption key expired") => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    let a = attestation.ok_or_else(|| WalletError::Network("registrar encryption key changed; retry registration".into()))?;
     let (r, s) = (hex32(a["r"].as_str().unwrap_or_default(), "attestation r")?, hex32(a["s"].as_str().unwrap_or_default(), "attestation s")?);
     let attestation = [r, s].concat();
-    let status = call("aether_status", json!([]))?;
     if status["free_registration"].as_bool().unwrap_or(false) {
-        let chain_id = expected_chain(&status)?;
         let height = status["height"].as_u64().unwrap_or_default();
         let nonce = call("aether_registrationNonce", json!([operator]))?.as_u64().unwrap_or_default();
         let expiry = height.saturating_add(REGISTRATION_TTL);
@@ -2109,12 +2210,71 @@ pub fn prepare_register_node(
     prepare(&p256_public_key, None, |_| Ok(EvmCall { to: Some(aether_execution::registry::REGISTRY), value: U256::ZERO, input, gas_limit: 400_000, delegate: None }))
 }
 
-/// Ask validators in turn until the one running the registrar answers.
-fn registrar_call(params: Value) -> R<Value> {
+/// The chain's registrar signing key, proven under ONE certified state root.
+/// A key learned only from a validator's JSON is never used to encrypt tokens.
+fn authenticated_registrar() -> R<PublicKey> {
+    let pinned = PINNED_REGISTRAR.lock().expect("registrar pin lock").clone()
+        .ok_or_else(|| WalletError::Verification("network.json has no registrar signing-key pin; no DeviceCheck token sent".into()))?;
+    demote_on_failure(|| {
+        let set = trusted_set(validator_count())?;
+        let replies = [call("aether_getStorage", json!([aether_execution::registry::REGISTRY, U256::ZERO]))?,
+            call("aether_getStorage", json!([aether_execution::registry::REGISTRY, U256::from(1)]))?];
+        let height = replies[0]["height"].as_u64().ok_or_else(|| WalletError::Verification("registrar state height missing".into()))?;
+        if replies[1]["height"].as_u64() != Some(height) {
+            return Err(WalletError::Verification("registrar slots came from different blocks; retry registration".into()));
+        }
+        let anchor = anchor(height, &set)?;
+        registrar_from_proofs(&anchor, &replies, Some(&pinned))
+    })
+}
+
+fn registrar_config_pin(value: Option<&Value>) -> R<Option<PublicKey>> {
+    let raw = match value {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(raw)) => raw,
+        Some(_) => return Err(WalletError::Invalid("network.json: registrar must be a P-256 x/y hex signing-key pin".into())),
+    };
+    let bytes = from_hex(raw).map_err(|_| WalletError::Invalid("network.json: invalid registrar signing-key pin".into()))?;
+    if bytes.len() != 64 { return Err(WalletError::Invalid("network.json: registrar pin must be 64 bytes (x/y)".into())); }
+    p256_key(&[&[4u8][..], &bytes].concat()).map(Some)
+        .map_err(|_| WalletError::Invalid("network.json: registrar pin is not a valid P-256 point".into()))
+}
+
+fn registrar_from_proofs(anchor: &VerifiedBlock, replies: &[Value; 2], pinned: Option<&PublicKey>) -> R<PublicKey> {
+    let pinned = pinned.ok_or_else(|| WalletError::Verification("network.json has no registrar signing-key pin; no DeviceCheck token sent".into()))?;
+    let mut sec1 = vec![4u8];
+    for (slot, reply) in replies.iter().enumerate() {
+        let proof: Proof = parse(&reply["proof"], "registrar storage proof")?;
+        let value = aether_light::verify_storage(anchor, &aether_execution::registry::REGISTRY, U256::from(slot), &proof)
+            .map_err(|e| WalletError::Verification(format!("registrar storage proof: {e}")))?;
+        sec1.extend_from_slice(&value.to_be_bytes::<32>());
+    }
+    let proven = p256_key(&sec1).map_err(|_| WalletError::Verification("the authenticated registrar is stopped or invalid".into()))?;
+    if aether_crypto::p256_xy(&proven.bytes).ok() != aether_crypto::p256_xy(&pinned.bytes).ok() {
+        return Err(WalletError::Verification("certified registrar differs from the trusted network.json pin; refresh the trusted config after registrar rotation; no DeviceCheck token sent".into()));
+    }
+    Ok(proven)
+}
+
+fn encrypted_registration_params(token: &str, chain_id: u64, registrar: &PublicKey, descriptor: &aether_net::registrar::EncryptionKey, public_params: &[Value]) -> R<Value> {
+    let recipient = descriptor.authenticate(chain_id, registrar).map_err(WalletError::Verification)?;
+    let json = serde_json::to_vec(public_params).map_err(|_| WalletError::Invalid("registration params".into()))?;
+    let context = aether_net::registrar::request_context(chain_id, "aether_registerDevice", &json);
+    let seed = p256::elliptic_curve::zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
+    let envelope = aether_net::registrar::seal(token, &recipient, &context, &seed, rand::random()).map_err(WalletError::Invalid)?;
+    let mut params = vec![serde_json::to_value(envelope).map_err(|_| WalletError::Invalid("encrypted token".into()))?];
+    params.extend_from_slice(public_params);
+    Ok(Value::Array(params))
+}
+
+/// Ask validators in turn until the one running the registrar answers. Params
+/// may contain only a signed-key discovery or a token ciphertext, never token
+/// plaintext; encryption is complete before this function is entered.
+fn registrar_rpc_call(method: &str, params: Value) -> R<Value> {
     let n = net()?;
     let mut last = WalletError::Network("no registrar reachable".into());
     for _ in 0..8 {
-        match n.rt.block_on(n.client.call("aether_registerDevice", params.clone())) {
+        match n.rt.block_on(n.client.call(method, params.clone())) {
             Ok(v) => return Ok(v),
             Err(e) if e.to_string().contains("does not register devices") => {
                 n.rt.block_on(n.client.rotate());
@@ -2124,6 +2284,69 @@ fn registrar_call(params: Value) -> R<Value> {
         }
     }
     Err(last)
+}
+
+#[cfg(test)]
+mod registration_privacy_tests {
+    use super::*;
+    use aether_crypto::{P256Signer, Signer as _};
+    use aether_net::registrar::{EncryptionKey, RecipientSecret};
+
+    #[test]
+    fn wallet_registration_json_contains_ciphertext_and_requires_the_authenticated_registrar() {
+        let signer = P256Signer::from_seed(&[4; 32]).unwrap();
+        let secret = RecipientSecret::from_seed(&[5; 32]).unwrap();
+        let descriptor = EncryptionKey::signed(7781, &secret.public_key(), |m| signer.sign(m).map_err(|e| e.to_string())).unwrap();
+        let public = vec![json!(Address::repeat_byte(1)), json!("11".repeat(32)), json!("22".repeat(32)), json!(Address::repeat_byte(2)), json!("33".repeat(64))];
+        let token = "PRIVATE_DEVICECHECK_TOKEN_in_the_wallet";
+        let params = encrypted_registration_params(token, 7781, &signer.public_key(), &descriptor, &public).unwrap();
+        let serialized = json!({"jsonrpc":"2.0","id":1,"method":"aether_registerDevice","params":params}).to_string();
+        assert!(!serialized.contains(token));
+        assert!(params[0].is_object());
+        let envelope = serde_json::from_value(params[0].clone()).unwrap();
+        let context = aether_net::registrar::request_context(7781, "aether_registerDevice", &serde_json::to_vec(&public).unwrap());
+        assert_eq!(&**secret.open(&envelope, &context).unwrap(), token);
+        let wrong = P256Signer::from_seed(&[6; 32]).unwrap();
+        assert!(encrypted_registration_params(token, 7781, &wrong.public_key(), &descriptor, &public).is_err());
+        assert!(encrypted_registration_params(token, 7782, &signer.public_key(), &descriptor, &public).is_err());
+    }
+
+    #[test]
+    fn wallet_authenticates_registry_storage_before_encrypting_any_token() {
+        use aether_state::{layout::storage_slot_key, StateRepository as _};
+        let mut state = aether_execution::WorldState::default();
+        let signer = P256Signer::from_seed(&[4; 32]).unwrap();
+        let (x, y) = aether_crypto::p256_xy(&signer.public_key().bytes).unwrap();
+        aether_execution::registry::set_registrar(&mut state, (x, y));
+        let anchor = VerifiedBlock { height: 2, digest: String::new(), timestamp_ms: 1,
+            parent_state_root: state.root(), receipts_root: None, history_root: Default::default() };
+        let repo = state.repo();
+        let replies: [Value; 2] = std::array::from_fn(|slot| {
+            let proof = repo.prove(&[storage_slot_key(repo.hasher(), &aether_execution::registry::REGISTRY, U256::from(slot))]).remove(0);
+            json!({"height":1,"proof":proof})
+        });
+        let pin = signer.public_key();
+        let authenticated = registrar_from_proofs(&anchor, &replies, Some(&pin)).unwrap();
+        assert_eq!(aether_crypto::p256_xy(&authenticated.bytes).unwrap(), (x, y));
+        // An empty anchor has no committed chain ID. A valid proof and a
+        // descriptor signed by another chain's registrar still cannot select
+        // that registrar because the configured signing-key pin must match.
+        let other = P256Signer::from_seed(&[6; 32]).unwrap().public_key();
+        assert!(registrar_from_proofs(&anchor, &replies, Some(&other)).is_err());
+        assert!(registrar_from_proofs(&anchor, &[Value::Null, Value::Null], None).unwrap_err().to_string().contains("no registrar signing-key pin"));
+        assert!(registrar_config_pin(None).unwrap().is_none());
+        assert!(registrar_config_pin(Some(&json!("00".repeat(64)))).is_err());
+        assert!(registrar_config_pin(Some(&json!("not-a-key"))).is_err());
+        let configured = registrar_config_pin(Some(&json!(format!("{}{}", hex_lower(&x), hex_lower(&y))))).unwrap().unwrap();
+        registrar_from_proofs(&anchor, &replies, Some(&configured)).unwrap();
+        let mut corrupted = replies;
+        let mut proof: Proof = serde_json::from_value(corrupted[0]["proof"].clone()).unwrap();
+        proof.value = Some([9; 32]);
+        corrupted[0]["proof"] = serde_json::to_value(proof).unwrap();
+        assert!(registrar_from_proofs(&anchor, &corrupted, Some(&pin)).is_err());
+        let wrong_root = VerifiedBlock { parent_state_root: Default::default(), ..anchor };
+        assert!(registrar_from_proofs(&wrong_root, &corrupted, Some(&pin)).is_err());
+    }
 }
 
 /// Attach a Secure Enclave signature (raw r‖s, 64 bytes) and submit: a signed
@@ -2522,8 +2745,283 @@ mod tests {
         LOCK.lock().expect("test lock")
     }
 
+    #[test]
+    fn native_typed_message_requires_current_delegation_and_deployed_v2_runtime() {
+        use p256::ecdsa::signature::Signer as _;
+        let _g = config();
+        reset_network();
+        *CHAIN_ID.lock().unwrap() = 1;
+        let key = p256::ecdsa::SigningKey::from_slice(&[7u8;32]).unwrap();
+        let public = key.verifying_key().to_sec1_point(true).as_bytes().to_vec();
+        let account = account_address(public.clone()).unwrap();
+        let owner = account.clone();
+        let delegated = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let has_delegation = delegated.clone();
+        let modern = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let has_modern_runtime = modern.clone();
+        let foreign = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let foreign_code = foreign.clone();
+        let node = http_test::RpcFixture::start(move |request| match request["method"].as_str().unwrap() {
+            "aether_status" => json!({"chain_id":1,"base_fee":{"exec":"0","state":"1000000000000","prove":"0"}}),
+            "eth_getBalance" => json!("0xde0b6b3a7640000"),
+            "eth_getTransactionCount" => json!("0x3"),
+            "eth_getCode" if request["params"][0] == json!(owner) => {
+                if foreign_code.load(std::sync::atomic::Ordering::Relaxed) { json!("0xef01000000000000000000000000000000000000000001") }
+                else if has_delegation.load(std::sync::atomic::Ordering::Relaxed) {
+                    json!(alloy_primitives::hex::encode_prefixed([&[0xef,0x01,0x00][..],aether_execution::AETHER_ACCOUNT.as_slice()].concat()))
+                } else { json!("0x") }
+            }
+            "eth_getCode" if request["params"][0] == json!(aether_execution::AETHER_ACCOUNT) => {
+                let code = if has_modern_runtime.load(std::sync::atomic::Ordering::Relaxed) {
+                    aether_execution::aether_account_code_v2()
+                } else { aether_execution::aether_account_code() };
+                json!(alloy_primitives::hex::encode_prefixed(code))
+            }
+            method => panic!("unexpected typed fixture method: {method}"),
+        });
+        use_local_node(Some(node.port));
+        let data = typed_data_tests::mail().to_string();
+        assert!(!account_signing_support(account.clone()).unwrap());
+        assert!(prepare_typed_message(public.clone(), data.clone()).is_err());
+        let migration = prepare_account_redelegation(public.clone()).unwrap();
+        let envelope: TxEnvelope = serde_json::from_str(&migration.envelope_json).unwrap();
+        let TxPayload::Plain(payload) = envelope.payload else { panic!("plain migration"); };
+        let body = EvmCall::decode(&payload).unwrap();
+        assert_eq!(body.to, Some(envelope.header.sender));
+        assert_eq!(body.delegate, Some(aether_execution::AETHER_ACCOUNT));
+        assert!(body.input.is_empty());
+        delegated.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(account_signing_support(account.clone()).unwrap());
+        let prepared = prepare_typed_message(public.clone(), data.clone()).unwrap();
+        assert_eq!(prepared.account, account);
+        assert_eq!(prepared.typed_data_json, typed_data_tests::mail().to_string());
+        let signature: p256::ecdsa::Signature = key.sign(&prepared.signing_message);
+        let packed = attach_typed_signature(data.clone(), 1, account.clone(), signature.to_bytes().to_vec(), public.clone()).unwrap();
+        assert_eq!(alloy_primitives::hex::decode(packed).unwrap().len(), 128);
+        assert!(prepare_account_redelegation(public.clone()).is_ok());
+        foreign.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(!account_signing_support(account.clone()).unwrap());
+        assert!(prepare_account_redelegation(public.clone()).is_err());
+        foreign.store(false, std::sync::atomic::Ordering::Relaxed);
+        modern.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(!account_signing_support(account.clone()).unwrap());
+        assert!(prepare_account_redelegation(public.clone()).is_err());
+        assert!(attach_typed_signature(data, 1, account, signature.to_bytes().to_vec(), public).is_err());
+        use_local_node(None);
+        reset_network();
+    }
+
+    #[test]
+    fn dapp_transaction_preserves_the_simulated_gas_and_reconfirms_quoted_fees() {
+        let _g = config();
+        reset_network();
+        let key = p256::ecdsa::SigningKey::from_slice(&[7u8;32]).unwrap();
+        let public = key.verifying_key().to_sec1_point(true).as_bytes().to_vec();
+        let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let node_busy = busy.clone();
+        let node = http_test::RpcFixture::start(move |request| match request["method"].as_str().unwrap() {
+            "aether_status" => json!({"chain_id":7777,"base_fee":{
+                "exec":if node_busy.load(std::sync::atomic::Ordering::Relaxed) { "2000000000" } else { "0" },
+                "state":"0","prove":"0"}}),
+            "eth_getBalance" => json!("0xde0b6b3a7640000"),
+            "eth_getTransactionCount" => json!("0x3"),
+            method => panic!("unexpected dapp fixture method: {method}"),
+        });
+        use_local_node(Some(node.port));
+        let to = Address::repeat_byte(0x42).to_checksum(None);
+        let quote = dapp_transaction_quote(to.clone(), "0".into(), "0x".into(), 70_000).unwrap();
+        let prepared = prepare_dapp_transaction(public.clone(), to.clone(), "0".into(), "0x".into(), 70_000, Some(quote.fee_wei.clone())).unwrap();
+        let envelope: TxEnvelope = serde_json::from_str(&prepared.envelope_json).unwrap();
+        assert_eq!(envelope.header.gas.exec, 70_000);
+        let TxPayload::Plain(payload) = envelope.payload else { panic!("plain dapp transaction"); };
+        assert_eq!(EvmCall::decode(&payload).unwrap().gas_limit, 70_000);
+        busy.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(prepare_dapp_transaction(public.clone(), to.clone(), "0".into(), "0x".into(), 70_000, Some(quote.fee_wei)), Err(WalletError::FeeChanged(_))));
+        let current = dapp_transaction_quote(to.clone(), "0".into(), "0x".into(), 70_000).unwrap();
+        assert!(prepare_dapp_transaction(public.clone(), to.clone(), "0".into(), "0x".into(), 70_000, Some(current.fee_wei)).is_ok());
+        assert!(prepare_dapp_transaction(public, to, "0".into(), "0x".into(), 10_000_001, None).is_err());
+        use_local_node(None);
+        reset_network();
+    }
+
+    #[test]
+    fn account_redelegation_pins_the_runtime_and_preserves_the_account() {
+        let account = Address::repeat_byte(0x42);
+        let implementation =
+            alloy_primitives::hex::encode_prefixed(aether_execution::aether_account_code_v2());
+        let call = typed_wallet::redelegation_call(account, 7801, "0x", &implementation).unwrap();
+        assert_eq!(call.to, Some(account));
+        assert_eq!(call.delegate, Some(aether_execution::AETHER_ACCOUNT));
+        assert_eq!(call.value, U256::ZERO);
+        assert!(call.input.is_empty());
+        assert_eq!(call.gas_limit, 100_000);
+        assert!(typed_wallet::redelegation_call(account, 7780, "0x", &implementation).is_err());
+        assert!(typed_wallet::redelegation_call(account, 7801, "0x", "0x6000").is_err());
+        assert!(typed_wallet::redelegation_call(account, 7801, "0x6000", &implementation).is_err());
+        assert!(typed_wallet::redelegation_call(
+            account,
+            7801,
+            "0xef01000000000000000000000000000000000000000001",
+            &implementation
+        )
+        .is_err());
+        let canonical = alloy_primitives::hex::encode_prefixed(
+            [
+                &[0xef, 0x01, 0x00][..],
+                aether_execution::AETHER_ACCOUNT.as_slice(),
+            ]
+            .concat(),
+        );
+        assert!(typed_wallet::redelegation_call(account, 7801, &canonical, &implementation).is_ok());
+    }
+
+    fn simulation_reply(success: bool, gas: u64) -> Value {
+        json!({"success":success,"gasUsed":format!("0x{gas:x}"),"output":"0x",
+            "failureReason":if success { Value::Null } else { json!("Execution reverted.") },
+            "nativeChanges":[],"tokenChanges":[],"measuredTokens":[],"tokenCoverageComplete":true,"logs":[]})
+    }
+
+    #[test]
+    fn dapp_simulation_uses_wallet_transport_sender_value_and_exact_resolved_gas() {
+        let _g = config();
+        reset_network();
+        let key = p256::ecdsa::SigningKey::from_slice(&[7u8;32]).unwrap();
+        let public = key.verifying_key().to_sec1_point(true).as_bytes().to_vec();
+        let from: Address = account_address(public.clone()).unwrap().parse().unwrap();
+        let recipient = Address::repeat_byte(0x42);
+        let code = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let has_code = code.clone();
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let node = http_test::RpcFixture::start(move |request| {
+            seen.lock().unwrap().push(request.clone());
+            let method = request["method"].as_str().unwrap();
+            match method {
+                "aether_status" => json!({"chain_id":7777}),
+                "eth_getCode" => json!(if has_code.load(std::sync::atomic::Ordering::Relaxed) { "0x6000" } else { "0x" }),
+                "eth_call" => json!("0x"),
+                "eth_estimateGas" => request["params"][0]["gas"].clone(),
+                "aether_simulateTransaction" => {
+                    let gas = u64::from_str_radix(request["params"][0]["gas"].as_str().unwrap().trim_start_matches("0x"),16).unwrap();
+                    simulation_reply(true,gas)
+                }
+                method => panic!("unexpected simulation fixture method: {method}"),
+            }
+        });
+        use_local_node(Some(node.port));
+        let result = simulate_dapp_transaction(public.clone(), recipient.to_checksum(None), "17".into(), "0x".into(), 0).unwrap();
+        assert_eq!(result.gas_limit,21_000);
+        assert_eq!(serde_json::from_str::<Value>(&result.result_json).unwrap()["success"],true);
+        code.store(true,std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(simulate_dapp_transaction(public.clone(), recipient.to_checksum(None), "17".into(), "0x".into(), 0).unwrap().gas_limit,100_000);
+        assert_eq!(simulate_dapp_transaction(public.clone(), recipient.to_checksum(None), "17".into(), "0x".into(), 70_000).unwrap().gas_limit,70_000);
+        assert_eq!(simulate_dapp_transaction(public.clone(), "".into(), "17".into(), "0x6000".into(), 0).unwrap().gas_limit,3_000_000);
+        assert!(simulate_dapp_transaction(public.clone(), recipient.to_checksum(None), "17".into(), "0x".into(), 10_000_001).is_err());
+        assert!(simulate_dapp_transaction(public, recipient.to_checksum(None), "17".into(), format!("0x{}","00".repeat(65_537)),21_000).is_err());
+        let seen = requests.lock().unwrap();
+        assert_eq!(seen.iter().filter(|request| request["method"] == "eth_getCode").count(),2);
+        for request in seen.iter().filter(|request| matches!(request["method"].as_str(),Some("eth_call"|"eth_estimateGas"|"aether_simulateTransaction"))) {
+            let body = &request["params"][0];
+            assert_eq!(body["from"].as_str().unwrap().parse::<Address>().unwrap(),from);
+            assert_eq!(body["value"],"0x11");
+            assert!(matches!(body["gas"].as_str().unwrap(),"0x5208"|"0x186a0"|"0x11170"|"0x2dc6c0"));
+            if body["gas"] == "0x2dc6c0" {
+                assert!(body.get("to").is_none());
+                assert_eq!(body["data"],"0x6000");
+            } else {
+                assert_eq!(body["to"].as_str().unwrap().parse::<Address>().unwrap(),recipient);
+                assert_eq!(body["data"],"0x");
+            }
+            assert_eq!(request["params"][1],"latest");
+        }
+        use_local_node(None);
+        reset_network();
+    }
+
+    #[test]
+    fn dapp_simulation_separates_revert_from_malformed_transport_and_inconsistent_results() {
+        let _g = config();
+        reset_network();
+        let key = p256::ecdsa::SigningKey::from_slice(&[7u8;32]).unwrap();
+        let public = key.verifying_key().to_sec1_point(true).as_bytes().to_vec();
+        let mode = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let scenario = mode.clone();
+        let node = http_test::RpcFixture::start_reply(move |request| {
+            let mode = scenario.load(std::sync::atomic::Ordering::Relaxed);
+            match request["method"].as_str().unwrap() {
+                "aether_status" => Ok(json!({"chain_id":7777})),
+                "eth_getCode" if mode == 8 => Ok(json!("not bytecode")),
+                "eth_getCode" => Ok(json!("0x6000")),
+                "eth_call" if mode == 1 => Err((3,"execution reverted: 0x".into())),
+                "eth_call" if mode == 2 => Err((-32602,"from is not an address".into())),
+                "eth_call" if mode == 3 => Ok(json!(123)),
+                "eth_call" if mode == 4 => Err((3,"execution reverted: broken".into())),
+                "eth_call" if mode == 9 => Err((-32002,"server busy; retry shortly".into())),
+                "eth_call" => Ok(json!("0x")),
+                "aether_simulateTransaction" if mode == 10 => Ok(json!({"success":true})),
+                "aether_simulateTransaction" if mode == 11 => Ok(simulation_reply(true,80_000)),
+                "aether_simulateTransaction" => Ok(simulation_reply(mode != 1 && mode != 5,21_000)),
+                "eth_estimateGas" if mode == 1 => Err((3,"Execution reverted.".into())),
+                "eth_estimateGas" if mode == 6 => Ok(json!("0x186a1")),
+                "eth_estimateGas" if mode == 7 => Err((-32602,"invalid call parameters".into())),
+                "eth_estimateGas" => Ok(json!("0x5208")),
+                method => panic!("unexpected simulation scenario method: {method}"),
+            }
+        });
+        let port = node.port;
+        use_local_node(Some(port));
+        let to = Address::repeat_byte(0x42).to_checksum(None);
+        assert!(simulate_dapp_transaction(public.clone(),to.clone(),"0".into(),"0x".into(),0).is_ok());
+        mode.store(1,std::sync::atomic::Ordering::Relaxed);
+        let reverted = simulate_dapp_transaction(public.clone(),to.clone(),"0".into(),"0x".into(),0).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&reverted.result_json).unwrap()["success"],false);
+        for scenario in [2,3,4,5,6,7,8,9,10] {
+            mode.store(scenario,std::sync::atomic::Ordering::Relaxed);
+            assert!(simulate_dapp_transaction(public.clone(),to.clone(),"0".into(),"0x".into(),0).is_err(),"scenario {scenario} must not become an overridable revert");
+        }
+        mode.store(11,std::sync::atomic::Ordering::Relaxed);
+        assert!(simulate_dapp_transaction(public.clone(),to.clone(),"0".into(),"0x".into(),0).is_ok(),"estimated gas is advisory for gasleft-dependent contracts");
+        drop(node);
+        assert!(matches!(simulate_dapp_transaction(public,to,"0".into(),"0x".into(),0),Err(WalletError::Network(_))));
+        use_local_node(None);
+        reset_network();
+    }
+
+    #[test]
+    fn dapp_simulation_refuses_wrong_chain_and_changed_network_context() {
+        let _g = config();
+        reset_network();
+        let key = p256::ecdsa::SigningKey::from_slice(&[7u8;32]).unwrap();
+        let public = key.verifying_key().to_sec1_point(true).as_bytes().to_vec();
+        let chain = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(7777));
+        let reported = chain.clone();
+        let change = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let changed_context = change.clone();
+        let node = http_test::RpcFixture::start(move |request| match request["method"].as_str().unwrap() {
+            "aether_status" => json!({"chain_id":reported.load(std::sync::atomic::Ordering::Relaxed)}),
+            "eth_call" => json!("0x"),
+            "eth_estimateGas" => json!("0x5208"),
+            "aether_simulateTransaction" => {
+                if changed_context.load(std::sync::atomic::Ordering::Relaxed) { NETWORK_GENERATION.fetch_add(1,std::sync::atomic::Ordering::SeqCst); }
+                simulation_reply(true,21_000)
+            }
+            method => panic!("unexpected simulation context method: {method}"),
+        });
+        use_local_node(Some(node.port));
+        let to = Address::repeat_byte(0x42).to_checksum(None);
+        assert!(simulate_dapp_transaction(public.clone(),to.clone(),"0".into(),"0x".into(),21_000).is_ok());
+        chain.store(7778,std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(simulate_dapp_transaction(public.clone(),to.clone(),"0".into(),"0x".into(),21_000),Err(WalletError::Verification(_))));
+        chain.store(7777,std::sync::atomic::Ordering::Relaxed);
+        change.store(true,std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(simulate_dapp_transaction(public,to,"0".into(),"0x".into(),21_000),Err(WalletError::Verification(_))));
+        use_local_node(None);
+        reset_network();
+    }
+
     fn reset_network() {
         *COMMITTEE.lock().expect("committee lock") = None;
+        *PINNED_REGISTRAR.lock().expect("registrar pin lock") = None;
         *GROUP.lock().expect("group lock") = 0;
         DEVNET_KEYS.store(false, std::sync::atomic::Ordering::Relaxed);
         *CHAIN_ID.lock().expect("chain id lock") = 7_777;

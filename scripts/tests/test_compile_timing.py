@@ -45,6 +45,26 @@ class CompileTiming(unittest.TestCase):
             with patch.dict(os.environ, {'AETHER_REMOTE_GUARD_ACTIVE': '0'}):
                 self.assertFalse(gate.remote_guarded(approved))
 
+    def test_shell_and_command_callers_reuse_the_same_live_ancestor_slot(self):
+        scripts = self.root / 'scripts'
+        scripts.mkdir()
+        directory = self.root / 'compile-sem/slot-1'
+        directory.mkdir(parents=True)
+        wrapper = scripts / 'compile-gate.sh'
+        source = (ROOT / 'scripts/compile-gate.sh').read_text()
+        wrapper.write_text(source.replace('gate_dir="$HOME/.claude/playbooks/aether-team"',
+                                          'gate_dir="$root"'))
+        fixture_gate = self.root / 'wait-compile.sh'
+        fixture_gate.write_text('#!/bin/bash\necho unexpected second slot >&2\nexit 99\n')
+        fixture_gate.chmod(0o755)
+        command = '''printf '%s\\n' "$$" > compile-sem/slot-1/pid
+pwd -P > compile-sem/slot-1/worktree
+bash scripts/compile-gate.sh && bash scripts/compile-gate.sh /bin/bash -c 'test "$AETHER_COMPILE_GATE_HELD" = 1'
+'''
+        result = subprocess.run(['/bin/bash', '-c', command], cwd=self.root,
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def run_gate(self, script, timeout):
         fixture = self.root / 'gate'
         fixture.write_text('#!/bin/bash\n' + script)

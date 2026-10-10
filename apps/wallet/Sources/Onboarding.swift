@@ -19,6 +19,8 @@ enum Terms {
         return ["ja": notice, "zh-Hans": notice, "zh-Hant": notice][AppLanguage.identifier]
     }
 
+    static let privacyURL = URL(string: "https://eastsea.xyz/privacy")!
+    static let privacyContactURL = URL(string: "mailto:privacy@eastsea.xyz")!
 }
 
 /// The chain's voting-set rules, as shown to the user (registry params and
@@ -51,11 +53,11 @@ private struct Bullet: View {
     let text: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
             Image(systemName: icon).foregroundStyle(Color.aether).frame(width: 20)
-            Text(text).fixedSize(horizontal: false, vertical: true)
+            Text(text).fixedSize(horizontal: false, vertical: true).lineSpacing(DesignTokens.Space.s1)
         }
-        .font(.callout)
+        .font(.aeBody)
     }
 }
 
@@ -66,16 +68,21 @@ struct TermsSheet: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
                 if useDevelopmentNetwork {
                     Text("Dev network · 127.0.0.1")
-                        .font(.caption.bold()).foregroundStyle(.orange)
+                        .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
                 }
-                Image(systemName: "exclamationmark.shield.fill").font(.system(size: 34)).foregroundStyle(Color.warn)
-                Text("Before you use \(Brand.name)").font(.title2.bold())
+                HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
+                    EastSeaDawnMark().frame(width: 40, height: 40)
+                    Text("Before you use \(Brand.name)").font(DesignTokens.TypeScale.title2.font)
+                }
                 if let notice = Terms.referenceNotice {
-                    Text(notice).font(.caption).foregroundStyle(.secondary)
+                    Text(notice).font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                         .fixedSize(horizontal: false, vertical: true)
+                        .padding(DesignTokens.Space.s3)
+                        .background(DesignTokens.Palette.surfaceSunken.color,
+                                    in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
                 }
                 Bullet(icon: "hammer", text: Terms.isTestnet
                        ? String(localized: "\(Brand.name) is built for production. Mainnet has not launched yet; the network running today is the public testnet, and its \(Brand.networkCoinTicker) does not carry over. It is provided as is, without warranty, and has not had an independent security audit yet.", bundle: Terms.legalBundle, locale: Terms.legalLocale)
@@ -83,21 +90,26 @@ struct TermsSheet: View {
                 Bullet(icon: "chart.line.uptrend.xyaxis", text: String(localized: "There is no token sale. The value of \(Brand.networkCoinTicker) is set by the market; nothing here promises a price, a return, a listing or a way to cash out.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
                 Bullet(icon: "person.fill.checkmark", text: String(localized: "You use \(Brand.name), and run its node, at your own risk and responsibility, including power and hardware costs, taxes, and following the laws where you live.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
                 Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule(locale: Terms.legalLocale, bundle: Terms.legalBundle))
-                Bullet(icon: "network", text: String(localized: "Running \(Brand.name) shows your IP address to other nodes and the public DHT. Joining as a voting node sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks it with Apple. Addresses and transactions are public on chain.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
+                Bullet(icon: "network", text: String(localized: "Private keys stay on this device. Addresses, balances, transactions, rewards and registration records are public on chain indefinitely, even after you stop using the app.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
+                Bullet(icon: "iphone.and.arrow.forward", text: String(localized: "Joining encrypts a DeviceCheck token to Pipln's registrar; only it can decrypt it and send it to Apple (USA), at registration and for daily checks. The registrar keeps the voting key, operator and beacon addresses, node ID and registration time without automatic expiry.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
+                Bullet(icon: "globe", text: String(localized: "Peers and relays see connection IP addresses; RPC nodes see queried addresses. Cloudflare hosts the site and gateway; GitHub receives update requests made by Sparkle, including IP address and app version. Contact privacy support to delete removable service data; public chain copies cannot be recalled.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
                 Bullet(icon: "key.fill", text: String(localized: "Your key stays on this device. If you lose the device and have not set up a recovery key, nobody can restore the account.", bundle: Terms.legalBundle, locale: Terms.legalLocale))
-                Link("Read the full terms and disclaimer", destination: Terms.disclaimerURL).font(.callout)
+                Link("Read the full terms and disclaimer", destination: Terms.disclaimerURL).font(.aeFootnote)
+                Link("Read the privacy policy", destination: Terms.privacyURL).font(.aeFootnote)
+                Link("Contact privacy support", destination: Terms.privacyContactURL).font(.aeFootnote)
                 HStack {
                     #if os(macOS)
-                    Button("Quit") { NSApp.terminate(nil) }
+                    Button("Quit") { NSApp.terminate(nil) }.buttonStyle(EastSeaQuietButtonStyle())
                     #endif
                     Spacer()
-                    Button("I understand and agree", action: accept).buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    Button("I understand and agree", action: accept).buttonStyle(EastSeaPrimaryButtonStyle()).keyboardShortcut(.defaultAction)
                 }
-                .padding(.top, 4)
+                .padding(.top, DesignTokens.Space.s1)
             }
-            .padding(24)
+            .padding(DesignTokens.Space.s6)
         }
         .macMinSize(width: 440, height: 460)
+        .eastSeaSheet()
         .interactiveDismissDisabled()
     }
 }
@@ -109,23 +121,82 @@ struct VotingNodeInvite: View {
     let later: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Image(systemName: "person.badge.plus").font(.system(size: 30)).foregroundStyle(Color.aether)
-            Text("Join the network as a voting node?").font(.title3.bold())
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+            HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
+                EastSeaDawnMark().frame(width: 40, height: 40)
+                Text("Join the network as a voting node?").font(.aeTitle)
+            }
             Bullet(icon: "clock", text: String(localized: "Your Mac proves it is online every hour. After \(VotingRules.minStreakEpochs) hours in a row it can be drawn to sign blocks."))
             Bullet(icon: "bolt", text: String(localized: "Keep \(Brand.name) running. A signing Mac that goes offline hands its seat to the next one. It uses some network, CPU and power."))
-            Bullet(icon: "iphone.and.arrow.forward", text: String(localized: "Registration sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks with Apple that this is a real Mac: one Mac, one voting node. Touch ID signs it."))
+            Bullet(icon: "iphone.and.arrow.forward", text: String(localized: "Joining encrypts a DeviceCheck token to Pipln's registrar; only it can decrypt it and send it to Apple (USA), at registration and for daily checks. The registrar keeps the voting key, operator and beacon addresses, node ID and registration time without automatic expiry."))
+            Bullet(icon: "network", text: String(localized: "Private keys stay on this device. Addresses, balances, transactions, rewards and registration records are public on chain indefinitely, even after you stop using the app."))
+            Link("Read the privacy policy", destination: Terms.privacyURL).font(.callout)
             Bullet(icon: "person.3.fill", text: VotingRules.mainnetRewardsRule)
             Bullet(icon: "person.fill.checkmark", text: String(localized: "Running a voting node is your choice and your responsibility. You can turn the node off anytime."))
             HStack {
-                Button("Not now", action: later)
+                Button("Not now", action: later).buttonStyle(EastSeaQuietButtonStyle())
                 Spacer()
-                Button(action: join) { Label("Join", systemImage: "touchid") }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                Button(action: join) { Label("Join", systemImage: "touchid") }.buttonStyle(EastSeaPrimaryButtonStyle()).keyboardShortcut(.defaultAction)
             }
-            .padding(.top, 4)
+            .padding(.top, DesignTokens.Space.s1)
         }
-        .padding(24)
+        .padding(DesignTokens.Space.s6)
         .frame(width: 440)
+        .eastSeaSheet()
+    }
+}
+#endif
+
+#if os(macOS)
+/// Country permission comes only from an explicit Share country action.
+/// The legacy mode argument remains compatible with isolated screen fixtures.
+struct CountryNoticeSheet: View {
+    @EnvironmentObject private var node: NodeController
+    @State private var country: String
+
+    init(mode _: PresenceCountry.Mode = PresenceCountry.mode, country: String) {
+        _country = State(initialValue: PresenceCountry.normalize(country)
+                         ?? PresenceCountry.suggestedCountry(region: Locale.current.region?.identifier))
+    }
+
+    private var countryLocale: Locale {
+        Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en")
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Image(systemName: "globe").font(.system(size: 30)).foregroundStyle(Color.aether)
+                Text("Country sharing").font(.title2.bold())
+                Text("Your Mac's Region setting chooses a UN M49 sub-region by default. Country sharing is off until you choose Share country.")
+                LabeledContent("Default sub-region", value: node.presenceDefaultRegionLabel)
+                Text("Choose whether to share a country. Declining keeps all wallet and node features available.")
+                Picker("Country", selection: $country) {
+                    Text("Choose a country").tag("")
+                    ForEach(PresenceCountry.codes, id: \.self) { code in
+                        Text(verbatim: countryLocale.localizedString(forRegionCode: code) ?? code).tag(code)
+                    }
+                }
+                Text("Your chosen country stays on this Mac and can select its M49 sub-region. Public presence publishes only thresholded regional observations, not country codes or individual Macs. Turning country sharing off restores the default sub-region; already received aggregates may remain.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("Don't share country") { answer(sharing: false) }
+                    Spacer()
+                    Button("Share country") { answer(sharing: true) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(PresenceCountry.normalize(country) == nil)
+                }
+            }
+            .font(.callout)
+            .padding(24)
+        }
+        .frame(width: 480)
+        .interactiveDismissDisabled()
+    }
+
+    private func answer(sharing: Bool) {
+        node.answerPresenceCountry(sharing: sharing, country: country)
     }
 }
 #endif

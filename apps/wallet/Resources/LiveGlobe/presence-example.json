@@ -1,0 +1,110 @@
+{
+  "schema_version": 3,
+  "scope": "node",
+  "total": 24,
+  "roles": {
+    "validator": {
+      "count": 6
+    },
+    "wallet": {
+      "count": 0
+    },
+    "candidate": {
+      "count": 3
+    },
+    "follower": {
+      "count": 15
+    }
+  },
+  "versions": {
+    "0.7.4": 21,
+    "0.7.3": 3
+  },
+  "reserve_keys": {
+    "standby": 0,
+    "seated": 0
+  },
+  "regions": [
+    {
+      "continent": "asia",
+      "country": "KR",
+      "count": 6,
+      "quality": {
+        "score_sum": 1380000,
+        "histogram": [0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      }
+    },
+    {
+      "continent": "asia",
+      "count": 3,
+      "quality": {
+        "score_sum": 660000,
+        "histogram": [0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      }
+    },
+    {
+      "continent": "europe",
+      "country": "DE",
+      "count": 3,
+      "quality": {
+        "score_sum": 900000,
+        "histogram": [0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      }
+    },
+    {
+      "continent": "europe",
+      "count": 3,
+      "quality": {
+        "score_sum": 1140000,
+        "histogram": [0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      }
+    },
+    {
+      "continent": "north_america",
+      "count": 6,
+      "quality": {
+        "score_sum": 3300000,
+        "histogram": [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0]
+      }
+    },
+    {
+      "continent": "south_america",
+      "count": 1,
+      "quality": {
+        "score_sum": 480000,
+        "histogram": [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      }
+    },
+    {
+      "continent": "oceania",
+      "count": 1,
+      "quality": {
+        "score_sum": 560000,
+        "histogram": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+      }
+    },
+    {
+      "continent": "unknown",
+      "count": 1,
+      "quality": {
+        "score_sum": 640000,
+        "histogram": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+      }
+    }
+  ],
+  "recent_blocks": [
+    {
+      "height": 184231,
+      "continent": "asia"
+    },
+    {
+      "height": 184232,
+      "continent": "europe"
+    },
+    {
+      "height": 184233,
+      "continent": "north_america"
+    }
+  ],
+  "quality_version": 1
+}

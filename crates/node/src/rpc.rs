@@ -1,4 +1,4 @@
-//! JSON-RPC 2.0 over HTTP (POST /). Serves the finalized state.
+//! JSON-RPC 2.0 over HTTP (POST /) and WebSocket (GET / or /ws).
 //!
 //! `aether_getAccount` returns an EIP-7864 Merkle proof so clients can verify
 //! balances against the state root instead of trusting this server.
@@ -28,6 +28,9 @@ pub type Marshal = commonware_consensus::marshal::core::Mailbox<crate::key_bindi
 #[derive(Clone)]
 pub struct RpcState {
     pub chain: Chain,
+    /// Verified app content for the local wallet. Public peers use the separate
+    /// opt-in aether/apps/1 seeder; they cannot trigger cache downloads.
+    pub app_bundles: Option<Arc<crate::app_bundle::Service>>,
     /// Source of finalized blocks and certificates for light clients.
     pub finality: Finality,
     /// Accepted txs are forwarded here for p2p gossip.
@@ -54,6 +57,8 @@ pub struct RpcState {
     /// write, node-local and heavy method is refused, and the caps below apply.
     /// The bind stays loopback either way — exposure goes through a tunnel.
     pub public_read_only: bool,
+    /// This endpoint's ephemeral signed presence and current iroh connections.
+    pub presence: Option<Arc<crate::presence::Presence>>,
 }
 
 /// What the public read-only gateway lets through `handle_value`: exactly the
@@ -62,20 +67,29 @@ pub struct RpcState {
 /// registration, snapshots, shards, era chunks — is refused, so a gateway can
 /// never relay a transaction or trigger node-side work.
 const PUBLIC_READ_METHODS: &[&str] = &[
+    "aether_presence",
     "aether_status",
+    "aether_restartSlot",
     "aether_recentBlocks",
     "aether_candidates",
     "aether_proverStatus",
     "aether_getBlock",
     "aether_getReceipt",
+    "aether_getReceiptProof",
     "aether_getAccount",
+    "aether_getStorage",
+    "aether_getCodeHash",
     "aether_getFinalized",
+    "aether_readPeers",
+    "aether_presence",
     "aether_history",
     "aether_historyProof",
     "aether_eraInfo",
     "aether_eraProof",
     "aether_rewards",
     "aether_accountHistory",
+    "aether_search",
+    "aether_searchInfo",
     "eth_blockNumber",
     "eth_call",
     "eth_getLogs",
@@ -287,7 +301,8 @@ pub fn blake3_hex(b: &[u8]) -> String {
 
 pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
     // Loopback only; any origin may ask (web pages and dApps read through this
-    // node; every write still needs the user's signature in the wallet).
+    // node; chain writes still need a wallet signature). Privacy settings
+    // additionally refuse browser origins and public iroh streams.
     // The public read-only gateway is no exception: it binds loopback too and
     // reaches the internet only through a cloudflared tunnel
     // (docs/ops/read-gateway.md). Refusing a non-loopback bind here beats
@@ -299,11 +314,24 @@ pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
             format!("--public-read-only binds loopback only (asked for {addr}); expose it through a tunnel, docs/ops/read-gateway.md"),
         ));
     }
+    if !addr.ip().is_loopback() {
+        if let Some(p) = &state.presence { p.disable_country_settings(); }
+    }
+    let app = http_router(state);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await
+}
+
+/// Production HTTP routes, shared with header/privacy regression tests.
+pub fn http_router(state: RpcState) -> Router {
+    let public = state.public_read_only;
     let cors = tower_http::cors::CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
         .allow_methods([axum::http::Method::POST, axum::http::Method::GET, axum::http::Method::OPTIONS])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
-    let mut app = Router::new().route("/", post(handle));
+    let mut app = Router::new()
+        .route("/", post(handle).get(crate::rpc_push::upgrade))
+        .route("/ws", get(crate::rpc_push::upgrade));
     if !public {
         // Era files as plain GETs (roadmap B6): the same bytes `aether_eraChunk`
         // hands out hex-encoded, for torrent webseeds and curl — a node's own
@@ -318,18 +346,155 @@ pub async fn serve(addr: SocketAddr, state: RpcState) -> std::io::Result<()> {
     // The public gateway also caps what one request may make this node parse:
     // an oversized Content-Length is refused at the head, with a 413 the asker
     // can read; DefaultBodyLimit backstops a chunked or lying body.
-    let app = if public {
+    if public {
         app.layer(axum::extract::DefaultBodyLimit::max(PUBLIC_MAX_BODY))
             .layer(axum::middleware::from_fn(public_body_cap))
     } else {
         app
-    };
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await
+    }
 }
 
-async fn handle(State(st): State<RpcState>, Json(req): Json<Value>) -> Json<Value> {
-    Json(handle_value(&st, req).await)
+/// REL-23: compression is an optional HTTP representation of successful
+/// reads. The RPC handler, request caps and transport-independent replies
+/// remain shared with QUIC; byte transfers never enter this path.
+async fn handle(State(st): State<RpcState>, headers: axum::http::HeaderMap, Json(req): Json<Value>) -> axum::response::Response {
+    use axum::body::HttpBody as _;
+    use axum::http::header;
+    use axum::response::IntoResponse as _;
+    let (accepts_zstd, accepts_identity) = response_encodings(&headers);
+    let read = compressible_read(&req);
+    if !accepts_identity && (!accepts_zstd || !read) {
+        return encoding_unavailable();
+    }
+    let browser = headers.contains_key(axum::http::header::ORIGIN) || headers.contains_key("sec-fetch-site");
+    let answer = handle_value_with_context(&st, req, !browser).await;
+    drop(st);
+    let success = match &answer {
+        Value::Array(entries) => !entries.is_empty() && entries.iter().all(|v| v.get("result").is_some()),
+        _ => answer.get("result").is_some(),
+    };
+    let mut response = Json(answer).into_response();
+    // This header also belongs on the identity answer and busy-budget
+    // fallback: the representation depends on Accept-Encoding either way.
+    response.headers_mut().append(header::VARY, header::HeaderValue::from_static("Accept-Encoding"));
+    let size = response.body().size_hint().exact().unwrap_or(0);
+    let work = (read && success && accepts_zstd && (RPC_COMPRESS_MIN..=RPC_COMPRESS_MAX).contains(&size))
+        .then(|| BudgetSlot::acquire(&RPC_COMPRESSIONS, MAX_RPC_COMPRESSIONS)).flatten();
+    let Some(work) = work else {
+        return if accepts_identity { response } else { encoding_unavailable() };
+    };
+    let (parts, body) = response.into_parts();
+    let raw = match axum::body::to_bytes(body, RPC_COMPRESS_MAX as usize).await {
+        Ok(raw) => raw,
+        Err(_) => return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    // Bytes clones share the already serialized body. Only the bounded
+    // output buffer is new; preserve raw for a failed worker or no size win.
+    let input = raw.clone();
+    let compressed = tokio::task::spawn_blocking(move || {
+        // A blocking job survives a cancelled handler, so its permit must
+        // stay inside that job until zstd finishes (like eth_call's budget).
+        let _held = work;
+        compress_rpc_bytes(&input).ok()
+    }).await.ok().flatten();
+    let (body, encoded) = match compressed {
+        Some(body) => (bytes::Bytes::from(body), true),
+        None if accepts_identity => (raw, false),
+        None => return encoding_unavailable(),
+    };
+    let len = body.len();
+    let mut response = axum::response::Response::from_parts(parts, axum::body::Body::from(body));
+    response.headers_mut().insert(header::CONTENT_LENGTH, header::HeaderValue::from(len));
+    if encoded {
+        response.headers_mut().insert(header::CONTENT_ENCODING, header::HeaderValue::from_static("zstd"));
+    }
+    response
+}
+
+const RPC_COMPRESS_MIN: u64 = 16 << 10;
+const RPC_COMPRESS_MAX: u64 = 8 << 20;
+const MAX_RPC_COMPRESSIONS: usize = 2;
+static RPC_COMPRESSIONS: AtomicUsize = AtomicUsize::new(0);
+
+fn compress_rpc_bytes(raw: &[u8]) -> std::io::Result<Vec<u8>> {
+    // The destination is strictly smaller than the identity representation;
+    // incompressible data simply fails into the identity fallback. Level 1,
+    // a 1 MiB window and two jobs bound compression memory and CPU work.
+    let mut out = vec![0u8; raw.len().saturating_sub(1)];
+    let mut compressor = zstd::bulk::Compressor::new(1)?;
+    compressor.set_parameter(zstd::zstd_safe::CParameter::WindowLog(20))?;
+    let len = compressor.compress_to_buffer(raw, &mut out[..])?;
+    out.truncate(len);
+    out.shrink_to_fit();
+    Ok(out)
+}
+
+/// Only known reads may spend the compression budget. Encoded era,
+/// snapshot, shard and prover-program transfers are intentionally excluded.
+fn compressible_read(req: &Value) -> bool {
+    let one = |req: &Value| {
+        let Some(method) = req.get("method").and_then(Value::as_str) else { return false };
+        let method = normalize_method(method);
+        PUBLIC_READ_METHODS.contains(&method.as_ref()) || matches!(method.as_ref(),
+            "aether_network" | "aether_rotation" | "aether_handoff" | "aether_registrationNonce" |
+            "aether_getReceiptProof" | "aether_getStorage" | "aether_getCodeHash" | "aether_releaseEntries" |
+            "aether_rewardStatus" | "aether_rewardsPage" | "aether_shardStats" |
+            "eth_chainId" | "eth_getBalance" | "eth_getTransactionCount" | "eth_getCode")
+    };
+    match req {
+        Value::Array(entries) => !entries.is_empty() && entries.iter().all(one),
+        _ => one(req),
+    }
+}
+
+/// Explicit coding preferences override `*`, including q=0. A caller can
+/// prefer identity explicitly; without that preference, a nonzero zstd
+/// quality opts into compression. Missing/invalid support keeps identity.
+fn response_encodings(headers: &axum::http::HeaderMap) -> (bool, bool) {
+    let (mut zstd, mut identity, mut wildcard): (Option<u16>, Option<u16>, Option<u16>) = (None, None, None);
+    for header in headers.get_all(axum::http::header::ACCEPT_ENCODING) {
+        let Ok(header) = header.to_str() else { continue };
+        for item in header.split(',') {
+            let mut parts = item.trim().split(';');
+            let coding = parts.next().unwrap_or_default().trim();
+            let quality = match parts.next() {
+                None => 1000,
+                Some(parameter) if parts.next().is_none() => match parameter.trim().split_once('=') {
+                    Some((name, value)) if name.trim().eq_ignore_ascii_case("q") => encoding_quality(value.trim()).unwrap_or(0),
+                    _ => 0,
+                },
+                _ => 0,
+            };
+            let entry = if coding.eq_ignore_ascii_case("zstd") { &mut zstd }
+                else if coding.eq_ignore_ascii_case("identity") { &mut identity }
+                else if coding == "*" { &mut wildcard }
+                else { continue };
+            // Conflicting duplicate preferences are resolved conservatively.
+            *entry = Some(entry.map_or(quality, |old| old.min(quality)));
+        }
+    }
+    let quality = zstd.or(wildcard).unwrap_or(0);
+    let identity_ok = identity.map_or(wildcard != Some(0), |q| q > 0);
+    (quality > 0 && identity.is_none_or(|q| quality >= q), identity_ok)
+}
+
+fn encoding_quality(value: &str) -> Option<u16> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if !matches!(whole, "0" | "1") || fraction.len() > 3 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let fractional = if fraction.is_empty() { 0 } else { fraction.parse::<u16>().ok()? * 10u16.pow((3 - fraction.len()) as u32) };
+    match whole {
+        "0" => Some(fractional),
+        "1" if fractional == 0 => Some(1000),
+        _ => None,
+    }
+}
+
+fn encoding_unavailable() -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse as _;
+    (StatusCode::NOT_ACCEPTABLE, [(header::VARY, "Accept-Encoding")], "no acceptable RPC response encoding").into_response()
 }
 
 /// The public gateway refuses an oversized request at the header stage, so the
@@ -477,6 +642,15 @@ fn normalize_method(method: &str) -> std::borrow::Cow<'_, str> {
 /// Transport-independent JSON-RPC handling (HTTP on loopback, iroh QUIC publicly).
 /// A request array is a batch, answered entry by entry; entries may not nest.
 pub async fn handle_value(st: &RpcState, req: Value) -> Value {
+    handle_value_with_context(st, req, true).await
+}
+
+/// Public streams cannot change preferences or download owner-local content.
+pub async fn handle_remote_value(st: &RpcState, req: Value) -> Value {
+    handle_value_with_context(st, req, false).await
+}
+
+async fn handle_value_with_context(st: &RpcState, req: Value, local_wallet: bool) -> Value {
     if let Value::Array(entries) = &req {
         if entries.is_empty() {
             return json!({ "jsonrpc": "2.0", "id": Value::Null, "error": { "code": -32600, "message": "empty batch" } });
@@ -488,19 +662,59 @@ pub async fn handle_value(st: &RpcState, req: Value) -> Value {
         let mut answers = Vec::with_capacity(entries.len());
         for e in entries {
             answers.push(match e {
-                Value::Object(_) => single(st, e.clone()).await,
+                Value::Object(_) => single(st, e.clone(), local_wallet).await,
                 _ => json!({ "jsonrpc": "2.0", "id": Value::Null, "error": { "code": -32600, "message": "batch entries must be objects" } }),
             });
         }
         return json!(answers);
     }
-    single(st, req).await
+    single(st, req, local_wallet).await
 }
 
-async fn single(st: &RpcState, req: Value) -> Value {
+/// Dedicated public-read entry point: every call, including batches and aliases,
+/// applies the existing public cost gate. Peer hints are limited to the node's
+/// configured network, supplied by its caller, never an open advertisement list.
+pub async fn handle_public_value(st: &RpcState, req: Value, peers: &[aether_net::EndpointId]) -> Value {
+    let mut st = st.clone();
+    st.public_read_only = true;
+    if let Value::Array(entries) = &req {
+        if entries.is_empty() || entries.len() > PUBLIC_MAX_BATCH {
+            return json!({"jsonrpc":"2.0", "id":null, "error":{"code":-32002,"message":format!("public read-only gateway: batches need 1..={PUBLIC_MAX_BATCH} calls")}});
+        }
+        let mut answers = Vec::with_capacity(entries.len());
+        for entry in entries { answers.push(public_single(&st, entry.clone(), peers).await); }
+        return json!(answers);
+    }
+    public_single(&st, req, peers).await
+}
+
+async fn public_single(st: &RpcState, req: Value, peers: &[aether_net::EndpointId]) -> Value {
+    if normalize_method(req.get("method").and_then(Value::as_str).unwrap_or_default()) == "aether_readPeers" {
+        let id = req.get("id").cloned().unwrap_or(Value::Null);
+        let params = req.get("params").cloned().unwrap_or_else(|| json!([]));
+        let limit = params.get(0).and_then(Value::as_u64).unwrap_or(32);
+        if limit > 32 {
+            return json!({"jsonrpc":"2.0", "id":id, "error":{"code":-32002,"message":"public read peer list is capped at 32 ids"}});
+        }
+        let ids: Vec<String> = peers.iter().take(limit as usize).map(ToString::to_string).collect();
+        return json!({"jsonrpc":"2.0", "id":id, "result":ids});
+    }
+    single(st, req, false).await
+}
+
+async fn single(st: &RpcState, req: Value, local_wallet: bool) -> Value {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let method = normalize_method(req.get("method").and_then(Value::as_str).unwrap_or_default());
     let params = req.get("params").cloned().unwrap_or(Value::Array(vec![]));
+    if !local_wallet && method == "aether_setPresenceRegion" {
+        return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"presence region settings are local-only"}});
+    }
+    if !local_wallet && method == "aether_setPresenceCountry" {
+        return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"presence country settings are local-only"}});
+    }
+    if !local_wallet && method == "aether_peers" {
+        return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"peer diagnostics are local-only"}});
+    }
     // Before any handler or upstream hop: on the public gateway only the
     // allowlisted reads (within their caps) reach the machinery in RpcState.
     if st.public_read_only {
@@ -509,9 +723,13 @@ async fn single(st: &RpcState, req: Value) -> Value {
         }
     }
     let result = match &*method {
+        "aether_appBundle" if !local_wallet => Err((-32601, "app bundle fetching is a node-local wallet method".into())),
+        "aether_appBundle" => app_bundle(st, &params).await,
         "aether_getFinalized" => finalized(st, &params).await,
         "aether_getFinalizedRange" => finalized_range(st, &params).await,
         "eth_call" => eth_call(st, &params, if st.public_read_only { PUBLIC_CALL_GAS } else { PRIVATE_CALL_GAS }).await,
+        "eth_estimateGas" => execute_rpc_call(st, &params, PRIVATE_CALL_GAS, CallMode::Estimate).await,
+        "aether_simulateTransaction" => execute_rpc_call(st, &params, PRIVATE_CALL_GAS, CallMode::Simulation).await,
         "aether_getReceiptProof" => receipt_proof(st, &params).await,
         "aether_historyProof" => history_proof(st, &params).await,
         "aether_eraProof" => era_proof(st, &params).await,
@@ -519,13 +737,10 @@ async fn single(st: &RpcState, req: Value) -> Value {
         // of retained-history work the routes above meter (audit 7 A7-6).
         "aether_eraInfo" => era_info(st, &params).await,
         "aether_snapshot" => snapshot_manifest(st).await,
+        "aether_registrarEncryptionKey" => registrar_encryption_key(st, &params).await,
         "aether_registerDevice" => register_device(st, &params).await,
         "aether_sendBeacon" => send_beacon(st, &params).await,
         "aether_sendRegistration" => send_registration(st, &params).await,
-        // A follower without the registrar key asks upstream (one hop).
-        "aether_reattest" if st.registrar.is_none() && st.upstream.is_some() => {
-            st.upstream.as_ref().expect("checked").first("aether_reattest", params.clone()).await.map_err(|e| (-32000, e))
-        }
         "aether_reattest" => reattest(st, &params).await,
         // Followers ask validators (one hop: a forwarded question is never forwarded again).
         "aether_rotation" | "aether_network" if st.upstream.is_some() => match params.get(0) {
@@ -545,7 +760,9 @@ async fn single(st: &RpcState, req: Value) -> Value {
         // budget dropped: read back from the era file, fetched and verified first if needed.
         "aether_getBlock" if param::<u64>(&params, 0).is_ok_and(|h| {
             let g = st.chain.lock();
-            h < g.pruned_below.max(g.cache_below)
+            // Legacy summaries evicted from RAM still live in the DB; only
+            // v2 archival cache misses and truly pruned heights need an era.
+            h < g.pruned_below || (g.cfg.history_v2 && h < g.cache_below)
         }) => old_block(st, &params).await,
         _ => dispatch(st, &method, &params),
     };
@@ -557,23 +774,38 @@ async fn single(st: &RpcState, req: Value) -> Value {
 
 type RpcResult = Result<Value, (i64, String)>;
 
+async fn app_bundle(st: &RpcState, p: &Value) -> RpcResult {
+    let hash = p.get(0).and_then(Value::as_str).ok_or((-32602, "params: [bundleHash, path]".to_string()))?;
+    let path = p.get(1).and_then(Value::as_str).ok_or((-32602, "params: [bundleHash, path]".to_string()))?;
+    crate::app_bundle::normalize_hash(hash).map_err(|e| (-32602, e))?;
+    crate::app_bundle::validate_path(path).map_err(|e| (-32602, e))?;
+    let service = st.app_bundles.as_ref().ok_or((-32000, "app bundle service is unavailable on this node".to_string()))?;
+    service.rpc(hash, path).await.map_err(|e| (-32000, e))
+}
+
+/// The app fetch RPC belongs to loopback HTTP. An unauthenticated public
+/// wallet RPC peer may read seeded bytes on ALPN_APPS, but cannot allocate
+/// this node's cache or disclose which apps its owner has pinned.
+pub async fn handle_peer_value(st: &RpcState, req: Value) -> Value {
+    handle_value_with_context(st, req, false).await
+}
+
 /// A finalized receipt with its inclusion proof and the block certificate.
 async fn receipt_proof(st: &RpcState, p: &Value) -> RpcResult {
     use commonware_codec::Decode;
     let hash: TxHash = param(p, 0)?;
-    let (height, index, receipt, receipts) = {
-        let g = st.chain.lock();
-        let Some((height, receipt)) = g.receipts.get(&hash) else {
-            return Ok(if g.mempool.contains_key(&hash) { json!({ "pending": true }) } else { Value::Null });
-        };
-        let unavailable = || (-32000, "receipt proof unavailable on this node".to_string());
-        let block = g.blocks.get(height).ok_or_else(unavailable)?;
-        let index = block.txs.iter().position(|h| h == &hash).ok_or_else(unavailable)?;
-        let receipts = block.txs.iter().map(|h| {
-            g.receipts.get(h).filter(|(h, _)| h == height).map(|(_, r)| r.clone())
-        }).collect::<Option<Vec<_>>>().ok_or_else(unavailable)?;
-        (*height, index, receipt.clone(), receipts)
+    let _slot = history_slot(st)?;
+    let Some((height, receipt)) = st.chain.receipt(&hash).map_err(|e| (-32000, e.to_string()))? else {
+        return Ok(if st.chain.lock().mempool.contains_key(&hash) { json!({ "pending": true }) } else { Value::Null });
     };
+    let unavailable = || (-32000, "receipt proof unavailable on this node".to_string());
+    let block = st.chain.block_summary(height).map_err(|e| (-32000, e.to_string()))?.ok_or_else(unavailable)?;
+    let index = block.txs.iter().position(|h| h == &hash).ok_or_else(unavailable)?;
+    let mut receipts = Vec::with_capacity(block.txs.len());
+    for hash in &block.txs {
+        let row = st.chain.receipt(hash).map_err(|e| (-32000, e.to_string()))?.filter(|(h, _)| *h == height).ok_or_else(unavailable)?;
+        receipts.push(row.1);
+    }
     // Hashing the complete block's receipts can take longer than a map lookup.
     // Leave the chain lock before constructing the path so RPC cannot delay a vote.
     let proof = aether_execution::receipt::receipt_proof(&receipts, index)
@@ -826,15 +1058,38 @@ async fn era_info(st: &RpcState, p: &Value) -> RpcResult {
     .map_err(|e| (-32000, e.to_string()))
 }
 
-/// `[device_token (base64), operator, validator_key (hex 32), node_id (hex 32), beaconer, ownership (hex)]`
+/// `[]`: a short-lived encryption key attested by the on-chain registrar.
+/// Clients verify the signer with certified registry storage BEFORE sending a
+/// token. Nonregistrars may forward this public descriptor, never attest it.
+async fn registrar_encryption_key(st: &RpcState, p: &Value) -> RpcResult {
+    if p.as_array().is_none_or(|p| !p.is_empty()) {
+        return Err((-32602, "registrar encryption key takes no params".into()));
+    }
+    let Some(r) = &st.registrar else {
+        return match &st.upstream {
+            Some(up) => up.first("aether_registrarEncryptionKey", p.clone()).await.map_err(|e| (-32000, e)),
+            None => Err((-32601, "this node does not register devices".into())),
+        };
+    };
+    crate::devicecheck::registrar_key_check(&st.chain.lock().finalized.state, &r.signer.public_hex()).map_err(|e| (-32000, e))?;
+    serde_json::to_value(r.encryption_key().map_err(|e| (-32000, e))?).map_err(|_| (-32000, "registrar encryption key unavailable".into()))
+}
+
+/// `[encrypted_token, operator, validator_key (hex 32), node_id (hex 32), beaconer, ownership (hex)]`
 /// (`ownership`: the voting key's signature, `aether candidate-info --operator`)
 /// → the registrar's attestation (r, s) to submit to the registry contract.
 async fn register_device(st: &RpcState, p: &Value) -> RpcResult {
+    validate_devicecheck_request(p, 6)?;
+    if st.registrar.is_none() {
+        return match &st.upstream {
+            Some(up) => up.first("aether_registerDevice", p.clone()).await.map_err(|e| (-32000, e)),
+            None => Err((-32601, "this node does not register devices".into())),
+        };
+    }
     let r = st.registrar.as_ref().ok_or((-32601, "this node does not register devices".to_string()))?;
     // The registry's registrar key decides: if the committee rotated or stopped
     // it, this node must not sign attestations that are already dead (G11).
     crate::devicecheck::registrar_key_check(&st.chain.lock().finalized.state, &r.signer.public_hex()).map_err(|e| (-32000, e))?;
-    let token: String = param(p, 0)?;
     let operator: Address = param(p, 1)?;
     let hex32 = |i: usize| -> Result<[u8; 32], (i64, String)> {
         let s: String = param(p, i)?;
@@ -844,6 +1099,7 @@ async fn register_device(st: &RpcState, p: &Value) -> RpcResult {
     let beaconer: Address = param(p, 4)?;
     let ownership: String = param(p, 5)?;
     let ownership = hex::decode(ownership.trim_start_matches("0x")).map_err(|_| (-32602, "param 5: ownership signature hex".to_string()))?;
+    let token = r.open_token("aether_registerDevice", p).map_err(|e| (-32602, e))?;
     let a = r.register(&token, operator, key, node, beaconer, &ownership).await.map_err(|e| (-32000, e.to_string()))?;
     Ok(json!({ "r": hex::encode(a.r), "s": hex::encode(a.s), "registered_at": a.registered_at }))
 }
@@ -883,12 +1139,18 @@ async fn send_registration(st: &RpcState, p: &Value) -> RpcResult {
     Ok(json!({ "hash": id, "accepted": new }))
 }
 
-/// `[device_token (base64), validator_key (hex 32), period, ownership (hex)]`
+/// `[encrypted_token, validator_key (hex 32), period, ownership (hex)]`
 /// → the registrar's re-attestation `{period, r, s}` for a beacon answer.
 /// Only for the current re-attestation period (or the next, near its start).
 async fn reattest(st: &RpcState, p: &Value) -> RpcResult {
+    validate_devicecheck_request(p, 4)?;
+    if st.registrar.is_none() {
+        return match &st.upstream {
+            Some(up) => up.first("aether_reattest", p.clone()).await.map_err(|e| (-32000, e)),
+            None => Err((-32601, "this node does not re-attest devices".into())),
+        };
+    }
     let r = st.registrar.as_ref().ok_or((-32601, "this node does not re-attest devices".to_string()))?;
-    let token: String = param(p, 0)?;
     let key: String = param(p, 1)?;
     let key: [u8; 32] = hex::decode(key.trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or((-32602, "param 1: 32-byte hex".to_string()))?;
     let period: u64 = param(p, 2)?;
@@ -906,8 +1168,16 @@ async fn reattest(st: &RpcState, p: &Value) -> RpcResult {
     if period < low || period > high {
         return Err((-32000, format!("period {period} is not current ({low}..={high})")));
     }
+    let token = r.open_token("aether_reattest", p).map_err(|e| (-32602, e))?;
     let (rr, ss) = r.reattest(&token, key, period, &ownership).await.map_err(|e| (-32000, e.to_string()))?;
     Ok(json!({ "period": period, "r": hex::encode(rr), "s": hex::encode(ss) }))
+}
+
+fn validate_devicecheck_request(p: &Value, count: usize) -> Result<(), (i64, String)> {
+    if p.as_array().is_none_or(|p| p.len() != count) {
+        return Err((-32602, "invalid encrypted DeviceCheck request params".into()));
+    }
+    crate::devicecheck::encrypted_token(p).map(|_| ()).map_err(|e| (-32602, e))
 }
 
 fn param<T: serde::de::DeserializeOwned>(p: &Value, i: usize) -> Result<T, (i64, String)> {
@@ -918,8 +1188,62 @@ fn param<T: serde::de::DeserializeOwned>(p: &Value, i: usize) -> Result<T, (i64,
 fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
     let chain = &st.chain;
     match method {
+        "aether_peers" => Ok(st.presence.as_ref().map(|p| p.peer_snapshot()).unwrap_or_else(|| json!([]))),
+        "aether_presence" => Ok(st.presence.as_ref().map(|p| p.snapshot()).unwrap_or_else(crate::presence::unavailable)),
+        "aether_setPresenceRegion" => {
+            let region = match p.as_array().map(Vec::as_slice) {
+                Some([Value::Null]) => None,
+                Some([Value::String(s)]) => Some(s.clone()),
+                _ => return Err((-32602, "params: [UN M49 sub-region code or null]".into())),
+            };
+            let presence = st.presence.as_ref().ok_or_else(|| (-32000, "no iroh presence endpoint on this node".into()))?;
+            presence.set_region(region).map_err(|e| (-32602, e))?;
+            Ok(json!({"ok":true}))
+        }
+        "aether_setPresenceCountry" => {
+            let country = match p.as_array().map(Vec::as_slice) {
+                Some([Value::Null]) => None,
+                Some([Value::String(s)]) => Some(s.clone()),
+                _ => return Err((-32602, "params: [uppercase ISO country code or null]".into())),
+            };
+            let presence = st.presence.as_ref().ok_or_else(|| (-32000, "no iroh presence endpoint on this node".into()))?;
+            presence.set_country(country).map_err(|e| (-32602, e))?;
+            Ok(json!({"ok":true}))
+        }
+        "aether_search" => {
+            if !p.is_array() || p.as_array().is_some_and(|args| args.len() > 2) {
+                return Err((-32602, "expected [query, limit]".into()));
+            }
+            let query: String = param(p, 0)?;
+            if query.len() > 256 || query.chars().any(|c| c.is_control()) {
+                return Err((-32602, "query must be at most 256 UTF-8 bytes without control characters".into()));
+            }
+            let limit = p.get(1).map(|v| v.as_u64().ok_or((-32602, "limit must be a positive integer".into())))
+                .transpose()?.unwrap_or(20);
+            if !(1..=50).contains(&limit) { return Err((-32602, "limit must be 1..50".into())); }
+            let search = chain.lock().search.clone();
+            let index = search.try_lock().map_err(|_| (-32002, "search index busy; retry".into()))?;
+            Ok(json!(index.search(&query, limit as usize, index.checkpoint().clock)))
+        }
+        "aether_searchInfo" => {
+            if !p.is_array() || p.as_array().is_some_and(|args| !args.is_empty()) {
+                return Err((-32602, "expected []".into()));
+            }
+            let (search, sources) = {
+                let g = chain.lock();
+                (g.search.clone(), g.search_sources.clone())
+            };
+            let index = search.try_lock().map_err(|_| (-32002, "search index busy; retry".into()))?;
+            let mut info = json!(index.info());
+            info["sources_configured"] = json!(sources.configured());
+            info["sources"] = json!(sources);
+            Ok(info)
+        }
         "aether_status" => {
+            if let Some(network) = &st.network { chain.watch_releases(Some(network)); }
             let resources = crate::resources::monitor().map(|m| m.status_value()).unwrap_or(Value::Null);
+            let follower_network = st.upstream.as_ref().map(|u| u.resilience_status());
+            let public_read = crate::public_read::status();
             let g = chain.lock();
             let f = &g.finalized;
             let base = Chain::next_base_fee(&g.cfg, f);
@@ -935,6 +1259,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "base_fee": base_fee,
                 "prover_escrow": f.state.balance(&aether_execution::PROVER_ESCROW),
                 "chain_id": g.cfg.chain_id,
+                "public_read": public_read,
                 "height": f.height,
                 "hash": format!("{}", f.digest),
                 "state_root": f.state.root(),
@@ -972,6 +1297,13 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "schedule": f.schedule.iter().map(|a| json!([a.protocol, a.at])).collect::<Vec<_>>(),
                 "upgrade_metadata": crate::chain::upgrade_metadata(&g),
                 "upcoming_upgrades": g.upgrade_notices,
+                // Discovery bytes were checked against pinned builder keys
+                // and a finalized parent-state commitment. Wallets still
+                // independently prove the entry with verified_release.
+                "release": if g.release_watcher.pin.is_some() {
+                    g.release_watcher.status(g.cfg.chain_id, f.height,
+                        crate::release::restart_slot(&g, None, unix_millis()))
+                } else { Value::Null },
                 // The free registration lane (G2): wallets see it and register
                 // without needing a balance for a paid contract call.
                 "free_registration": aether_rewards::enabled(&f.state),
@@ -980,11 +1312,18 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
                 "disk_almost_full": resources["disk_almost_full"].as_bool().unwrap_or(false),
                 "disk_status": resources["disk_status"].as_str().unwrap_or("unknown"),
                 "resources": resources,
+                "follower_network": follower_network,
                 // The faucet this node runs, when it runs one: wallets label
                 // grants from this address as "faucet" in the balance breakdown.
                 "faucet": st.faucet.as_ref().map(|f| json!(f.address)).unwrap_or(Value::Null),
             }))
         }
+        "aether_restartSlot" => {
+            let key: String = param(p, 0)?;
+            let g = chain.lock();
+            Ok(crate::release::restart_slot(&g, Some(&key), unix_millis()))
+        }
+        "aether_readPeers" => Ok(json!([])),
         // The next relay nonce a free-lane registration of `operator` must
         // carry (`[operator]`): the count the chain has spent of its items.
         "aether_registrationNonce" => {
@@ -1164,14 +1503,15 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         "aether_rewardStatus" => {
             let operator: Option<Address> =
                 p.get(0).map(|v| serde_json::from_value(v.clone())).transpose().map_err(|e| (-32602, format!("param 0: {e}")))?;
-            let (chain_id, f, dist, root, epoch_blocks) = {
+            let (chain_id, f, dist, epoch_blocks) = {
                 let g = chain.lock();
                 let f = g.finalized.clone();
                 let epoch_blocks = aether_execution::registry::epoch_blocks(&f.state);
                 // The first block of this epoch distributed the last one's pool.
                 let dist = f.height / epoch_blocks * epoch_blocks;
-                (g.cfg.chain_id, f, dist, g.blocks.get(&dist).map(|b| b.state_root), epoch_blocks)
+                (g.cfg.chain_id, f, dist, epoch_blocks)
             };
+            let root = chain.block_summary(dist).map_err(|e| (-32000, e.to_string()))?.map(|b| b.state_root);
             // What that distribution actually paid the operator: its node record
             // is within this epoch's worth of newest rewards (every block since
             // distributed at most one more). Skipped whole on networks without
@@ -1268,16 +1608,11 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         // `reason`). A hash this node never saw, or forgot, stays null.
         "aether_getReceipt" => {
             let h: TxHash = param(p, 0)?;
-            let cached = chain.lock().receipts.get(&h).cloned();
-            if let Some((height, receipt)) = cached {
+            // Cache eviction must not hide durable receipts or a current
+            // head's confirmed registration. The shared lookup performs
+            // any disk read outside the chain lock without refilling caches.
+            if let Some((height, receipt)) = chain.receipt(&h).map_err(|e| (-32000, e.to_string()))? {
                 return Ok(json!({ "height": height, "receipt": receipt }));
-            }
-            // Disk I/O stays outside the chain lock. A missing cache entry
-            // must not hide a durable receipt, even behind a local tombstone.
-            if let Some(store) = chain.store() {
-                if let Some((height, receipt)) = store.receipt(&h).map_err(|e| (-32000, e.to_string()))? {
-                    return Ok(json!({ "height": height, "receipt": receipt }));
-                }
             }
             // Only lookups and a bounded copy under the chain lock (B5 review
             // round 2, finding 4): a pending tx's facts come from its
@@ -1306,13 +1641,11 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
         }
         "aether_getBlock" => {
             let height: u64 = param(p, 0)?;
-            let g = chain.lock();
-            Ok(g.blocks.get(&height).map(|b| json!(b)).unwrap_or(Value::Null))
+            Ok(chain.block_summary(height).map_err(|e| (-32000, e.to_string()))?.map(|b| json!(b)).unwrap_or(Value::Null))
         }
         "aether_recentBlocks" => {
             let n: usize = param(p, 0).unwrap_or(10).min(100);
-            let g = chain.lock();
-            Ok(json!(g.blocks.values().rev().take(n).collect::<Vec<_>>()))
+            Ok(json!(chain.recent_block_summaries(n).map_err(|e| (-32000, e.to_string()))?))
         }
         // Minimal Ethereum-compatible reads.
         "eth_chainId" => Ok(json!(format!("0x{:x}", chain.cfg().chain_id))),
@@ -1334,6 +1667,7 @@ fn dispatch(st: &RpcState, method: &str, p: &Value) -> RpcResult {
     }
 }
 
+#[cfg(test)]
 fn last_proof_reward(rows: Vec<Value>) -> Value {
     rows.into_iter().rev()
         .find(|r| r["kind"] == "proof")
@@ -1377,10 +1711,15 @@ fn release_entries(state: &aether_execution::WorldState, address: Address, start
     json!({ "count": count, "height": height, "entries": entries })
 }
 
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_millis().min(u64::MAX as u128) as u64
+}
+
 /// A chain at genesis in an `RpcState` with nothing attached — enough to
 /// check routing, gates and errors (shared by the test modules below).
 #[cfg(test)]
-fn bare_state() -> RpcState {
+pub(crate) fn bare_state() -> RpcState {
     let (chain, _) = Chain::new(crate::chain::ChainConfig {
         chain_id: 7781,
         limits: aether_types::GasVector { exec: 30_000_000, state: u64::MAX, prove: 200_000_000 },
@@ -1402,7 +1741,7 @@ fn bare_state() -> RpcState {
         snapshot: Default::default(),
         prover: None,
         shards: None,
-        public_read_only: false,
+        public_read_only: false, presence: None, app_bundles: None,
     }
 }
 
@@ -1412,8 +1751,693 @@ async fn call(st: &RpcState, method: &str, params: Value) -> Value {
 }
 
 #[cfg(test)]
+#[path = "devicecheck_privacy_tests.rs"]
+mod devicecheck_privacy_tests;
+
+#[cfg(test)]
 pub(crate) fn writer_lease_status_for_test() -> Value {
     dispatch(&bare_state(), "aether_status", &json!([])).expect("fixture status routes")
+}
+
+#[cfg(test)]
+mod app_wallet_context_tests {
+    use super::*;
+
+    fn app(id: Value, method: &str) -> Value {
+        json!({ "jsonrpc": "2.0", "id": id, "method": method,
+            "params": ["00".repeat(32), "index.html"] })
+    }
+
+    async fn http(state: RpcState, origin: Option<&str>, request: Value) -> Value {
+        use tower::ServiceExt as _;
+        let router = Router::new().route("/", post(handle)).with_state(state);
+        let mut builder = axum::http::Request::builder().method("POST").uri("/")
+            .header(axum::http::header::CONTENT_TYPE, "application/json");
+        if let Some(origin) = origin { builder = builder.header(axum::http::header::ORIGIN, origin); }
+        let response = router.oneshot(builder.body(axum::body::Body::from(serde_json::to_vec(&request).unwrap())).unwrap()).await.unwrap();
+        assert!(response.status().is_success());
+        let bytes = axum::body::to_bytes(response.into_body(), PUBLIC_MAX_BODY).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn native_http_without_origin_reaches_app_service_and_other_reads() {
+        let request = app(json!("native"), "aether_appBundle");
+        let response = http(bare_state(), None, request.clone()).await;
+        assert_eq!(response["id"], "native");
+        assert_eq!(response["error"]["code"], -32000);
+        assert_eq!(response["error"]["message"], "app bundle service is unavailable on this node");
+        assert_eq!(response, handle_value(&bare_state(), request).await);
+        let read = http(bare_state(), None, json!({ "id": 27, "method": "eth_chainId" })).await;
+        assert_eq!(read["id"], 27);
+        assert_eq!(read["result"], "0x1e65");
+    }
+
+    #[tokio::test]
+    async fn origin_headers_and_iroh_deny_app_entries_and_keep_mixed_batch_ids() {
+        let batch = json!([
+            { "jsonrpc": "2.0", "id": "read", "method": "eth_chainId", "params": [] },
+            app(json!(17), "aether_appBundle"),
+            app(json!("alias"), "eastsea_appBundle"),
+            { "jsonrpc": "2.0", "id": 99, "method": "eth_blockNumber", "params": [] },
+            [app(json!("nested"), "aether_appBundle")],
+            false
+        ]);
+        let peer = handle_peer_value(&bare_state(), batch.clone()).await;
+        let rows = peer.as_array().expect("a mixed batch still returns an array");
+        assert_eq!(rows.len(), 6);
+        assert_eq!(rows[0]["id"], "read");
+        assert_eq!(rows[0]["result"], "0x1e65");
+        for (i, id) in [(1, json!(17)), (2, json!("alias"))] {
+            assert_eq!(rows[i]["id"], id);
+            assert_eq!(rows[i]["error"]["code"], -32601);
+            assert_eq!(rows[i]["error"]["message"], "app bundle fetching is a node-local wallet method");
+        }
+        assert_eq!(rows[3]["id"], 99);
+        assert_eq!(rows[3]["result"], "0x0");
+        for row in &rows[4..] {
+            assert!(row["id"].is_null());
+            assert_eq!(row["error"]["code"], -32600);
+            assert_eq!(row["error"]["message"], "batch entries must be objects");
+        }
+        for origin in ["https://example.invalid", "null", ""] {
+            assert_eq!(http(bare_state(), Some(origin), batch.clone()).await, peer);
+            let single = http(bare_state(), Some(origin), app(json!("one"), "eastsea_appBundle")).await;
+            assert_eq!(single["id"], "one");
+            assert_eq!(single["error"]["code"], -32601);
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_and_origin_contexts_keep_public_batch_caps_and_empty_errors() {
+        let mut state = bare_state();
+        state.public_read_only = true;
+        for request in [json!([]), json!(vec![json!({ "id": 1, "method": "aether_status" }); PUBLIC_MAX_BATCH + 1])] {
+            let expected = handle_value(&state, request.clone()).await;
+            assert_eq!(handle_peer_value(&state, request.clone()).await, expected);
+            assert_eq!(http(state.clone(), Some("https://example.invalid"), request).await, expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod compression_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{header, HeaderMap, Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn answer(st: &RpcState, req: Value, encoding: Option<&str>) -> (StatusCode, HeaderMap, bytes::Bytes) {
+        let app = Router::new().route("/", post(handle)).with_state(st.clone());
+        let mut request = Request::builder().uri("/").method("POST").header(header::CONTENT_TYPE, "application/json");
+        if let Some(encoding) = encoding {
+            request = request.header(header::ACCEPT_ENCODING, encoding);
+        }
+        let response = app.oneshot(request.body(Body::from(serde_json::to_vec(&req).unwrap())).unwrap()).await.unwrap();
+        let (parts, body) = response.into_parts();
+        (parts.status, parts.headers, to_bytes(body, 16 << 20).await.unwrap())
+    }
+
+    fn varies_on_encoding(headers: &HeaderMap) -> bool {
+        headers.get_all(header::VARY).iter().filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(',')).any(|v| v.trim().eq_ignore_ascii_case("accept-encoding"))
+    }
+
+    async fn measure_devnet_copy(path: &std::path::Path) {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp").canonicalize().unwrap();
+        let path = path.canonicalize().expect("measurement DB copy exists");
+        assert!(path.starts_with(&root), "measure only an isolated devnet DB copy under worktree tmp/");
+        let store = Arc::new(crate::store::Store::open_for_maintenance(&path).unwrap());
+        let height = store.head().unwrap().expect("copy has a devnet finalized head").0;
+        // This fixture asks only for persisted summaries/certificates and
+        // the head height. No genesis/state is inferred, served or changed.
+        let mut st = bare_state();
+        st.finality = Finality::Archive(Arc::new(crate::follow::FinalityArchive::new(Some(store.clone()))));
+        {
+            let mut g = st.chain.lock();
+            g.set_test_archive_store(store);
+            g.blocks.clear();
+            g.receipts.clear();
+            let mut head = (*g.finalized).clone();
+            head.height = height;
+            g.finalized = Arc::new(head);
+        }
+        let fixture = std::fs::read(path.parent().unwrap().join("fixture.json")).ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+        let measurement_height = fixture.as_ref().and_then(|f| f["measurement_height"].as_u64());
+        let (method, params) = match measurement_height {
+            Some(height) => ("aether_getFinalized", json!([height])),
+            None => ("aether_recentBlocks", json!([100])),
+        };
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+        let (_, _, raw) = answer(&st, req.clone(), None).await;
+        assert!(raw.len() >= 16 << 10, "measurement requires a genuinely large DB-backed read");
+        let expected: Value = serde_json::from_slice(&raw).unwrap();
+        assert!(expected.get("result").is_some_and(|r| !r.is_null()), "devnet read must succeed: {expected}");
+        let certified_block_bytes = expected["result"]["block"].as_str()
+            .and_then(|b| aether_light::from_hex(b).ok()).map(|b| b.len());
+        if measurement_height.is_some() {
+            assert!(certified_block_bytes.is_some(), "measurement proof contains finalized codec bytes");
+            assert!(expected["result"]["finalization"].is_string(), "measurement proof contains its certificate");
+        }
+        let (mut identity_us, mut zstd_us) = (Vec::new(), Vec::new());
+        let mut compressed_len = 0;
+        // Warm both representations, then alternate them to limit order bias.
+        for sample in 0..26 {
+            for encoding in [None, Some("zstd")] {
+                let started = Instant::now();
+                let (status, headers, body) = answer(&st, req.clone(), encoding).await;
+                let elapsed_us = started.elapsed().as_secs_f64() * 1_000_000.0;
+                assert_eq!(status, StatusCode::OK);
+                if encoding.is_some() {
+                    assert_eq!(headers[header::CONTENT_ENCODING], "zstd");
+                    assert_eq!(&zstd::stream::decode_all(&body[..]).unwrap()[..], &raw[..]);
+                    compressed_len = body.len();
+                    if sample > 0 { zstd_us.push(elapsed_us); }
+                } else {
+                    assert_eq!(body, raw);
+                    if sample > 0 { identity_us.push(elapsed_us); }
+                }
+            }
+        }
+        identity_us.sort_by(f64::total_cmp);
+        zstd_us.sort_by(f64::total_cmp);
+        let result = json!({
+            "db_copy": path, "rpc": method, "params": params, "head_height": height,
+            "measurement_height": measurement_height, "certified_block_bytes": certified_block_bytes,
+            "rows": expected["result"].as_array().map(Vec::len), "samples_per_encoding": identity_us.len(),
+            "identity_body_bytes": raw.len(), "zstd_body_bytes": compressed_len,
+            "saved_percent": 100.0 * (1.0 - compressed_len as f64 / raw.len() as f64),
+            "identity_median_us": identity_us[12], "identity_p95_us": identity_us[23],
+            "zstd_median_us": zstd_us[12], "zstd_p95_us": zstd_us[23],
+            "identity_samples_us": identity_us, "zstd_samples_us": zstd_us,
+            "decoded_blake3": blake3_hex(&raw), "decoded_bytes_equal": true,
+            "transport": "HTTP router, body bytes; timings include DB reads and JSON serialization"
+        });
+        std::fs::write(root.join("rpc-rel23-measurement.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+        println!("REL23_RPC_MEASUREMENT {result}");
+    }
+
+    /// REL-23: the same HTTP read must be lossless with and without zstd;
+    /// neither disabled encodings, errors nor already encoded chunks spend
+    /// compression work. This exercises the existing HTTP route so its first
+    /// assertion fails against the original, uncompressed handler.
+    #[test]
+    fn large_read_rpc_compression_is_negotiated_and_lossless() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().max_blocking_threads(1).build().unwrap();
+        let mut st = bare_state();
+        st.network = Some(json!({ "fixture": "devnet", "peers": "0123456789abcdef".repeat(4096) }));
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "aether_network", "params": [] });
+        rt.block_on(async {
+            let expected = serde_json::to_vec(&handle_value(&st, req.clone()).await).unwrap();
+            let (status, headers, compressed) = answer(&st, req.clone(), Some("zstd")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers.get(header::CONTENT_ENCODING).map(|v| v.as_bytes()), Some(&b"zstd"[..]), "REL-23 large negotiated read must be compressed");
+            assert!(varies_on_encoding(&headers), "caches must distinguish identity and zstd responses");
+            assert_eq!(headers[header::CONTENT_TYPE], "application/json");
+            assert_eq!(headers[header::CONTENT_LENGTH].to_str().unwrap().parse::<usize>().unwrap(), compressed.len());
+            assert_eq!(zstd::stream::decode_all(&compressed[..]).unwrap(), expected, "compression must preserve JSON bytes exactly");
+            assert!(compressed.len() * 4 < expected.len(), "a repetitive large read must reduce RPC bytes");
+            for encoding in [None, Some("gzip"), Some("zstd;q=0"), Some("zstd;q=0, *;q=1"), Some("zstd;q=invalid"), Some("zstd;q=0.1234"), Some("zstd;q=1.001"), Some("zstd;extension=x;q=1"), Some("zstd;q=0.5, identity;q=1")] {
+                let (_, headers, plain) = answer(&st, req.clone(), encoding).await;
+                assert!(headers.get(header::CONTENT_ENCODING).is_none(), "identity required for {encoding:?}");
+                assert!(varies_on_encoding(&headers));
+                assert_eq!(&plain[..], &expected[..]);
+            }
+            for encoding in ["ZSTD; q=0.5", "br;q=1, *;q=0.5", "zstd;q=1, identity;q=0"] {
+                let (_, headers, body) = answer(&st, req.clone(), Some(encoding)).await;
+                assert_eq!(headers[header::CONTENT_ENCODING], "zstd", "acceptable encoding {encoding}");
+                assert_eq!(zstd::stream::decode_all(&body[..]).unwrap(), expected);
+            }
+            let small = json!({ "id": 2, "method": "eth_blockNumber", "params": [] });
+            let (_, headers, body) = answer(&st, small.clone(), Some("zstd")).await;
+            assert!(headers.get(header::CONTENT_ENCODING).is_none(), "small reads stay plain");
+            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), handle_value(&st, small).await);
+            for encoding in ["gzip, identity;q=0", "zstd;q=0, *;q=0"] {
+                let (status, headers, _) = answer(&st, req.clone(), Some(encoding)).await;
+                assert_eq!(status, StatusCode::NOT_ACCEPTABLE, "no acceptable representation for {encoding}");
+                assert!(varies_on_encoding(&headers));
+            }
+            let mut public = st.clone();
+            public.public_read_only = true;
+            let blocked = json!({ "id": "x".repeat(65536), "method": "aether_sendTransaction", "params": [] });
+            let (_, headers, body) = answer(&public, blocked.clone(), Some("zstd")).await;
+            assert!(headers.get(header::CONTENT_ENCODING).is_none(), "gateway errors never spend compression work");
+            let error: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error, handle_value(&public, blocked).await);
+            assert_eq!(error["error"]["code"], -32601);
+            let public_read = json!({ "id": "x".repeat(65536), "method": "eth_blockNumber", "params": [] });
+            let (_, headers, body) = answer(&public, public_read.clone(), Some("zstd")).await;
+            assert_eq!(headers[header::CONTENT_ENCODING], "zstd", "successful large public reads also compress");
+            assert_eq!(serde_json::from_slice::<Value>(&zstd::stream::decode_all(&body[..]).unwrap()).unwrap(), handle_value(&public, public_read).await);
+            *st.snapshot.lock().unwrap() = Some((0, Arc::new(vec![0x55; 65536])));
+            let chunk = json!({ "id": 3, "method": "eastsea_snapshotChunk", "params": [0, 0] });
+            let (_, headers, body) = answer(&st, chunk.clone(), Some("zstd")).await;
+            assert!(headers.get(header::CONTENT_ENCODING).is_none(), "snapshot chunks are not recompressed");
+            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), handle_value(&st, chunk).await);
+            let mixed = json!([req.clone(), { "id": 5, "method": "aether_snapshotChunk", "params": [0, 0] }]);
+            let (_, headers, body) = answer(&st, mixed.clone(), Some("zstd")).await;
+            assert!(headers.get(header::CONTENT_ENCODING).is_none(), "a mixed batch cannot recompress snapshot bytes");
+            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), handle_value(&st, mixed).await);
+            let batch = json!([req.clone(), { "id": 4, "method": "eth_blockNumber", "params": [] }]);
+            let (_, headers, body) = answer(&st, batch.clone(), Some("zstd")).await;
+            assert_eq!(headers[header::CONTENT_ENCODING], "zstd");
+            assert_eq!(serde_json::from_slice::<Value>(&zstd::stream::decode_all(&body[..]).unwrap()).unwrap(), handle_value(&st, batch).await);
+            // Occupy the runtime's sole blocking worker: only two compression
+            // jobs may wait behind it; the other two must answer identity.
+            let (release, held) = std::sync::mpsc::channel();
+            let (ready, started) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = ready.send(());
+                let _ = held.recv();
+            });
+            started.await.unwrap();
+            let tasks: Vec<_> = (0..4).map(|_| {
+                let state = st.clone();
+                let request = req.clone();
+                tokio::spawn(async move { answer(&state, request, Some("zstd")).await })
+            }).collect();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while tasks.iter().filter(|t| t.is_finished()).count() < 2 && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let early = tasks.iter().filter(|t| t.is_finished()).count();
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            assert_eq!(early, 2, "compression cannot enqueue more than two blocking jobs");
+            let mut encoded = 0;
+            for task in tasks {
+                let (_, headers, body) = task.await.unwrap();
+                assert!(varies_on_encoding(&headers), "busy identity fallbacks still vary");
+                if headers.get(header::CONTENT_ENCODING).is_some() {
+                    encoded += 1;
+                    assert_eq!(zstd::stream::decode_all(&body[..]).unwrap(), expected);
+                } else {
+                    assert_eq!(&body[..], &expected[..]);
+                }
+            }
+            assert_eq!(encoded, 2);
+            let mut huge = st.clone();
+            huge.network = Some(json!({ "peers": "x".repeat(8 << 20) }));
+            let (_, headers, body) = answer(&huge, req.clone(), Some("zstd")).await;
+            assert!(headers.get(header::CONTENT_ENCODING).is_none(), "compression memory is capped at 8 MiB input");
+            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), handle_value(&huge, req).await);
+            if let Some(copy) = std::env::var_os("AETHER_RPC_REL23_DB_COPY") {
+                measure_devnet_copy(std::path::Path::new(&copy)).await;
+            }
+        });
+    }
+
+    /// Cache limits may remove legacy summaries/receipts from RAM, but the
+    /// durable DB keeps them. Every display/proof RPC must retain its answer.
+    #[test]
+    fn legacy_cache_eviction_preserves_rpc_history_and_proofs() {
+        use commonware_codec::Encode;
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
+        let suffix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = root.join(format!("rpc-rel23-legacy-{}-{suffix}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut st = bare_state();
+        let store = crate::store::Store::open(&dir.join("db.redb")).unwrap();
+        let (chain, _) = Chain::open(st.chain.cfg(), store).unwrap();
+        st.chain = chain;
+        let state = st.chain.lock().finalized.clone();
+        let receipts: Vec<aether_execution::Receipt> = (1u8..=3).map(|byte| aether_execution::Receipt {
+            tx_hash: TxHash::repeat_byte(byte), success: true, gas_used: 21_000, prove_gas: 0,
+            state_gas: 0, state_fee: U256::ZERO, contract_address: None, logs: 1,
+            output: Default::default(), events: vec![aether_execution::Event {
+                address: Address::repeat_byte(byte), topics: vec![aether_types::B256::repeat_byte(byte)],
+                data: vec![byte; 64].into(),
+            }],
+        }).collect();
+        let height = 1;
+        let genesis = crate::block::Block::genesis(7781, Default::default());
+        let payload = crate::block::Payload {
+            receipts_root: Some(aether_execution::receipt::receipt_root(&receipts)),
+            ..Default::default()
+        };
+        let block = crate::block::Block::new(genesis.context, genesis.parent,
+            commonware_consensus::types::Height::new(height), 1_000, payload.to_bytes());
+        let certificate = json!({ "height": height, "block": aether_light::to_hex(&block.encode()), "finalization": "0x02", "links": [] });
+        if let Finality::Archive(archive) = &st.finality { archive.insert(height, certificate); }
+        let summary = crate::chain::BlockSummary {
+            height, hash: "17".repeat(32), parent: "genesis".into(), timestamp_ms: 1_000,
+            proposer: Address::ZERO, state_root: state.state.root(), parent_state_root: state.state.root(),
+            txs: receipts.iter().map(|r| r.tx_hash).collect(), gas_used: 63_000, prove_gas: 0,
+            base_fee: Default::default(), excess: Default::default(), archive_excess: 0,
+        };
+        let store = st.chain.store().unwrap();
+        store.commit(crate::store::Commit {
+            height, digest: [0x17; 32], root: state.state.root(), diff: state.state.journal(),
+            summary: &summary, receipts: receipts.iter().map(|r| (r.tx_hash, r)).collect(),
+            handoff: None, seed: None, history: &state.history, schedule: &Default::default(),
+            upgrade_notices: &[], statement: &Default::default(), staged: None,
+        }).unwrap();
+        {
+            let mut g = st.chain.lock();
+            g.blocks.insert(height, summary.clone());
+            for receipt in &receipts { g.receipts.insert(receipt.tx_hash, (height, receipt.clone())); }
+            let mut head = (*g.finalized).clone();
+            head.height = height;
+            g.finalized = Arc::new(head);
+        }
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let reads = [
+            ("aether_getBlock", json!([height])),
+            ("aether_recentBlocks", json!([10])),
+            ("eth_getLogs", json!([{ "fromBlock": "earliest", "toBlock": "latest" }])),
+            ("aether_getReceiptProof", json!([receipts[1].tx_hash])),
+        ];
+        let expected: Vec<Value> = reads.iter().map(|(method, params)| rt.block_on(call(&st, method, params.clone()))).collect();
+        assert_eq!(expected[0]["result"], json!(summary));
+        assert_eq!(expected[2]["result"].as_array().unwrap().len(), 3);
+        assert!(expected[3]["result"]["proof"].is_object());
+        {
+            let mut g = st.chain.lock();
+            g.blocks.clear();
+            g.receipts.clear();
+            g.cache_below = 2;
+        }
+        for ((method, params), expected) in reads.into_iter().zip(expected) {
+            assert_eq!(rt.block_on(call(&st, method, params)), expected, "REL-23 {method} must retain durable history after legacy cache eviction");
+        }
+        drop(store);
+        drop(state);
+        drop(st);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod wallet_simulation_tests {
+    use super::*;
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+    }
+
+    fn fixture(code: &[u8]) -> (RpcState, Address, Address, Address) {
+        let st = bare_state();
+        let sender = Address::repeat_byte(0x11);
+        let contract = Address::repeat_byte(0x22);
+        let recipient = Address::repeat_byte(0x33);
+        {
+            let mut g = st.chain.lock();
+            let state = &mut Arc::make_mut(&mut g.finalized).state;
+            state.set_balance(sender, U256::from(100)).unwrap();
+            state.set_code(contract, code.to_vec().into()).unwrap();
+        }
+        (st, sender, contract, recipient)
+    }
+
+    fn request(sender: Address, to: Address, value: u64, gas: u64) -> Value {
+        json!([{
+            "from": format!("{sender:#x}"), "to": format!("{to:#x}"),
+            "value": format!("0x{value:x}"), "data": "0x", "gas": format!("0x{gas:x}")
+        }, "latest"])
+    }
+
+    fn delta(result: &Value, address: Address) -> Option<&str> {
+        result["nativeChanges"].as_array()?.iter()
+            .find(|change| change["address"] == format!("{address:#x}"))?["deltaWei"].as_str()
+    }
+
+    fn revert_code(payload: Vec<u8>) -> Vec<u8> {
+        let len = u8::try_from(payload.len()).unwrap();
+        let mut code = vec![0x60, len, 0x60, 12, 0x60, 0, 0x39, 0x60, len, 0x60, 0, 0xfd];
+        code.extend(payload);
+        code
+    }
+
+    #[test]
+    fn native_transfer_is_simulated_without_committing() {
+        let rt = runtime();
+        let (st, sender, _, recipient) = fixture(&[]);
+        let before = st.chain.lock().finalized.state.root();
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, recipient, 7, 21_000)));
+        let result = &answer["result"];
+        assert_eq!(result["success"], true, "{answer}");
+        assert_eq!(result["gasUsed"], "0x5208");
+        assert_eq!(result["output"], "0x");
+        assert!(result["failureReason"].is_null());
+        assert_eq!(delta(result, sender), Some("-7"));
+        assert_eq!(delta(result, recipient), Some("7"));
+        assert_eq!(result["logs"], json!([]));
+        let g = st.chain.lock();
+        assert_eq!(g.finalized.state.root(), before);
+        assert_eq!(g.finalized.state.balance(&sender), U256::from(100));
+        assert_eq!(g.finalized.state.balance(&recipient), U256::ZERO);
+        assert_eq!(g.finalized.state.nonce(&sender), 0);
+    }
+
+    #[test]
+    fn contract_logs_and_return_value_are_simulated_without_storage_writes() {
+        // Store 42 in slot zero, emit topic 7, and return 42.
+        let code = hex::decode("602a600055600760006000a1602a60005260206000f3").unwrap();
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&code);
+        let before = st.chain.lock().finalized.state.root();
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, contract, 0, 100_000)));
+        let result = &answer["result"];
+        assert_eq!(result["success"], true, "{answer}");
+        assert_eq!(U256::from_str_radix(result["output"].as_str().unwrap().trim_start_matches("0x"), 16).unwrap(), U256::from(42));
+        assert_eq!(result["logs"], json!([{
+            "address": format!("{contract:#x}"),
+            "topics": [format!("0x{:064x}", 7)], "data": "0x"
+        }]));
+        let g = st.chain.lock();
+        assert_eq!(g.finalized.state.root(), before);
+        assert_eq!(g.finalized.state.storage(&contract, U256::ZERO), U256::ZERO);
+    }
+
+    #[test]
+    fn internal_native_transfers_appear_in_the_balance_changes() {
+        let recipient = Address::repeat_byte(0x33);
+        let mut code = hex::decode("6000600060006000600373").unwrap();
+        code.extend_from_slice(recipient.as_slice());
+        code.extend(hex::decode("612710f15000").unwrap());
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&code);
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, contract, 5, 100_000)));
+        let result = &answer["result"];
+        assert_eq!(result["success"], true, "{answer}");
+        assert_eq!(delta(result, sender), Some("-5"));
+        assert_eq!(delta(result, contract), Some("2"));
+        assert_eq!(delta(result, recipient), Some("3"));
+    }
+
+    #[test]
+    fn an_unchanged_token_balance_is_still_marked_as_measured() {
+        let rt = runtime();
+        let (st, sender, token, _) = fixture(&hex::decode("600060005260206000f3").unwrap());
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, token, 0, 100_000)));
+        assert_eq!(answer["result"]["measuredTokens"], json!([format!("{token:#x}")]), "{answer}");
+        assert_eq!(answer["result"]["tokenChanges"], json!([]));
+        assert_eq!(answer["result"]["tokenCoverageComplete"], true);
+    }
+
+    #[test]
+    fn unreadable_token_balances_are_marked_as_incomplete() {
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&[0x00]);
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, contract, 0, 100_000)));
+        assert_eq!(answer["result"]["tokenCoverageComplete"], false, "{answer}");
+        assert_eq!(answer["result"]["measuredTokens"], json!([]));
+        assert_eq!(answer["result"]["tokenChanges"], json!([]));
+        assert_eq!(answer["result"]["success"], true);
+    }
+
+    #[test]
+    fn token_candidate_cap_is_reported_without_hiding_unmeasured_emitters() {
+        let rt = runtime();
+        let (st, sender, router, _) = fixture(&[]);
+        let token_code = hex::decode("60006000a0600060005260206000f3").unwrap();
+        let mut router_code = Vec::new();
+        {
+            let mut g = st.chain.lock();
+            let state = &mut Arc::make_mut(&mut g.finalized).state;
+            for byte in 0x50..=0x60 {
+                let token = Address::repeat_byte(byte);
+                state.set_code(token, token_code.clone().into()).unwrap();
+                router_code.extend(hex::decode("6000600060006000600073").unwrap());
+                router_code.extend_from_slice(token.as_slice());
+                router_code.extend(hex::decode("611388f150").unwrap());
+            }
+            router_code.extend(hex::decode("600060005260206000f3").unwrap());
+            state.set_code(router, router_code.into()).unwrap();
+        }
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, router, 0, 300_000)));
+        assert_eq!(answer["result"]["tokenCoverageComplete"], false, "{answer}");
+        assert_eq!(answer["result"]["measuredTokens"].as_array().unwrap().len(), 16);
+        assert_eq!(answer["result"]["logs"].as_array().unwrap().len(), 17);
+        assert_eq!(answer["result"]["tokenChanges"], json!([]));
+    }
+
+    fn token_fixture(emit_transfer: bool) -> (RpcState, Address, Address) {
+        // An empty transaction writes a token balance of 93; balanceOf returns
+        // slot zero. Its Transfer event intentionally reports 9, not the true 7.
+        let mut code = hex::decode("3660001460125760005460005260206000f35b605d600055").unwrap();
+        if emit_transfer {
+            code.extend(hex::decode("6009600052").unwrap());
+            code.push(0x73);
+            code.extend_from_slice(Address::repeat_byte(0x33).as_slice());
+            code.push(0x73);
+            code.extend_from_slice(Address::repeat_byte(0x11).as_slice());
+            code.push(0x7f);
+            code.extend(hex::decode("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef").unwrap());
+            code.extend(hex::decode("60206000a3").unwrap());
+        }
+        code.push(0x00);
+        let (st, sender, token, _) = fixture(&code);
+        {
+            let mut g = st.chain.lock();
+            Arc::make_mut(&mut g.finalized).state.set_storage(token, U256::ZERO, U256::from(100));
+        }
+        (st, sender, token)
+    }
+
+    #[test]
+    fn token_deltas_use_actual_simulated_balances_instead_of_event_amounts() {
+        let rt = runtime();
+        let (st, sender, token) = token_fixture(true);
+        let before = st.chain.lock().finalized.state.root();
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, token, 0, 100_000)));
+        assert_eq!(answer["result"]["success"], true, "{answer}");
+        assert_eq!(answer["result"]["tokenChanges"], json!([{"token": format!("{token:#x}"), "delta": "-7"}]));
+        assert_eq!(answer["result"]["logs"][0]["data"], format!("0x{:064x}", 9));
+        let g = st.chain.lock();
+        assert_eq!(g.finalized.state.root(), before);
+        assert_eq!(g.finalized.state.storage(&token, U256::ZERO), U256::from(100));
+    }
+
+    #[test]
+    fn destination_token_balance_is_checked_without_a_transfer_event() {
+        let rt = runtime();
+        let (st, sender, token) = token_fixture(false);
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, token, 0, 100_000)));
+        assert_eq!(answer["result"]["success"], true, "{answer}");
+        assert_eq!(answer["result"]["tokenChanges"], json!([{"token": format!("{token:#x}"), "delta": "-7"}]));
+        assert_eq!(answer["result"]["logs"], json!([]));
+    }
+
+    #[test]
+    fn an_internal_token_without_events_is_found_from_changed_storage() {
+        let rt = runtime();
+        let (st, sender, token) = token_fixture(false);
+        let router = Address::repeat_byte(0x44);
+        let mut code = hex::decode("6000600060006000600073").unwrap();
+        code.extend_from_slice(token.as_slice());
+        code.extend(hex::decode("61c350f15000").unwrap());
+        {
+            let mut g = st.chain.lock();
+            Arc::make_mut(&mut g.finalized).state.set_code(router, code.into()).unwrap();
+        }
+        let before = st.chain.lock().finalized.state.root();
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, router, 0, 150_000)));
+        assert_eq!(answer["result"]["success"], true, "{answer}");
+        assert_eq!(answer["result"]["tokenChanges"], json!([{"token": format!("{token:#x}"), "delta": "-7"}]));
+        assert_eq!(answer["result"]["logs"], json!([]));
+        assert_eq!(st.chain.lock().finalized.state.root(), before);
+    }
+
+    #[test]
+    fn standard_revert_reason_is_readable_and_has_no_balance_changes() {
+        let reason = "Not enough tokens";
+        let mut payload = hex::decode("08c379a0").unwrap();
+        payload.extend_from_slice(&U256::from(32).to_be_bytes::<32>());
+        payload.extend_from_slice(&U256::from(reason.len()).to_be_bytes::<32>());
+        payload.extend_from_slice(reason.as_bytes());
+        payload.resize(100, 0);
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&revert_code(payload.clone()));
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, contract, 7, 100_000)));
+        let result = &answer["result"];
+        assert_eq!(result["success"], false, "{answer}");
+        assert!(result["failureReason"].as_str().unwrap().contains(reason), "{answer}");
+        assert_eq!(result["output"], format!("0x{}", hex::encode(&payload)));
+        assert_eq!(result["nativeChanges"], json!([]));
+        assert_eq!(result["logs"], json!([]));
+        let answer = rt.block_on(call(&st, "eth_call", request(sender, contract, 7, 100_000)));
+        assert_eq!(answer["error"]["code"], 3);
+        assert_eq!(answer["error"]["message"], format!("execution reverted: 0x{}", hex::encode(&payload)), "{answer}");
+    }
+
+    #[test]
+    fn panic_reason_is_readable() {
+        let mut payload = hex::decode("4e487b71").unwrap();
+        payload.extend_from_slice(&U256::from(0x12).to_be_bytes::<32>());
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&revert_code(payload));
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, contract, 0, 100_000)));
+        assert_eq!(answer["result"]["success"], false, "{answer}");
+        assert!(answer["result"]["failureReason"].as_str().unwrap().contains("division by zero"), "{answer}");
+    }
+
+    #[test]
+    fn simulation_respects_the_requested_gas_and_explains_a_halt() {
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&[0x5b, 0x60, 0, 0x56]);
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", request(sender, contract, 0, 22_000)));
+        assert_eq!(answer["result"]["success"], false, "{answer}");
+        assert!(answer["result"]["failureReason"].as_str().unwrap().to_lowercase().contains("gas"), "{answer}");
+        assert_eq!(answer["result"]["gasUsed"], "0x55f0");
+    }
+
+    #[test]
+    fn eth_call_respects_the_requested_gas() {
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&hex::decode("602a60005500").unwrap());
+        let answer = rt.block_on(call(&st, "eth_call", request(sender, contract, 0, 21_000)));
+        assert_eq!(answer["error"]["code"], 3, "{answer}");
+        let answer = rt.block_on(call(&st, "eth_call", request(sender, contract, 0, 100_000)));
+        assert_eq!(answer["result"], "0x", "{answer}");
+    }
+
+    #[test]
+    fn gas_estimate_is_executable_and_does_not_commit() {
+        let rt = runtime();
+        let (st, sender, contract, recipient) = fixture(&hex::decode("602a60005500").unwrap());
+        let before = st.chain.lock().finalized.state.root();
+        let answer = rt.block_on(call(&st, "eth_estimateGas", request(sender, recipient, 7, 100_000)));
+        assert_eq!(answer["result"], "0x5208", "{answer}");
+        let answer = rt.block_on(call(&st, "eth_estimateGas", request(sender, contract, 0, 100_000)));
+        let estimate = u64::from_str_radix(answer["result"].as_str().expect("estimate succeeds").trim_start_matches("0x"), 16).unwrap();
+        assert!(estimate > 21_000 && estimate <= 100_000);
+        let answer = rt.block_on(call(&st, "eth_call", request(sender, contract, 0, estimate)));
+        assert_eq!(answer["result"], "0x", "{answer}");
+        let answer = rt.block_on(call(&st, "eth_estimateGas", request(sender, contract, 0, 21_000)));
+        assert_eq!(answer["error"]["code"], 3, "{answer}");
+        assert_eq!(st.chain.lock().finalized.state.root(), before);
+    }
+
+    #[test]
+    fn malformed_simulation_fields_and_unavailable_block_tags_are_refused() {
+        let rt = runtime();
+        let (st, sender, contract, _) = fixture(&[]);
+        for (field, value) in [("gas", json!("bad")), ("gas", json!(true)), ("from", json!(7)), ("value", json!("not money")), ("data", json!(7))] {
+            let mut ask = request(sender, contract, 0, 100_000);
+            ask[0][field] = value;
+            let answer = rt.block_on(call(&st, "aether_simulateTransaction", ask));
+            assert_eq!(answer["error"]["code"], -32602, "{field}: {answer}");
+        }
+        let mut ask = request(sender, contract, 0, 100_000);
+        ask[1] = json!("earliest");
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", ask));
+        assert_eq!(answer["error"]["code"], -32602, "{answer}");
+    }
+
+    #[test]
+    fn transaction_simulation_is_private_only() {
+        let rt = runtime();
+        let (mut st, sender, _, recipient) = fixture(&[]);
+        let ask = request(sender, recipient, 0, 21_000);
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", ask.clone()));
+        assert_eq!(answer["result"]["success"], true, "{answer}");
+        st.public_read_only = true;
+        let answer = rt.block_on(call(&st, "aether_simulateTransaction", ask));
+        assert_eq!(answer["error"]["code"], -32601, "{answer}");
+        assert!(answer["error"]["message"].as_str().unwrap().contains("public read-only gateway"));
+    }
 }
 
 #[cfg(test)]
@@ -1765,6 +2789,8 @@ mod release_tests {
             prover: None,
             shards: None,
             public_read_only: false,
+            presence: None,
+            app_bundles: None,
         }
     }
 
@@ -1846,7 +2872,7 @@ mod release_tests {
             snapshot: Default::default(),
             prover: None,
             shards: None,
-            public_read_only: false,
+            public_read_only: false, presence: None, app_bundles: None,
         };
         st.snapshot.0.building.store(true, Ordering::Release);
         assert!(cached_snapshot(&st).unwrap_err().1.contains("already running"));
@@ -1902,6 +2928,51 @@ mod public_read_tests {
         v.get("error").and_then(|e| e["message"].as_str()).is_some_and(|m| m.contains("public read-only gateway"))
     }
 
+    #[test]
+    fn public_light_proof_getters_reach_their_handlers() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = public_state();
+        let address = "0x0000000000000000000000000000000000000001";
+        let hash = "0x0000000000000000000000000000000000000000000000000000000000000001";
+        for (method, params) in [
+            ("aether_getReceiptProof", json!([hash])),
+            ("aether_getStorage", json!([address, "0x0"])),
+            ("aether_getCodeHash", json!([address])),
+            ("eastsea_getReceiptProof", json!([hash])),
+            ("eastsea_getStorage", json!([address, "0x0"])),
+        ] {
+            let answer = rt.block_on(call(&st, method, params));
+            assert!(!gate_error(&answer), "proof read {method} was refused: {answer}");
+        }
+    }
+
+    #[test]
+    fn public_presence_is_an_explicit_unavailable_aggregate() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let answer = rt.block_on(call(&public_state(), "aether_presence", json!([])));
+        assert_eq!(answer["result"]["available"], false, "absence of live-peer aggregates is explicit: {answer}");
+        assert!(answer["result"]["peers"].is_null());
+    }
+
+    #[test]
+    fn dedicated_public_service_enforces_gates_for_private_state_and_peer_batches() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let st = bare_state();
+        let peers: Vec<_> = (1..=40).map(aether_net::devnet_node_id).collect();
+        let answer = rt.block_on(handle_public_value(&st, json!([
+            {"id":1,"method":"aether_readPeers","params":[]},
+            {"id":2,"method":"eastsea_sendTransaction","params":["00"]},
+            {"id":3,"method":"aether_snapshot","params":[]},
+        ]), &peers));
+        assert_eq!(answer[0]["result"].as_array().unwrap().len(), 32);
+        assert_eq!(answer[1]["error"]["code"], -32601);
+        assert_eq!(answer[2]["error"]["code"], -32601);
+        let oversized = rt.block_on(handle_public_value(&st, json!({"id":4,"method":"eastsea_readPeers","params":[33]}), &peers));
+        assert_eq!(oversized["error"]["code"], -32002);
+        let batch = rt.block_on(handle_public_value(&st, json!(vec![json!({"id":1,"method":"aether_presence"}); PUBLIC_MAX_BATCH + 1]), &peers));
+        assert_eq!(batch["error"]["code"], -32002);
+    }
+
     /// Tests that fire a real eth_call share PUBLIC_CALLS — a process-global
     /// budget — with the test that fills it on purpose. Claim this lock for
     /// the whole test so the two cannot flake on each other.
@@ -1949,9 +3020,6 @@ mod public_read_tests {
             ("aether_registrationNonce", json!(["0x0000000000000000000000000000000000000001"])),
             ("aether_rewardStatus", json!([])),
             ("aether_rewardsPage", json!(["0x0000000000000000000000000000000000000001"])),
-            ("aether_getReceiptProof", json!(["0x0000000000000000000000000000000000000000000000000000000000000001"])),
-            ("aether_getStorage", json!(["0x0000000000000000000000000000000000000001", "0x0"])),
-            ("aether_getCodeHash", json!(["0x0000000000000000000000000000000000000001"])),
             ("aether_releaseEntries", json!(["0x0000000000000000000000000000000000000001"])),
             ("eth_chainId", json!([])),
             ("eth_getBalance", json!(["0x0000000000000000000000000000000000000001"])),
@@ -1985,6 +3053,11 @@ mod public_read_tests {
             ("aether_getReceipt", json!(["0x0000000000000000000000000000000000000000000000000000000000000001"])),
             ("aether_getAccount", json!(["0x0000000000000000000000000000000000000001"])),
             ("aether_getFinalized", json!([0])),
+            ("aether_getReceiptProof", json!(["0x0000000000000000000000000000000000000000000000000000000000000001"])),
+            ("aether_getStorage", json!(["0x0000000000000000000000000000000000000001", "0x0"])),
+            ("aether_getCodeHash", json!(["0x0000000000000000000000000000000000000001"])),
+            ("aether_presence", json!([])),
+            ("aether_readPeers", json!([])),
             ("aether_history", json!([])),
             ("aether_historyProof", json!([0, 0])),
             ("aether_eraInfo", json!([0])),
@@ -2389,7 +3462,7 @@ mod public_read_tests {
                 gossip,
                 faucet: None, registrar: None, network: None, upstream: None,
                 handoff: None, snapshot: Default::default(), prover: None,
-                shards: None, public_read_only: public,
+                shards: None, public_read_only: public, presence: None, app_bundles: None,
             }
         };
         let pub_port = Port::reserve().expect("reserve public era RPC port");
@@ -2454,7 +3527,7 @@ mod public_read_tests {
             gossip,
             faucet: None, registrar: None, network: None, upstream: None,
             handoff: None, snapshot: Default::default(), prover: None,
-            shards: None, public_read_only: false,
+            shards: None, public_read_only: false, presence: None, app_bundles: None,
         };
         let app = Router::new().route("/era/{name}", get(serve_era_file)).with_state(st);
         rt.block_on(async {
@@ -2519,7 +3592,7 @@ mod public_read_tests {
             gossip,
             faucet: None, registrar: None, network: None, upstream: None,
             handoff: None, snapshot: Default::default(), prover: None,
-            shards: None, public_read_only: false,
+            shards: None, public_read_only: false, presence: None, app_bundles: None,
         };
         let app = Router::new().route("/era/{name}", get(serve_era_file)).with_state(st);
         rt.block_on(async {
@@ -2650,7 +3723,7 @@ mod public_read_tests {
             gossip,
             faucet: None, registrar: None, network: None, upstream: None,
             handoff: None, snapshot: Default::default(), prover: None,
-            shards: None, public_read_only: true,
+            shards: None, public_read_only: true, presence: None, app_bundles: None,
         };
         st.chain.lock().pruned_below = aether_state::mmr::ERA_LEN * 3;
         // The budget already exhausted by other strangers' reconstructions:
@@ -2704,7 +3777,7 @@ mod public_read_tests {
             gossip,
             faucet: None, registrar: None, network: None, upstream: None,
             handoff: None, snapshot: Default::default(), prover: None,
-            shards: None, public_read_only: false,
+            shards: None, public_read_only: false, presence: None, app_bundles: None,
         };
         rt.block_on(async {
             let a = tokio::spawn({
@@ -2752,7 +3825,7 @@ fn hex_arg(v: &Value, k: &str) -> Result<Option<Vec<u8>>, (i64, String)> {
     }
 }
 
-/// Gas a private `eth_call` may run: the block gas limit.
+/// Private call gas cap, further bounded by the configured block gas limit.
 const PRIVATE_CALL_GAS: u64 = 1 << 24;
 
 /// Concurrent public eth_call executions (pre-audit 7 PA7-05): the gas cap
@@ -2789,16 +3862,46 @@ fn history_slot(st: &RpcState) -> Result<BudgetSlot, (i64, String)> {
 /// (pre-audit 7 PA7-05: the old path copied the whole WorldState under the
 /// chain mutex for every call, cheap EVM or not).
 async fn eth_call(st: &RpcState, p: &Value, gas: u64) -> RpcResult {
-    let c = p.get(0).ok_or((-32602, "missing call object".to_string()))?;
+    execute_rpc_call(st, p, gas, CallMode::Output).await
+}
+
+#[derive(Clone, Copy)]
+enum CallMode { Output, Estimate, Simulation }
+
+/// The private wallet preview and estimate use the identical immutable snapshot,
+/// input validation and caller gas limit as eth_call. Neither enters admission.
+async fn execute_rpc_call(st: &RpcState, p: &Value, gas_cap: u64, mode: CallMode) -> RpcResult {
+    let c = p.get(0).filter(|c| c.is_object()).ok_or((-32602, "missing call object".to_string()))?;
+    match p.get(1) {
+        None | Some(Value::Null) => {},
+        Some(Value::String(tag)) if matches!(tag.as_str(), "latest" | "finalized" | "safe") => {},
+        _ => return Err((-32602, "calls are supported on the latest finalized state; historical and pending state are unavailable".into())),
+    }
     let addr = |k: &str| -> Result<Option<Address>, (i64, String)> {
-        c.get(k).and_then(Value::as_str).map(|s| s.parse().map_err(|_| (-32602, format!("{k} is not an address")))).transpose()
+        match c.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) => s.parse().map(Some).map_err(|_| (-32602, format!("{k} is not an address"))),
+            _ => Err((-32602, format!("{k} is not an address"))),
+        }
     };
     let to = addr("to")?;
     let from = addr("from")?.unwrap_or(Address::ZERO);
-    let data = hex_arg(c, "data")?.or(hex_arg(c, "input")?).unwrap_or_default();
-    let value = match c.get("value").and_then(Value::as_str) {
-        Some(v) => U256::from_str_radix(v.trim_start_matches("0x"), 16).map_err(|_| (-32602, "value".to_string()))?,
-        None => U256::ZERO,
+    for k in ["data", "input"] {
+        if c.get(k).is_some_and(|value| !value.is_null() && !value.is_string()) {
+            return Err((-32602, format!("{k} is not hex")));
+        }
+    }
+    let data = hex_arg(c, "data")?;
+    let input = hex_arg(c, "input")?;
+    if data.as_ref().zip(input.as_ref()).is_some_and(|(data, input)| data != input) {
+        return Err((-32602, "data and input describe different calls".into()));
+    }
+    let data = data.or(input).unwrap_or_default();
+    let value = match c.get("value") {
+        None | Some(Value::Null) => U256::ZERO,
+        Some(Value::String(v)) => v.strip_prefix("0x").filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(|v| U256::from_str_radix(v, 16).ok()).ok_or((-32602, "value is not a hex quantity".into()))?,
+        _ => return Err((-32602, "value is not a hex quantity".into())),
     };
     // The finalized snapshot by Arc, and the small config — the lock is held
     // for two pointer-ish clones, not a walk of the state tree.
@@ -2806,6 +3909,17 @@ async fn eth_call(st: &RpcState, p: &Value, gas: u64) -> RpcResult {
         let g = st.chain.lock();
         (g.finalized.clone(), g.cfg.clone())
     };
+    let gas_cap = gas_cap.min(cfg.limits.exec);
+    let gas = match c.get("gas") {
+        None | Some(Value::Null) => gas_cap,
+        Some(Value::String(v)) => v.strip_prefix("0x").filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(|v| u64::from_str_radix(v, 16).ok()).ok_or((-32602, "gas is not a hex quantity".into()))?,
+        Some(Value::Number(v)) => v.as_u64().ok_or((-32602, "gas is not a nonnegative quantity".into()))?,
+        _ => return Err((-32602, "gas is not a hex quantity".into())),
+    };
+    if gas > gas_cap {
+        return Err((-32602, format!("gas exceeds the available execution limit of {gas_cap}")));
+    }
     let ctx = aether_execution::BlockContext {
         chain_id: cfg.chain_id,
         number: exec.height + 1,
@@ -2822,23 +3936,69 @@ async fn eth_call(st: &RpcState, p: &Value, gas: u64) -> RpcResult {
     // and is given back only when the execution ends. A stranger arriving
     // while it is full is told to retry.
     let budget = if st.public_read_only {
-        BudgetSlot::acquire(&PUBLIC_CALLS, MAX_PUBLIC_CALLS)
-            .ok_or((-32002, "public read-only gateway: too many concurrent eth_call executions; retry shortly".to_string()))?
+        Some(BudgetSlot::acquire(&PUBLIC_CALLS, MAX_PUBLIC_CALLS)
+            .ok_or((-32002, "public read-only gateway: too many concurrent eth_call executions; retry shortly".to_string()))?)
     } else {
-        BudgetSlot::acquire(&PUBLIC_CALLS, usize::MAX).expect("usize::MAX budget never refuses")
+        None
     };
-    let r = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> RpcResult {
         let _held = budget;
-        aether_execution::call(&exec.state, &ctx, from, to, data.into(), value, gas)
+        let data: aether_types::Bytes = data.into();
+        if matches!(mode, CallMode::Output) {
+            let r = aether_execution::call(&exec.state, &ctx, from, to, data, value, gas)
+                .map_err(|e| (-32000, e))?;
+            if !r.success {
+                return Err((3, format!("execution reverted: 0x{}", hex::encode(&r.output))));
+            }
+            return Ok(json!(format!("0x{}", hex::encode(&r.output))));
+        }
+        let r = match mode {
+            CallMode::Simulation => crate::simulation::simulate(&exec.state, &ctx, from, to, data.clone(), value, gas),
+            _ => crate::simulation::call(&exec.state, &ctx, from, to, data.clone(), value, gas),
+        }.map_err(|e| (-32000, e))?;
+        if matches!(mode, CallMode::Simulation) {
+            return Ok(json!({
+                "success": r.success, "gasUsed": format!("0x{:x}", r.gas_used),
+                "output": format!("0x{}", hex::encode(&r.output)), "failureReason": r.failure_reason,
+                "nativeChanges": r.native_changes.iter().map(|change| json!({
+                    "address": format!("{:#x}", change.address), "deltaWei": change.delta_wei
+                })).collect::<Vec<_>>(),
+                "tokenChanges": r.token_changes.iter().map(|change| json!({
+                    "token": format!("{:#x}", change.token), "delta": change.delta
+                })).collect::<Vec<_>>(),
+                "measuredTokens": r.measured_tokens.iter().map(|token| format!("{token:#x}")).collect::<Vec<_>>(),
+                "tokenCoverageComplete": r.token_coverage_complete,
+                "logs": r.events.iter().map(|event| json!({
+                    "address": format!("{:#x}", event.address),
+                    "topics": event.topics.iter().map(|topic| format!("{topic:#x}")).collect::<Vec<_>>(),
+                    "data": format!("0x{}", hex::encode(&event.data))
+                })).collect::<Vec<_>>()
+            }));
+        }
+        if !r.success {
+            return Err((3, r.failure_reason.unwrap_or_else(|| "Execution reverted.".into())));
+        }
+        if matches!(mode, CallMode::Estimate) {
+            // gasUsed alone can be below an executable limit (refunds and the
+            // CALL 63/64 rule). Search a successful upper bound instead.
+            let mut upper = gas;
+            let mut lower = r.gas_used.saturating_sub(1);
+            while upper.saturating_sub(lower) > 1 {
+                let middle = lower + (upper - lower) / 2;
+                match crate::simulation::call(&exec.state, &ctx, from, to, data.clone(), value, middle) {
+                    Ok(result) if result.success => upper = middle,
+                    Ok(_) => lower = middle,
+                    Err(reason) if reason.contains("gas limit") || reason.contains("gas floor") => lower = middle,
+                    Err(reason) => return Err((-32000, reason)),
+                }
+            }
+            Ok(json!(format!("0x{upper:x}")))
+        } else {
+            Ok(json!(format!("0x{}", hex::encode(&r.output))))
+        }
     })
     .await
     .map_err(|e| (-32000, e.to_string()))?
-    .map_err(|e| (-32000, e))?;
-    if r.success {
-        Ok(json!(format!("0x{}", hex::encode(&r.output))))
-    } else {
-        Err((3, format!("execution reverted: 0x{}", hex::encode(&r.output))))
-    }
 }
 
 /// An `eth_getLogs` block parameter: "latest"/"finalized"/"safe"/"pending" or
@@ -2866,8 +4026,7 @@ fn block_param(f: &Value, k: &str, default: u64) -> Result<u64, String> {
 /// eth_getLogs over at most 2,000 finalized blocks (address and topic filters).
 fn eth_get_logs(chain: &Chain, p: &Value) -> RpcResult {
     let f = p.get(0).cloned().unwrap_or_default();
-    let g = chain.lock();
-    let head = g.finalized.height;
+    let head = chain.finalized_height();
     // The range as the request states it, before any clamping. An inverted ask
     // is a malformed request answered with an error — never handed to the
     // BTreeMap range below, whose inverted bounds abort the process (the
@@ -2905,10 +4064,21 @@ fn eth_get_logs(chain: &Chain, p: &Value) -> RpcResult {
         })
         .unwrap_or_default();
     let mut out = Vec::new();
-    for (height, b) in g.blocks.range(from..=to) {
+    let persistent = chain.store().is_some();
+    for b in chain.block_summaries(from, to).map_err(|e| (-32000, e.to_string()))? {
+        let height = b.height;
         let mut index = 0u64;
         for (ti, h) in b.txs.iter().enumerate() {
-            let Some((_, r)) = g.receipts.get(h) else { continue };
+            let Some((_, r)) = chain.receipt(h).map_err(|e| (-32000, e.to_string()))? else {
+                // A prune may race the separate summary/receipt reads. A
+                // durable summary without its receipt must not look like a
+                // complete successful log query; memory-only fixtures retain
+                // their original best-effort scan.
+                if persistent {
+                    return Err((-32000, "receipt history unavailable on this node; retry the retained range".to_string()));
+                }
+                continue;
+            };
             for e in &r.events {
                 let log_index = index;
                 index += 1;

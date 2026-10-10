@@ -122,6 +122,46 @@ final class NodeController: ObservableObject {
     @AppStorage("proverOnBattery") var proverOnBattery = false {
         didSet { restartIfRunning() }
     }
+    /// An existing preference, a background start and either founder mode
+    /// remain country-free until the new first-launch screen is answered.
+    @AppStorage("presenceCountryChoiceV1") private var presenceCountryChoice = "" {
+        didSet { if presenceCountryChoice != oldValue, !applyingCountryChoice { pushPresenceCountry() } }
+    }
+    @AppStorage("presenceCountryCode") var presenceCountryCode = "" {
+        didSet { if presenceCountryCode != oldValue, !applyingCountryChoice { pushPresenceCountry() } }
+    }
+    @Published private(set) var presenceDefaultRegion = PresenceRegion.fromRegion(Locale.current.region?.identifier)
+    private var presenceRegionLocaleObserver: NSObjectProtocol?
+    private var applyingCountryChoice = false
+    var presenceCountryPreference: PresenceCountry.Preference {
+        PresenceCountry.Preference(choice: presenceCountryChoice, country: presenceCountryCode,
+                                   region: presenceDefaultRegion)
+    }
+    var presenceDefaultRegionLabel: String { PresenceRegion.label(presenceDefaultRegion) }
+    var presenceLocalRegionLabel: String { PresenceRegion.label(presenceCountryPreference.effectiveRegion) }
+    var presenceSelectedCountryLabel: String? {
+        presenceCountryPreference.shared.map { AppLanguage.locale.localizedString(forRegionCode: $0) ?? $0 }
+    }
+    var needsCountryNotice: Bool { !presenceCountryPreference.answered }
+    var presenceShareCountry: Bool {
+        get { presenceCountryPreference.choice == .share }
+        set { answerPresenceCountry(sharing: newValue, country: presenceCountryCode) }
+    }
+
+    /// Commit both fields before synchronizing any child or saved argv. The
+    /// notice and later Settings use the same path; declining changes no
+    /// wallet, registration, node-enable or unattended-enable preference.
+    func answerPresenceCountry(sharing: Bool, country: String) {
+        applyingCountryChoice = true
+        presenceCountryCode = PresenceCountry.normalize(country) ?? ""
+        presenceCountryChoice = sharing ? PresenceCountry.Choice.share.rawValue : PresenceCountry.Choice.decline.rawValue
+        applyingCountryChoice = false
+        pushPresenceCountry()
+    }
+    private var presenceCountryNeedsSync = true
+    private var presenceCountryRestartPending = false
+    private var presenceCountrySyncInFlight = false
+    private var lastPresenceCountryAttempt = Date.distantPast
     /// What the prover did last (from the node's `aether_proverStatus`).
     @Published private(set) var prover: ProverStatus?
     /// 설정 ▸ 역사 보관 (docs/design/15-node-rewards.md "C. 보관"): how much
@@ -194,6 +234,61 @@ final class NodeController: ObservableObject {
     private func pushStorageSetting() {
         unattended?.storageShards = storageShards
         unattended?.syncMarker()
+    }
+
+    private func pushPresenceCountry() {
+        objectWillChange.send()
+        unattended?.syncMarker()
+        presenceCountryNeedsSync = true
+        presenceCountryRestartPending = true
+        lastPresenceCountryAttempt = .distantPast
+        syncPresenceCountry()
+        // The RPC changes only the child's RAM. Rebuild the supervisor's
+        // argv too, so its next role rotation cannot restore an old country.
+        // The marker above ensures daemon restarts use the same preference.
+        restartPresenceCountryIfNeeded()
+    }
+
+    private func refreshPresenceRegion() {
+        let region = PresenceRegion.fromRegion(Locale.current.region?.identifier)
+        guard region != presenceDefaultRegion else { return }
+        presenceDefaultRegion = region
+        pushPresenceCountry()
+    }
+
+    private func restartPresenceCountryIfNeeded() {
+        guard presenceCountryRestartPending, !confirmingMac, !updateInProgress,
+              !storageMovePreparing, storageMoveSync == nil,
+              restartTimer == nil, process != nil || attached else { return }
+        presenceCountryRestartPending = false
+        restartIfRunning()
+    }
+
+    /// Serialize changes so a rapid on/off never lets an older opt-in arrive
+    /// after the opt-out. Retry an unavailable node on the normal poll cadence.
+    private func syncPresenceCountry() {
+        guard presenceCountryNeedsSync, !presenceCountrySyncInFlight,
+              process != nil || attached, Date().timeIntervalSince(lastPresenceCountryAttempt) >= 10 else { return }
+        presenceCountrySyncInFlight = true
+        lastPresenceCountryAttempt = Date()
+        let preference = presenceCountryPreference
+        let pid = process?.processIdentifier ?? unattended?.runningNodePID
+        let params = preference.controlParams
+        let regionParams = preference.regionControlParams
+        Task {
+            let regionResult = await LocalRPC.call(port: Self.port, method: "aether_setPresenceRegion", params: regionParams)
+            let result = await LocalRPC.call(port: Self.port, method: "aether_setPresenceCountry", params: params)
+            presenceCountrySyncInFlight = false
+            guard process != nil || attached,
+                  (process?.processIdentifier ?? unattended?.runningNodePID) == pid else { return }
+            let latest = presenceCountryPreference
+            if latest != preference {
+                lastPresenceCountryAttempt = .distantPast
+                syncPresenceCountry()
+            } else {
+                presenceCountryNeedsSync = result == nil || regionResult == nil
+            }
+        }
     }
     /// The node's data volume is below its free-space floor (`aether_status`):
     /// no new era files or shards, proving paused — shown as "디스크 공간 부족".
@@ -290,6 +385,17 @@ final class NodeController: ObservableObject {
         self.clock = clock
         wrongLocation = !InstallLocation.currentIsRunnable
         if wrongLocation { state = .failed(InstallLocation.moveSentence) }
+        prepareNormalLaunch()
+    }
+
+    private var normalLaunchPrepared = false
+
+    /// Defer data-folder reads and account subscriptions until normal mode.
+    /// A user retry takes the same path as a healthy ordinary launch.
+    func prepareNormalLaunch() {
+        guard !LaunchRecovery.shared.isSafeMode, !normalLaunchPrepared else { return }
+        normalLaunchPrepared = true
+        _ = MigrationStatus.shared
         do {
             if let root = try BlockDataMove.authoritativeRoot(in: Self.dataDir) {
                 chainDataPath = root.path == BlockDataLocation.resolvedRoot(Self.dataDir).path ? "" : root.path
@@ -306,6 +412,11 @@ final class NodeController: ObservableObject {
             let changed = self.savedProveAddress.lowercased() != address.lowercased()
             self.savedProveAddress = address
             if changed && self.prove { self.restartIfRunning() }
+        }
+        presenceRegionLocaleObserver = NotificationCenter.default.addObserver(
+            forName: NSLocale.currentLocaleDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshPresenceRegion() }
         }
     }
     /// The update owns the node's startup gate and run.lock until this
@@ -328,7 +439,7 @@ final class NodeController: ObservableObject {
         return pid == releaseVerifiedPID && pid == binding.rootPID
     }
 
-    func prepareForUpdate() async -> Bool {
+    func prepareForUpdate(mayStop: @escaping @MainActor () -> Bool) async -> Bool {
         guard !updateInProgress else { return updateRunLock != nil }
         guard !storageMovePreparing else { return false }
         updatePreparationGeneration &+= 1
@@ -365,11 +476,42 @@ final class NodeController: ObservableObject {
         let runtimeAbsent: Bool
         let attestedBinding: NodeReleaseIdentity.Binding?
         if let rootPID, let expected = Self.helperBinaryURL {
+            let requestedAt = clock.now
             let sample = await LocalRPC.callVerified(rootPID: rootPID, port: Self.port, expected: expected,
                                                      method: "aether_status", params: [])
+            if LaunchRecovery.shared.isSafeMode {
+                // Membership belongs to this listener instance, not just
+                // its PID. A replaced daemon must be probed again.
+                guard let sample, sample.binding == verifiedStatusBinding,
+                      updateMembershipSnapshot.value(at: clock.now.seconds) != nil else {
+                    invalidateUpdateMembership()
+                    abortUpdatePreparation()
+                    return false
+                }
+            }
             releaseVerified = sample.map { NodeReleaseIdentity.hasWriterLease(status: $0.value) } ?? false
             runtimeAbsent = false
             attestedBinding = sample?.binding
+            // Slot and membership are renewed after any long proof/hash work,
+            // immediately before stopping a seated writer, on the same listener.
+            if releaseVerified, let key = candidate?.validatorKey {
+                let network = await LocalRPC.callVerified(rootPID: rootPID, port: Self.port, expected: expected,
+                                                          method: "aether_network", params: [])
+                let slot = await LocalRPC.callVerified(rootPID: rootPID, port: Self.port, expected: expected,
+                                                       method: "aether_restartSlot", params: [key])
+                let bound = network?.binding == attestedBinding && slot?.binding == attestedBinding
+                let value = bound ? slot?.value as? [String: Any] : nil
+                let membership = bound ? UpdateWindow.reconciledMembership(network: network?.value,
+                    validatorKey: key, restartSlot: value) : nil
+                updateMembershipSnapshot.observe(membership, requestedAt: requestedAt.seconds,
+                    generation: updateMembershipSnapshot.generation)
+                updateSlotAllowed = value?["allowed"] as? Bool
+                updateSlotRequestedAt = value == nil ? nil : requestedAt
+            } else {
+                updateMembershipSnapshot.invalidate()
+                updateSlotAllowed = nil
+                updateSlotRequestedAt = nil
+            }
         } else {
             releaseVerified = false
             attestedBinding = nil
@@ -384,7 +526,7 @@ final class NodeController: ObservableObject {
               process?.processIdentifier == ownPID, unattended.runningNodePID == daemonPID,
               UnattendedDecision.mayStopForUpdate(ownProcess: ownPID != nil, attached: attached,
                   daemonPresent: daemonPID != nil, releaseVerified: releaseVerified,
-                  unclaimedRuntimeAbsent: runtimeAbsent) else {
+                  unclaimedRuntimeAbsent: runtimeAbsent), mayStop() else {
             if updatePreparationGeneration == generation { abortUpdatePreparation() }
             return false
         }
@@ -397,6 +539,9 @@ final class NodeController: ObservableObject {
                 return false
             }
         }
+        // Signature/process-tree validation above may itself take time. No
+        // expensive operation may separate the last lease check from stopping.
+        guard mayStop() else { abortUpdatePreparation(); return false }
         stop(keepSwitch: true)
         if let daemonPID { unattended.stopDaemonNode(expectedPID: daemonPID) }
         let heldFD: Int32?
@@ -427,7 +572,7 @@ final class NodeController: ObservableObject {
             updateOwnsRespawnSuspension = false
             unattended?.resumeRespawn()
         }
-        if enabled { applyPower() }
+        if enabled && !LaunchRecovery.shared.isSafeMode { applyPower() }
     }
 
     private var powerTimer: Timer?
@@ -443,6 +588,7 @@ final class NodeController: ObservableObject {
     }
 
     private func startIfAllowed() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         #if WALLET_SCREENS
         // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
         return 
@@ -460,6 +606,7 @@ final class NodeController: ObservableObject {
     /// reason when the node does not run. Nothing else may leave the switch
     /// on with no node and no reason (the founder's 0.7.0 report).
     func applyPower() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         guard !updateInProgress else { return }
         if storageMovePreparing {
             refreshStopReason()
@@ -783,7 +930,7 @@ final class NodeController: ObservableObject {
         // logs or reads ever lands in the real node folder.
         return FileManager.default.temporaryDirectory.appendingPathComponent("wallet-screens-no-node", isDirectory: true)
         #endif
-        DataMigration.ensure()
+        if !LaunchRecovery.shared.isSafeMode { DataMigration.ensure() }
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/EastSea/node", isDirectory: true)
     }
 
@@ -904,6 +1051,8 @@ final class NodeController: ObservableObject {
 
     /// Resume the user's choice at launch.
     func restore() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
+        prepareNormalLaunch()
         #if WALLET_SCREENS
         // The screens renderer (scripts/wallet-screens.sh) never touches the real data.
         return
@@ -925,6 +1074,7 @@ final class NodeController: ObservableObject {
     }
 
     func start() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         guard !updateInProgress, !storageMovePreparing else { return }
         runningReleaseVerified = false
         #if WALLET_SCREENS
@@ -977,7 +1127,8 @@ final class NodeController: ObservableObject {
             proverFlags: ProverFlags.build(memory: proverMemory, cores: proverCores, battery: proverOnBattery,
                                            activeProcessors: ProcessInfo.processInfo.activeProcessorCount),
             storageFlag: StorageSetting.flag(shards: storageShards),
-            locationFlags: BlockDataLocation.flags(chainDataPath: chainDataPath, archive: archive))
+            locationFlags: BlockDataLocation.flags(chainDataPath: chainDataPath, archive: archive),
+            presenceFlags: presenceCountryPreference.flags)
         args += ["--exit-with-parent"]
         unattended?.nodeSwitchedOn()
         let p = Process()
@@ -1011,6 +1162,10 @@ final class NodeController: ObservableObject {
         lockRefused = false
         process = p
         confirmingMac = false
+        // This supervisor was launched with the latest persisted preference.
+        presenceCountryRestartPending = false
+        presenceCountryNeedsSync = true
+        lastPresenceCountryAttempt = .distantPast
         // Design 36 N3: the keys never ride a Time Machine backup onto
         // another Mac (sticky exclusion; idempotent and cheap).
         let keyDir = Self.dataDir
@@ -1101,6 +1256,7 @@ final class NodeController: ObservableObject {
     /// The tail of the node's log: what the watchdog reads to tell a full disk
     /// from a damaged database when the node exits with the storage code.
     private func nodeLogTail(_ bytes: Int = 8_192) -> String {
+        guard !LaunchRecovery.shared.isSafeMode else { return "" }
         let url = chainRoot.appendingPathComponent("node.log")
         guard let data = try? NodeLogTail.read(url, wanted: bytes) else { return "" }
         return String(data: data, encoding: .utf8) ?? ""
@@ -1110,6 +1266,7 @@ final class NodeController: ObservableObject {
     /// retain the state until another transition. Re-reading the tail also
     /// handles a marker that was only partly written at the previous poll.
     private func refreshMacConfirmation() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         let waiting = NodeMacConfirmation.waiting(in: nodeLogTail(65_536), previously: confirmingMac)
         if confirmingMac != waiting {
             confirmingMac = waiting
@@ -1259,6 +1416,7 @@ final class NodeController: ObservableObject {
     /// Hardware verification can wait indefinitely; it must not hold the
     /// main actor or delay launching the node that reports the waiting state.
     private func loadCandidate(_ binary: URL) {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
         guard candidate == nil, candidateProcess == nil, !confirmingMac, answeredSinceStart,
               DataMigration.mayStartNode() == nil else { return }
         // RPC only starts after the node's identity setup. Waiting for it
@@ -1319,8 +1477,12 @@ final class NodeController: ObservableObject {
     /// read from the same signed listener. An unclaimed endpoint is unknown.
     var updateMembership: Bool? {
         if updateInProgress { return updateMembershipSnapshot.value(at: clock.now.seconds) }
+        if LaunchRecovery.shared.isSafeMode, unattended?.runningNodePID != nil {
+            guard updateReleaseVerified else { return nil }
+            return updateMembershipSnapshot.value(at: clock.now.seconds)
+        }
         guard process != nil || attached else {
-            guard !enabled, !lockRefused, unattended?.runningNodePID == nil,
+            guard (!enabled || LaunchRecovery.shared.isSafeMode), !lockRefused, unattended?.runningNodePID == nil,
                   let at = unclaimedProbeRequestedAt,
                   clock.now.elapsed(since: at) >= 0, clock.now.elapsed(since: at) <= 15,
                   unclaimedEndpointAbsent, Self.updateLockIsClear(in: Self.dataDir) else { return nil }
@@ -1343,15 +1505,29 @@ final class NodeController: ObservableObject {
 
     var onUpdateMomentChanged: (() -> Void)?
     private var updateMembershipSnapshot = UpdateWindow.MembershipSnapshot()
+    private var updateSlotAllowed: Bool?
+    private var updateSlotRequestedAt: MonotonicInstant?
     private var lastUpdateMembershipCheck = MonotonicInstant.distantPast
     private var updateMembershipTask: Task<Void, Never>?
     private var unclaimedProbeRequestedAt: MonotonicInstant?
     private var unclaimedEndpointAbsent = false
 
+    /// Read from the same signed local listener as voting membership. A slot
+    /// observation expires with the membership lease and is held during quiesce.
+    var updateRestartSlot: Bool? {
+        guard let requestedAt = updateSlotRequestedAt,
+              clock.now.elapsed(since: requestedAt) >= 0,
+              clock.now.elapsed(since: requestedAt) <= 15,
+              updateInProgress || updateReleaseVerified else { return nil }
+        return updateSlotAllowed
+    }
+
     private func invalidateUpdateMembership() {
         updateMembershipTask?.cancel()
         updateMembershipTask = nil
         updateMembershipSnapshot.invalidate()
+        updateSlotAllowed = nil
+        updateSlotRequestedAt = nil
         lastUpdateMembershipCheck = .distantPast
         unclaimedProbeRequestedAt = nil
         unclaimedEndpointAbsent = false
@@ -1365,8 +1541,45 @@ final class NodeController: ObservableObject {
         let generation = updateMembershipSnapshot.generation
         let requestedAt = clock.now
         let port = Self.port
+        if LaunchRecovery.shared.isSafeMode, let pid = unattended?.runningNodePID,
+           let expected = Self.helperBinaryURL {
+            lastUpdateMembershipCheck = requestedAt
+            updateMembershipTask = Task { [weak self] in
+                let status = await LocalRPC.callVerified(rootPID: pid, port: port, expected: expected,
+                                                        method: "aether_status", params: [])
+                let leased = status.map { NodeReleaseIdentity.hasWriterLease(status: $0.value) } ?? false
+                var identity: LocalRPC.VerifiedReply?
+                var network: LocalRPC.VerifiedReply?
+                if leased {
+                    // The running node exposes its public node ID. No
+                    // candidate-info process, key-file read, or log parser.
+                    identity = await LocalRPC.callVerified(rootPID: pid, port: port, expected: expected,
+                                                          method: "aether_shardStats", params: [])
+                    if identity?.binding == status?.binding {
+                        network = await LocalRPC.callVerified(rootPID: pid, port: port, expected: expected,
+                                                             method: "aether_network", params: [])
+                    }
+                }
+                guard let self, self.updateMembershipSnapshot.generation == generation else { return }
+                self.updateMembershipTask = nil
+                guard LaunchRecovery.shared.isSafeMode, !self.updateInProgress,
+                      self.unattended?.runningNodePID == pid else { return }
+                let sameListener = leased && status?.binding == identity?.binding && status?.binding == network?.binding
+                self.runningReleaseVerified = sameListener
+                self.releaseVerifiedPID = sameListener ? pid : nil
+                self.verifiedStatusBinding = sameListener ? status?.binding : nil
+                self.verifiedStatusRequestedAt = sameListener ? requestedAt : nil
+                let nodeID = (identity?.value as? [String: Any])?["me"] as? String
+                let membership = sameListener ? nodeID.flatMap {
+                    UpdateWindow.votingMembership(network: network?.value, nodeID: $0)
+                } : nil
+                self.updateMembershipSnapshot.observe(membership, requestedAt: requestedAt.seconds, generation: generation)
+                self.onUpdateMomentChanged?()
+            }
+            return
+        }
         if process == nil, !attached {
-            guard !enabled, !lockRefused, unattended?.runningNodePID == nil,
+            guard (!enabled || LaunchRecovery.shared.isSafeMode), !lockRefused, unattended?.runningNodePID == nil,
                   Self.updateLockIsClear(in: Self.dataDir) else { return }
             lastUpdateMembershipCheck = requestedAt
             updateMembershipTask = Task { [weak self] in
@@ -1376,7 +1589,7 @@ final class NodeController: ObservableObject {
                 guard !self.updateInProgress, self.process == nil, !self.attached else { return }
                 self.unclaimedProbeRequestedAt = requestedAt
                 self.unclaimedEndpointAbsent = absent
-                let clear = absent && !self.enabled && self.unattended?.runningNodePID == nil
+                let clear = absent && (!self.enabled || LaunchRecovery.shared.isSafeMode) && self.unattended?.runningNodePID == nil
                     && Self.updateLockIsClear(in: Self.dataDir)
                 self.updateMembershipSnapshot.observe(clear ? false : nil,
                     requestedAt: requestedAt.seconds, generation: generation)
@@ -1390,17 +1603,25 @@ final class NodeController: ObservableObject {
         updateMembershipTask = Task { [weak self] in
             let sample = await LocalRPC.callVerified(rootPID: leasedBinding.rootPID, port: port, expected: expected,
                                                      method: "aether_network", params: [])
+            let slot = await LocalRPC.callVerified(rootPID: leasedBinding.rootPID, port: port, expected: expected,
+                                                   method: "aether_restartSlot", params: [key])
             guard let self, self.updateMembershipSnapshot.generation == generation else { return }
             self.updateMembershipTask = nil
             guard !self.updateInProgress else { return }
             guard self.updateReleaseVerified, self.verifiedStatusBinding == leasedBinding,
                   sample?.binding == leasedBinding, self.candidate?.validatorKey == key else {
                 self.updateMembershipSnapshot.observe(nil, requestedAt: requestedAt.seconds, generation: generation)
+                self.updateSlotAllowed = nil
+                self.updateSlotRequestedAt = nil
                 self.onUpdateMomentChanged?()
                 return
             }
-            let membership = UpdateWindow.votingMembership(network: sample?.value, validatorKey: key)
+            let slotStatus = slot?.binding == leasedBinding ? slot?.value as? [String: Any] : nil
+            let membership = UpdateWindow.reconciledMembership(network: sample?.value,
+                validatorKey: key, restartSlot: slotStatus)
             self.updateMembershipSnapshot.observe(membership, requestedAt: requestedAt.seconds, generation: generation)
+            self.updateSlotAllowed = slotStatus?["allowed"] as? Bool
+            self.updateSlotRequestedAt = slotStatus == nil ? nil : requestedAt
             self.onUpdateMomentChanged?()
         }
     }
@@ -1481,6 +1702,8 @@ final class NodeController: ObservableObject {
         runningReleaseVerified = true
         if refusePersistedBindingMismatch() { return }
         attached = true
+        presenceCountryNeedsSync = true
+        lastPresenceCountryAttempt = .distantPast
         attachMisses = 0
         switched = false
         state = .running
@@ -1589,6 +1812,10 @@ final class NodeController: ObservableObject {
         return (rows, total)
     }
 
+    /// Release/upgrade hints and disconnected-stream fallback wake discovery;
+    /// ordinary node health polling retains only its existing safety checks.
+    func walletReleaseNotice() { refreshUpgrade() }
+
     private func refreshUpgrade() {
         guard !upgradeAsked else { return }
         let port = Self.port
@@ -1630,6 +1857,9 @@ final class NodeController: ObservableObject {
     }
 
     private func check() {
+        guard !LaunchRecovery.shared.isSafeMode else { return }
+        refreshPresenceRegion()
+        restartPresenceCountryIfNeeded()
         if refusePersistedBindingMismatch() { return }
         refreshMacConfirmation()
         // The node owns verification retries. Restarting it while a read is
@@ -1647,8 +1877,8 @@ final class NodeController: ObservableObject {
         applyDuty()
         refreshProver()
         refreshHistoryKept()
-        refreshUpgrade()
         refreshDisk()
+        syncPresenceCountry()
         guard !checkInFlight else { return }
         checkInFlight = true
         let port = Self.port, switched = self.switched

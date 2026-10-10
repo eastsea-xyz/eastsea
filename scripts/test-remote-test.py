@@ -87,8 +87,10 @@ if tool == 'rsync':
         for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/types/src/lib.rs',
                      'crates/types/.env', 'crates/types/secret.key', 'apps/agent/credential.json',
                      'apps/wallet/Sources/EarningsModel.swift', 'apps/wallet/Tests/earnings/main.swift',
-                     'apps/wallet/Resources/Localizable.xcstrings', 'apps/agent/Tests/history/main.swift',
-                     'apps/bridge/Tests/bridge-plan/main.swift', 'apps/prover/guest/src/main.rs'):
+                     'apps/wallet/Resources/Localizable.xcstrings', 'apps/wallet/Resources/network.json',
+                     'apps/agent/Tests/history/main.swift',
+                     'apps/bridge/Tests/bridge-plan/main.swift', 'apps/prover/guest/src/main.rs',
+                     'fuzz/corpus/tx_envelope/empty.json', 'fuzz/target/generated.bin', 'tests/fixtures/sea-urls.json'):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('fixture')
@@ -148,8 +150,11 @@ if tool == 'rsync':
                        'test-swift-pure.sh', 'swift-test-cache.py', 'remote-resource-guard.py'):
             self.assertIn('scripts/' + helper, listing)
         self.assertIn('apps/wallet/Resources/Localizable.xcstrings', listing)
+        self.assertIn('apps/wallet/Resources/network.json', listing)
+        self.assertIn('fuzz/corpus/tx_envelope/empty.json', listing)
+        self.assertIn('tests/fixtures/sea-urls.json', listing)
         for excluded in ('crates/types/.env', 'crates/types/secret.key', 'crates/types/src/outside.rs',
-                         'apps/agent/credential.json', 'apps/prover/guest/src/main.rs'):
+                         'apps/agent/credential.json', 'apps/prover/guest/src/main.rs', 'fuzz/target/generated.bin'):
             self.assertNotIn(excluded, listing)
         self.assertEqual(shlex.split(calls[3]['args'][-1])[-2:], ['-E', expression])
         self.assertIn('--test wake_signal', calls[3]['args'][-1])

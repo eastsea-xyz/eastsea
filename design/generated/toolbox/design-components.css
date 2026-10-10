@@ -1,0 +1,48 @@
+/* GENERATED copy of design/brand/components.css. Do not edit. */
+/* Shared EastSea UI grammar. Values belong in tokens.json. */
+.es-wordmark { font-family: var(--font-display); font-weight: var(--weight-regular); letter-spacing: -.025em; }
+.es-amount { font-family: var(--font-amount); font-variant-numeric: tabular-nums lining-nums; letter-spacing: var(--text-amount-md-tracking); }
+.es-section-title { font: var(--weight-medium) var(--text-headline-size)/var(--text-headline-line) var(--font-text); color: var(--c-text); }
+.es-plate {
+  position: relative; isolation: isolate; overflow: hidden;
+  background: linear-gradient(160deg, var(--c-plate), var(--c-plate-2));
+  color: var(--c-plate-ink); border-radius: var(--radius-plate);
+  box-shadow: var(--shadow-plate);
+}
+.es-plate::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: radial-gradient(ellipse at 90% 10%, color-mix(in srgb, var(--c-gold) 10%, transparent), transparent 65%);
+}
+.es-plate .muted { color: var(--c-plate-soft); }
+.es-plate .es-status { color: var(--c-plate-ink); }
+.es-control {
+  min-height: var(--space-10); border-radius: var(--radius-pill);
+  background: var(--c-surface); color: var(--c-text);
+  border: 1px solid var(--c-line-control);
+  font-family: var(--font-text); font-weight: var(--weight-medium);
+  transition: background-color var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard);
+}
+.es-control:hover:not(:disabled) { border-color: var(--c-line-strong); background: var(--c-surface-sunken); }
+.es-control.primary { background: var(--c-accent-fill); color: var(--c-on-accent-fill); border-color: transparent; }
+.es-control.primary:hover:not(:disabled) { background: var(--c-accent-fill); filter: brightness(.96); }
+.es-control:focus-visible, .es-focus:focus-visible { outline: 2px solid var(--c-focus); outline-offset: 3px; }
+.es-control:disabled { opacity: .5; cursor: default; }
+.es-status { display: inline-flex; align-items: center; gap: var(--space-2); font-variant-numeric: tabular-nums; }
+.es-status-dot { width: var(--space-2); height: var(--space-2); border-radius: var(--radius-pill); background: currentColor; flex: none; }
+.es-success { color: var(--c-success); }
+.es-warn { color: var(--c-warn); }
+.es-danger { color: var(--c-danger); }
+.es-divider { border: 0; border-top: 1px solid var(--c-line); margin: var(--space-4) 0; }
+@media (prefers-reduced-motion: reduce) {
+  .es-control, .es-plate, .es-status { animation: none !important; transition: none !important; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .es-plate { background: var(--c-plate); box-shadow: none; }
+  .es-plate::before { display: none; }
+}
+@media (forced-colors: active) {
+  .es-plate { color: CanvasText; background: Canvas; box-shadow: none; outline: 1px solid CanvasText; }
+  .es-plate::before { display: none; }
+  .es-plate .muted { color: CanvasText; }
+  .es-control { border-color: ButtonText; }
+}

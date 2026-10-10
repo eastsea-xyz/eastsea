@@ -1,6 +1,6 @@
 # site/: EastSea 소개 페이지 (eastsea.xyz)
 
-공개 원페이지 소개 사이트다. 순수 HTML/CSS/바닐라 JS라서 **빌드 단계가 없다.** Cloudflare Pages 프로젝트
+공개 원페이지 소개 사이트다. 소개 페이지는 순수 HTML/CSS/바닐라 JS다. 같은 사이트의 `/explorer/`는 `scripts/build-extension.sh`와 `scripts/package-public-reader.sh`가 공유 검증기·공개 노드 읽기 리소스를 패키징한다 (자세히: `docs/ops/public-peer-reads.md`). Cloudflare Pages 프로젝트
 `eastsea-site`가 이 폴더를 그대로 서빙한다. 2026-10-07에 "Dawn almanac" 방향으로 다시 디자인했다.
 벤치마크와 결정 근거는 `docs/design/site-benchmark-2026-10-07.md`, 디자인 시스템은 `design/brand/SYSTEM.md`에 있다.
 
@@ -11,6 +11,7 @@ site/
 ├── index.html              — 전체 콘텐츠 (한국어·영어를 함께 담고 CSS로 하나만 표시)
 ├── privacy.html            — 개인정보 처리방침 (이중 언어, 같은 헤더·푸터)
 ├── tokens.css              — 생성물: design/brand/tokens.json → design/scripts/build-tokens.mjs (직접 수정 금지)
+├── design-components.css   — 생성물: design/brand/components.css의 공통 판·컨트롤·상태 스타일 (직접 수정 금지)
 ├── styles.css              — 레이아웃·컴포넌트. 색·글꼴·간격은 tokens.css 변수만 쓴다
 ├── assets/
 │   ├── coin-{128,256,512,1024}.webp — 더블룬 코인 (design/brand/dbln-coin-1024.png에서 생성)
@@ -26,8 +27,18 @@ site/
 
 ## 재생성
 
+`account-icon.js`는 지갑 확장·탐색기와 같은 Islands v3 계정 아이콘 모듈이다.
+`deriveAccountIcon(address, version = 2)`은 20바이트 주소에서 로컬로 특징을 만들고,
+`accountIconSVG(spec, size = 64)`는 고정 SVG를 반환한다. DOM에 붙일 때는
+`createAccountIcon(address, size = 32)`를 써서 SVG DOM API로 만들고, 옆에 주소를 표시한다.
+잘못된 주소는 중립 자리표시자로 표시하며, 아이콘은 주소 인증 수단이 아니다.
+규격과 고정 벡터는 `docs/design/46-account-icon.md`에 있다.
+원본 `apps/extension/src/lib/accountIcon.js`를 수정한 뒤
+`node scripts/sync-account-icons.mjs`로 복사하고 `--check`로 바이트 일치를 확인한다.
+네트워크·키·저장소·실행 중 난수 없이 `eastsea-page:`에서도 동기적으로 동작한다.
+
 ```bash
-node design/scripts/build-tokens.mjs            # tokens.json → site/tokens.css (--check: 최신인지 확인)
+python3 scripts/gen-design-tokens.py            # 토큰·공통 컴포넌트 → 모든 플랫폼 (--check: 읽기 전용 최신 여부 확인)
 python3 design/scripts/subset-ko-font.py <Hahmlet[wght].ttf>   # 제목 문구를 바꿨으면 반드시
 node design/og/render-og.cjs                    # OG 이미지 (playwright 필요)
 python3 -m http.server -d site                  # 미리보기 http://localhost:8000
@@ -50,8 +61,21 @@ python3 -m http.server -d site                  # 미리보기 http://localhost:
   - 금액과 토큰은 예시라고 캡션에 밝혀 둔다.
   - 창 안은 앱과 같은 Apple 시스템 글꼴(SF Pro, Apple SD Gothic Neo)을 쓴다.
 - **모션:** `prefers-reduced-motion: no-preference`일 때만 켜진다.
-  - 해가 떠오르고, 햇살이 나타나고, 물결이 천천히 흐르고, 창이 떠오르고, 상단 점이 깜박인다.
-- **외부 요청:** 없다 (CDN·분석·쿠키 0).
+  - 페이지 진입 때 해와 햇살, 창이 한 번 나타나고 끝난다. 물결과 테스트넷 안내 점은 정지해 있다.
+  - `prefers-reduced-transparency: reduce`에서는 헤더가 불투명해지고 잔액 판의 장식·합성 효과를 끈다.
+  - 두 페이지가 공통 `design-components.css`를 읽고 남색 판·금액·컨트롤을 같은 컴포넌트로 표시한다.
+- **실시간 지구본:** `#live-network`의 “지금 동해를 돌리는 Mac” 섹션은 홈 릴레이의 대륙별 연결 수를 보여 준다.
+  - `live-network.json`의 `rpc`(기본 공개 게이트웨이)에서 `aether_presence`만 10초마다 읽는다. 기존 섹션에는 라이브 RPC 위젯이 없었다.
+  - 캡션은 “이 노드가 보고 있는 Mac들”이다. 정확한 위치, IP, 노드 ID, 개별 노드 목록을 읽거나 표시하지 않는다.
+  - 국가는 직접 동의한 Mac이 3대 이상일 때 목록에만 표시한다. 지구본의 점은 항상 대륙 합계이다.
+  - Natural Earth 110m에서 만든 점 지도가 로컬에 포함되어 있다. WebGL 지구본, 가로 드래그, 방향키, 일시정지와 동작 줄이기의 정적인 지도 대체를 지원한다.
+  - 탭이 숨겨지거나 섹션이 화면 밖에 있으면 렌더링과 폴링을 멈춘다. 실패 시 불러오기 실패/마지막 현황을 명시하며, 예시 수로 대체하지 않는다.
+  - 예시 미리보기: `?globe=fixture#live-network` (실제 연결 수가 아님을 표시한다).
+  - 정식 공개 데이터 연결 전 `docs/design/38-live-globe.md`의 집계 전용 RPC 계약과 서버의 k=3 필터를 반드시 맞춰야 한다.
+  - 공유 원본: `apps/explorer/live-globe/`. 수정 후 루트에서 `node scripts/sync-live-globe.mjs`; 체크는 `--check`. 서빙에는 빌드가 필요 없다.
+- **외부 요청:** 소개 페이지의 실시간 지구본은 설정된 공개 RPC의 집계만 읽는다 (CDN·외부 지도·분석·쿠키 0). 글꼴도 자체 호스팅한다.
+  `/explorer/`의 체인 읽기는 내 노드를 먼저 시도한 뒤 공개 iroh 노드와 교체 가능한 WebSocket/pkarr 경로로 검증된 체인을 읽는다. 기본 HTTP 체인 게이트웨이는 없으며 지구본의 검증 안 된 집계 읽기는 별도이다.
+  새 제목의 `돌` 한 글자는 `fonts/hahmlet-globe-subset.woff2`(기존 SIL OFL Hahmlet의 1,408바이트 보충 서브셋)로 제공하여 기존 제목용 서브셋을 변경하지 않았다.
 - **Lighthouse (2026-10-07, 로컬):**
   - 모바일: 성능 98, 접근성 100, 권장사항 100, SEO 100
   - 데스크톱: 성능 100
@@ -113,7 +137,7 @@ python3 -m http.server -d site                  # 미리보기 http://localhost:
 | 노드 스위치: 네트워크의 모든 거래를 다시 계산해 확인(= 체인 추종, 모든 블록 재실행) | 오늘 사실 | eastsea-xyz/eastsea README, `apps/wallet/Sources/NodeController.swift` |
 | VPN·포트 없이 집 인터넷(DHT + QUIC 홀펀칭) | 오늘 사실 | `README.md` |
 | AI 에이전트 결제: 수신인 승인 전 결제 꺼짐, 체인이 한도 집행, 기본 1/10 DBLN·7일 | 오늘 사실(테스트넷) | `README.md` §Wallet for AI agents, `AGENTS.md` |
-| 지갑 무분석, 등록 외 개인정보 수집 없음 | 오늘 사실 | `DISCLAIMER.md` §4 item 5 |
+| 별도의 원격 사용 분석 업로드 없음; 공개 체인·등록/일일 Apple 확인·Cloudflare 접속·GitHub 업데이트 IP/버전·민원메일 처리는 별도 설명 | 오늘 사실 | `DISCLAIMER.md` §4, `docs/ops/privacy-policy.md`, 5개 언어 `privacy.html` |
 | 탐색기 explorer.eastsea.xyz | 오늘 사실 | HTTP 200 (2026-10-07) |
 | 툴박스: 예제+테스트, ETH·SOL 호환성 증명·벤치, 네이티브 설계, AS IS·비운영 | 오늘 사실 | eastsea-xyz/eastsea-toolbox README, 툴박스 공개 정책(2026-10-06) |
 | 브라우저 확장(Chrome·Edge·Brave·Arc): 아직 배포 전 | 오늘 사실 | 0.7.0 릴리스 자산에 확장 없음, `README.md` §Browser extension |

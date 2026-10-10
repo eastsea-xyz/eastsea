@@ -1,0 +1,131 @@
+# 앱·이름 중립 검색 (0.7.4)
+
+작성: 2026-10-08. 근거: 창업자 요청 “서치 서비스도 있어야함.”
+
+각 노드는 확정된 체인의 앱 등록·이름 서비스 기록으로 검색 인덱스를 만든다. 중앙 검색 서버, 외부 manifest 조회, 유료 노출, Pipln 큐레이션·가산점, 숨겨진 차단 목록은 없다. 지갑과 익스플로러는 같은 RPC 결과와 순서를 표시한다.
+
+이 문서는 [앱 레지스트리](31-app-registry.md)의 **검색**에 관한 이전 정렬·분류별 제외·발견 시점 제약을 대체한다. 앱 실행·서명·배포 정책은 별도 범위다. `AppRegistry` 자체는 아직 설계 초안이며, 검색 리더가 있다는 사실은 레지스트리 배포를 뜻하지 않는다.
+
+## RPC
+
+공개 읽기 전용 메서드다. `eastsea_search`, `eastsea_searchInfo`도 같은 응답을 제공한다.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"aether_search","params":["harbor.sea",20]}
+```
+
+`aether_search`는 `[query, limit]`을 받는다. `query`는 제어 문자가 없는 UTF-8 최대 256바이트 문자열이다. `limit`은 정수 1–50이며 생략하면 20이다. 빈 질의는 빈 배열을 반환한다. 잘못된 인자는 `-32602`, 인덱스 잠금이 사용 중이면 재시도 가능한 `-32002`다. 시간 기준은 노드의 마지막 확정 블록이다.
+
+| 결과 필드 | 의미 |
+|---|---|
+| `name` | 앱 slug 또는 `.sea` 이름·하위 이름 |
+| `title`, `description`, `category` | 온체인에 기록된 표시 정보. 게시자의 주장이다 |
+| `publisher` | 현재 앱 게시자 또는 이름 소유자의 `0x` 주소 |
+| `url` | 앱은 `sea://<base32 appId>/`, 이름은 `sea://<name>.sea/` |
+| `verified` | 0이 아닌 콘텐츠 해시가 기록되어 있음. 콘텐츠 다운로드·해시 대조, 안전성, 승인, 위원회 인증서 검증을 뜻하지 않음 |
+| `usage_7d` | 최근 7일의 서로 다른 원발신 계정 수. 불완전하면 0이며 실제 사용자가 없다는 뜻이 아님 |
+| `usage_complete` | 이 응답의 사용량을 정렬에 사용할 수 있는지 |
+| `query_usage_limited` | 이 질의가 사용량 계산 예산을 소진했을 때 `true`. `false`면 생략 |
+| `created_at` | 최초 확정 등록 시각, Unix 초 |
+| `lookalike` | 같은 UTS-39 skeleton을 가진 더 높은 순위의 이름. 없으면 생략 |
+
+`aether_searchInfo`는 `[]`를 받으며 다음 상태를 공개한다. 클라이언트는 포화·누락을 사용자에게 표시한다.
+
+| 상태 필드 | 의미 |
+|---|---|
+| `records`, `record_limit`, `records_saturated`, `rejected_records` | 보관 중인 레코드, 상한, 용량 제한으로 누락된 등록 여부, 누적 입장 거절 수 |
+| `pending` | 효력 발생을 기다리는 릴리스·등재 해제 수 |
+| `usage_pairs`, `usage_pair_limit`, `usage_saturated`, `rejected_usage_pairs` | 보관 중인 계약·호출자 쌍, 상한, 사용량 포화로 인한 불완전 상태, 누적 거절 수 |
+| `usage_complete`, `usage_incomplete_until`, `usage_window_seconds` | 사용량 완전성, 불완전 구간이 7일 창 밖으로 나가는 Unix 초 또는 `null`, 창 길이 604800초 |
+| `awaiting_clock` | 시각 0인 snapshot 뒤 첫 유효한 확정 블록 시각을 기다리는지. 기다리는 동안 사용량은 불완전 |
+| `history_complete` | 재구축에 필요한 등록 이벤트 이력이 모두 있었는지 |
+| `sources_configured`, `sources` | 프로토콜 소스 설정 여부와 모든 주소·런타임 코드 해시 |
+
+## 체인에서 읽는 정보
+
+소스는 노드의 `network.json`에 있는 `search` 설정이다.
+
+```json
+{
+  "search": {
+    "app_registries": [],
+    "name_services": []
+  }
+}
+```
+
+배포된 소스를 추가할 때 각 항목은 `{"address": "0x…", "code_hash": "0x…"}`다. 두 종류를 합쳐 최대 64개이며 주소·해시는 0일 수 없다. 주소·해시순 정렬 후 같은 항목은 중복 제거한다. 같은 주소의 다른 해시, 두 종류에 걸친 같은 주소, 알 수 없는 설정 필드는 거절한다. 이벤트 발신 주소와 현재 런타임 코드 해시가 핀과 일치해야 해석한다. 이 핀은 ABI·프로토콜의 정체성을 지정하며 게시자·카테고리를 고르는 목록이 아니다. 설정이 없으면 소스 목록은 비고, 그 상태도 RPC에 보인다.
+
+- **앱:** [31의 이벤트 ABI](31-app-registry.md#24-인터페이스)를 읽는다. `Published`·`ReleaseQueued`의 최대 256바이트 `hint`가 인라인 JSON이면 `title`, `description`, `category`, `contracts`를 읽는다. URL 힌트를 따라가거나 외부 manifest를 받지 않는다. 힌트가 유효한 UTF-8·JSON이 아니어도 등록 자체를 숨기지 않고 빈 메타데이터로 처리한다. 표시 정보가 없으면 제목은 slug, 설명·분류는 빈 문자열이다. 게시자 이전, 지연 릴리스·등재 해제, 취소는 확정 블록 시각에 맞춰 반영한다. `Settled` 호출에 의존하지 않는다.
+- **이름:** [26의 이벤트 ABI](26-name-service.md#이벤트)에서 등록·갱신·주소·텍스트·이전을 읽는다. 텍스트 키는 `title`, `description`, `category`, `content-hash`(`contenthash`도 허용), JSON 주소 배열 `contracts`다. 이름은 `.sea` 접미사를 한 번만 붙이며 `sea://` URL로 표시한다. 등록 만료에는 기존 컨트랙트의 30일 유예를 포함한다.
+- **하위 이름:** 검색 리더는 `Registered` ABI의 점으로 나뉜 이름을 받아 `shop.harbor.sea`처럼 표시·검색할 수 있다. 현재 [26의 컨트랙트](26-name-service.md#의도적으로-만들지-않은-것)는 하위 이름을 등록하는 기능이 없다. 이는 호환 이벤트를 읽는 준비이며 새 등록 기능·배포를 뜻하지 않는다.
+
+레코드 ID에는 발신 컨트랙트와 앱 ID·이름 node가 포함된다. 다른 레지스트리의 같은 slug나 node는 서로의 레코드를 수정하지 못한다.
+
+표시 메타데이터의 제어 문자는 공백으로 바꾸고 UTF-8 문자 경계를 지키며 필드별 바이트 상한으로 자른다.
+
+## 중립 정렬과 사용량
+
+순서는 다음 비교 키로 고정된다. 카테고리, 게시자, 지불액, 추천 목록은 비교에 들어가지 않는다.
+
+1. 정확한 이름 또는 앱 키·`sea://` URL 일치.
+2. 이름 접두사 일치.
+3. 제목·설명에 질의의 **모든 토큰**이 일치. 토큰은 영숫자 경계로 나누고 대소문자를 구분하지 않는다.
+4. 같은 단계에서는 완전한 `usage_7d` 내림차순.
+5. 최초 등록 시각 오름차순, 마지막으로 소스가 포함된 ID 사전순.
+
+이름 비교는 대소문자, `.sea` 접미사, `sea://`의 경로·질의를 정규화한다. 단순 접두사 일치는 사용량이 많은 토큰 일치보다 항상 앞선다.
+
+0.7.4 후보에서는 7780의 proving program `0a040af91cff278b7b964b44da376c332c46077adc1b982778fa9d087761c4b0`을 보존하기 위해 실행기 호출 추적을 적용하지 않는다. 확정된 성공 receipt의 레지스트리 로그는 계속 해석하지만, 각 성공 receipt에 `UsageIncomplete`를 기록한다. 직접 수신 주소나 로그 발행 주소를 내부 호출의 증거로 추정하지 않는다. 따라서 누락 구간이 최근 7일 창에 포함되면 `usage_complete: false`, `usage_7d: 0`이며, 0은 실제 사용자가 없다는 뜻이 아니다. 같은 텍스트 단계에서는 등록 시각·소스가 포함된 ID 순서를 사용한다. 메타데이터 검색·저장·RPC·네이티브 UI는 유지한다.
+
+일반 인덱스와 합성 fixture는 계약·호출자 쌍을 최근 7일 창 `(현재 시각 − 7일, 현재 시각]`에 보관하는 설계를 검증한다. 이 보관 활동은 앱 등록 시각으로 잘리지 않으며, 계약 주소가 겹치는 앱에서 호출자를 중복 제거한다. 실제 실행 추적과 사용량에 따른 운영 순위는 별도 proving-program 결정 및 검증 뒤에 연결해야 한다. 현 후보에는 그 연결이 없다. 주소 수는 사람 수·안전성·추천 점수가 아니다.
+
+각 질의의 사용량 계산은 행 방문 200만 회까지만 한다. 예산을 소진하면 **그 질의의 모든 후보**를 같은 방식으로 다시 정렬하고 `query_usage_limited: true`를 반환한다. 이 경우 다른 질의나 인덱스의 전역 완전성은 바뀌지 않는다.
+
+## 비슷한 이름 경고
+
+정렬 후 반환하는 결과의 이름·표시 제목을 UTS-39 skeleton으로 비교한다. 서로 다른 이름이 이미 반환된 더 높은 순위의 이름과 충돌하면 낮은 순위 결과에 `lookalike`를 붙인다. 같은 이름을 쓰는 여러 앱은 그것만으로 경고하지 않는다. 경고는 결과를 숨기거나 순서를 바꾸지 않으며 피싱 판정을 확정하지 않는다.
+
+Unicode **16.0.0**의 전체 데이터로 `NFD → confusable 매핑 → NFD`를 계산한다. ASCII 몇 글자만 비교하는 방식이 아니다. [생성기](../../scripts/generate-search-unicode.py), [로컬 테이블](../../crates/node/src/search-unicode/tables.rs), [Unicode License V3](../../crates/node/src/search-unicode/LICENSE)를 함께 보관하며 새 의존성은 없다. 원본은 Unicode의 [confusables.txt](https://www.unicode.org/Public/security/16.0.0/confusables.txt)와 [UnicodeData.txt](https://www.unicode.org/Public/16.0.0/ucd/UnicodeData.txt)다. 테이블에는 입력 SHA-256도 기록한다. 실행 중 외부 조회는 없다.
+
+## 재구축·저장 상한
+
+같은 확정 이벤트를 블록·트랜잭션·로그 순서로 적용하면 일괄 재구축과 증분 적용이 같다. 각 블록은 시각 진행, 성공 영수증의 등록 이벤트, 실제 호출 대상의 사용량을 적용한다. 인덱스는 합의 상태가 아니라 체인에서 재생성할 수 있는 로컬 파생 데이터다.
+
+메모리와 디스크의 레코드는 최대 **10만 개**다. 여유 공간이 있는 동안 먼저 확정 등록된 레코드를 받으며 만료·등재 해제는 자리를 반환한다. 포화 중 놓친 등록을 숨기지 않고 `rejected_records`로 알린다. 보류 변경은 레코드당 최대 한 개, 계약 주소는 레코드당 최대 32개다. ID 192, 이름·제목 256, 설명 1024, 분류 64, URL 512바이트로 각 가변 필드도 제한한다. 검색 응답은 최대 50개다.
+
+새 블록은 이전 검색 헤더의 높이·부모 블록 해시·소스 fingerprint·checkpoint가 정확히 이어질 때 변경·삭제된 행만 블록 저장과 **같은 redb 트랜잭션**으로 커밋한다. 연속성이 끊겼거나 헤더가 손상됐으면 같은 트랜잭션에서 모든 검색 행을 현재 메모리 인덱스로 교체해 공백 이전의 낡은 행을 지운다. 실패하면 메모리 delta도 되돌린다. 재시작 캐시는 확정 높이·블록 해시·정규화한 소스 설정 fingerprint가 일치할 때만 읽는다. 일치하지 않거나 손상됐으면 보관된 체인 이벤트로 재구축한다.
+
+이전 저장소는 영수증 이벤트는 있어도 모든 원본 트랜잭션·호출 추적을 보관하지 않았으므로 재구축 뒤 한 주간 사용량을 불완전으로 표시한다. backfill은 확정 블록 높이의 연속성과 높이 0 이외의 시각 0 snapshot 표시를 검사한다. 공백을 만나면 이전 파생 레코드를 초기화하고 그 뒤 이벤트만 읽으며 `history_complete: false`를 유지한다. 과거 블록·영수증이 pruning 또는 snapshot으로 빠진 경우도 불완전하다. 이미 만들어진 검색 행은 일반 이력 pruning 뒤에도 남지만, 없는 과거 등록 기록을 추정해서 채우지 않는다.
+
+snapshot 시각이 0이면 `awaiting_clock: true`로 기다린다. 첫 양수 확정 블록 시각부터 온전한 7일의 불완전 구간을 시작한다. 1970년 기준의 이미 지난 기한을 만들거나 기기의 벽시계로 사용량을 완전하다고 판단하지 않는다.
+
+## 지갑·익스플로러
+
+지갑 브라우저 주소창은 텍스트와 `.sea` 이름에 `aether_search` 제안을 보여주고 네이티브 **검색** 결과 페이지로 연결한다. `sea://` 결과를 선택하면 기록 상세 화면에서 이름·게시자·URL·콘텐츠 해시 유무·경고·인덱스 완전성을 보여준다. 결과 선택은 앱 번들 실행이 아니다. 웹 주소 입력은 기존 브라우저 경로를 따른다.
+
+익스플로러는 일반 텍스트·이름을 `#/search/<encoded query>`로 보내 같은 `aether_search`와 `aether_searchInfo`를 읽는다. 블록 높이·주소·해시 조회는 기존 경로다. 두 클라이언트 모두 결과를 재정렬하지 않고 비슷한 이름·누락·사용량 불완전 경고를 표시한다.
+
+검색 UI 문자열은 지갑 문자열 catalog와 익스플로러 [search catalog](../../apps/explorer/js/search-catalog.js)에 영어·한국어·일본어·중국어 간체·스페인어로 들어간다. 등록자가 쓴 제목·설명은 원문이다.
+
+## 검증
+
+테스트는 외부 서비스나 실제 테스트넷 거래를 요구하지 않는다.
+
+- [노드 검색 fixture](../../crates/node/tests/search.rs): 증분·결정적 재구축 동일성, 정확·접두사·토큰·사용량·나이 정렬, 동형 문자, 10만 레코드 상한, 사용량 예산·포화 fallback, delta 복구.
+- [RPC·저장 테스트](../../crates/node/tests/search_rpc.rs): 읽기 전용 RPC와 alias, 인자 상한, 발신 주소·코드 해시, 높이·소스에 묶인 행 캐시 복구.
+- [동결 실행기 경계 테스트](../../crates/node/tests/search_rpc.rs): 성공 receipt의 메타데이터를 유지하면서 호출 활동을 추정하지 않고 완전성을 낮추는 회귀 검증.
+- [Swift 순수 테스트](../../apps/wallet/Tests/app-search/main.swift): 입력 경로, 응답 파싱·순서, 콘텐츠 해시 표시와 완전성.
+- [익스플로러 테스트](../../apps/explorer/test/app-search.test.mjs): RPC 읽기, 결과·경고·상태 렌더링, 5개 언어 catalog 키·보간 일치.
+
+릴리스 컴파일 우선 규칙에 따라 Rust·Swift gate는 컴파일 대기를 통과한 뒤 실행한다. 이 문서 자체는 gate 통과 기록이 아니다.
+
+```bash
+~/.claude/playbooks/aether-team/wait-compile.sh
+cargo test -j4 -p aether-node --tests
+scripts/test-swift-pure.sh
+cd apps/explorer
+npm test
+```
+
+구현: [search.rs](../../crates/node/src/search.rs), [이벤트 리더](../../crates/node/src/search_events.rs), [소스 핀](../../crates/node/src/search_sources.rs), [RPC](../../crates/node/src/rpc.rs), [블록 반영](../../crates/node/src/chain.rs), [저장](../../crates/node/src/store.rs).

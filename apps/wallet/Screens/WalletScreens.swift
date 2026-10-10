@@ -4,6 +4,7 @@ import Darwin
 import Sparkle
 import SwiftUI
 import Vision
+import WebKit
 
 /// The product QA renderer (scripts/wallet-screens.sh): every screen and sheet
 /// of the Mac wallet drawn to PNG with the design-preview sample data, in the
@@ -21,7 +22,9 @@ enum WalletScreens {
         let args = CommandLine.arguments
         let out = args.firstIndex(of: "-out").map { args[$0 + 1] } ?? "tmp/screens"
         let only = args.firstIndex(of: "-only").map { args[$0 + 1] }
-        DispatchQueue.main.async {
+        // Nested run-loop waits must be able to service WebKit/MainActor work;
+        // holding a main-queue block throughout renderAll prevents that.
+        _ = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: false) { _ in
             MainActor.assumeIsolated {
                 let r = Renderer(out: URL(fileURLWithPath: out), only: only)
                 r.renderAll()
@@ -45,6 +48,7 @@ struct Stage {
     let unattended = UnattendedDaemon()
     let updates = Updates(SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil))
     let browser = BrowserController()
+    let browserSession = BrowserSession()
 
     init() {
         guard let root = ProcessInfo.processInfo.environment["WALLET_SCREEN_FIXTURE_ROOT"] else {
@@ -62,6 +66,7 @@ struct Stage {
         node.loadPreview()
         earnings.attach(node, operatorAddress: { "" })
         browser.attach(model: model)
+        browserSession.attach(model: model)
     }
 
     func wrap<V: View>(_ v: V) -> some View {
@@ -73,7 +78,10 @@ struct Stage {
             .environmentObject(unattended)
             .environmentObject(updates)
             .environmentObject(browser)
+            .environmentObject(browserSession)
             .tint(.aether)
+            .font(.aeBody)
+            .foregroundStyle(DesignTokens.Palette.text.color)
     }
 }
 
@@ -108,7 +116,9 @@ final class Renderer {
     }
 
     func renderAll() {
-        for dark in (["en", "ko"].contains(lang) ? [false, true] : [false]) {
+        verifySeaSearchRouting()
+        for dark in ((["en", "ko"].contains(lang) || only?.hasPrefix("sea-search") == true) ? [false, true] : [false]) {
+            renderSeaSearch(dark)
             // Pages, as the detail column shows them (760 pt readable width).
             page("home", dark) { HomePage(sheet: .constant(nil), showActivity: {}, showNetwork: {}) }
             page("home-empty", dark, ["designPreview": "empty"]) { HomePage(sheet: .constant(nil), showActivity: {}, showNetwork: {}) }
@@ -128,7 +138,31 @@ final class Renderer {
             }
             page("network-verifying", dark, ["designPreview": "verifying"]) { NetworkPage() }
             page("security", dark) { SecurityPage() }
-            page("explore", dark) { ExplorePage(goHome: {}).frame(height: 640) }
+            page("explore", dark) { ExplorePage().frame(height: 640) }
+            // Real browser components with account-scoped favorites/history,
+            // URL-only tab snapshots, and no external page or network load.
+            stagePage("browser-start", dark, pad: false, prepare: { s in
+                s.browserSession.seedPreview()
+            }) { s in
+                BrowserStartPage(session: s.browserSession).frame(height: 640)
+            }
+            stagePage("browser-tabs", dark, pad: false, prepare: { s in
+                s.browserSession.seedPreview()
+            }) { _ in
+                ExplorePage().frame(height: 640)
+            }
+            stagePage("browser-tabs-narrow", dark, width: 380, pad: false, prepare: { s in
+                s.browserSession.seedPreview()
+            }) { _ in
+                ExplorePage().frame(height: 640)
+            }
+            stagePage("browser-permissions", dark, width: 480, pad: false) { s in
+                BrowserSitePermissionsPanel(browser: s.browser, origin: "https://eastsea.xyz", account: s.model.address,
+                                            allowances: [String(localized: "Read your address"), String(localized: "Request transactions")])
+            }
+            stagePage("browser-find", dark, pad: false) { s in
+                BrowserFindBar(browser: s.browser)
+            }
             page("developer", dark, width: 1000) { DeveloperView() }
             // The whole window, sidebar included, wide and narrow.
             window("window", dark, width: 1000, height: 780) { SimpleDashboard() }
@@ -163,9 +197,9 @@ final class Renderer {
             // Settings and the menu bar.
             page("settings", dark, ["nodeUnattended": true], width: 460, pad: false) { SettingsView() }
             page("settings-developer", dark, ["developerMode": true, "proveBlocks": true], width: 460, pad: false) { SettingsView() }
-            page("menubar", dark, ["proveBlocks": true], width: 300, pad: false) { MenuBarPanel() }
-            page("menubar-health", dark, health: .proverStalled, width: 300, pad: false) { MenuBarPanel() }
-            page("menubar-qr", dark, ["previewAccounts": 2, "previewSelectedAccount": 2], width: 300, pad: false) { MenuBarPanel(showReceive: true) }
+            page("menubar", dark, ["proveBlocks": true], width: 336, pad: false) { MenuBarPanel() }
+            page("menubar-health", dark, health: .proverStalled, width: 336, pad: false) { MenuBarPanel() }
+            page("menubar-qr", dark, ["previewAccounts": 2, "previewSelectedAccount": 2], width: 336, pad: false) { MenuBarPanel(showReceive: true) }
             // Sheets.
             page("sheet-send", dark, width: 460, pad: false) { SendSheet() }
             page("sheet-send-token", dark, width: 460, pad: false, prepare: { s in s.model.sendToken = s.model.tokens.last }) { SendSheet() }
@@ -185,6 +219,9 @@ final class Renderer {
             }) { ConnectSheet() }
             page("sheet-terms", dark, width: 460, pad: false) { TermsSheet(accept: {}).frame(height: 900) }
             page("sheet-voting-invite", dark, width: 440, pad: false) { VotingNodeInvite(join: {}, later: {}) }
+            page("sheet-country-notice", dark, width: 480, pad: false) {
+                CountryNoticeSheet(mode: .askBeforeSending, country: "KR").frame(height: 600)
+            }
             stagePage("sheet-site-warning", dark, width: 460, pad: false) { s in
                 SiteWarningSheet(warning: .init(url: URL(string: "https://eastsea-wallet.xyz")!, host: "eastsea-wallet.xyz",
                                                 lookalike: "eastsea.xyz", punycode: true), browser: s.browser)
@@ -194,11 +231,37 @@ final class Renderer {
                                  browser: s.browser)
             }
             stagePage("sheet-site-send", dark, width: 480, pad: false) { s in
-                ProviderAskSheet(ask: .init(id: "2", kind: .send(origin: "https://eastsea.xyz", host: "eastsea.xyz",
-                                                                 tx: PageTransaction(to: "0x12ab00000000000000000000000000000000090ab",
-                                                                                     valueWei: "1500000000000000000", data: "0x", gas: 0),
+                let tx = PageTransaction(to: "0x12ab00000000000000000000000000000000090ab",
+                                         valueWei: "1500000000000000000", data: "0x", gas: 21_000)
+                let context = DappRequestContext(account: s.model.address, chainId: 7781, port: 18545, generation: 0)
+                return ProviderAskSheet(ask: .init(id: "2", kind: .send(origin: "https://eastsea.xyz", host: "eastsea.xyz",
+                                                                 tx: tx,
                                                                  feeWei: "21000000000000"), reply: { _ in }),
-                                 browser: s.browser)
+                                 browser: s.browser, previewSimulation: .init(transaction: tx, context: context,
+                                     result: .init(success: true, gasUsed: 21_000, failureReason: nil,
+                                                   nativeDeltaWei: "-1500000000000000000", changes: [], approvals: [], output: "0x", balancesMeasured: true)))
+            }
+            stagePage("sheet-site-revert", dark, width: 480, pad: false) { s in
+                let tx = PageTransaction(to: "0x12ab00000000000000000000000000000000090ab", valueWei: "0", data: "0x095ea7b3", gas: 100_000)
+                let context = DappRequestContext(account: s.model.address, chainId: 7781, port: 18545, generation: 0)
+                return ProviderAskSheet(ask: .init(id: "3", kind: .send(origin: "https://eastsea.xyz", host: "eastsea.xyz", tx: tx,
+                                                               feeWei: "21000000000000"), reply: { _ in }), browser: s.browser,
+                                 previewSimulation: .init(transaction: tx, context: context,
+                                     result: .init(success: false, gasUsed: 40_000, failureReason: String(localized: "The contract refused this transaction."),
+                                                   nativeDeltaWei: "0", changes: [], approvals: [], output: "0x", balancesMeasured: true)))
+            }
+            stagePage("sheet-site-typed", dark, width: 480, pad: false) { s in
+                let fields = TypedMessageFields(primaryType: "Permit", domain: [
+                    .init(path: "name", value: "EastSea", detail: nil), .init(path: "chainId", value: "7781", detail: nil),
+                    .init(path: "verifyingContract", value: "0x0000000000000000000000000000000000007702", detail: nil)], message: [
+                        .init(path: "amount", value: "1000000000000000000", detail: nil),
+                        .init(path: "spender", value: "0x12ab00000000000000000000000000000000090ab", detail: nil)])
+                let prepared = PreparedTypedMessage(chainId: 7781, account: s.model.address, signingMessage: Data(), digestHex: "", typedDataJson: "{}")
+                return ProviderAskSheet(ask: .init(id: "4", kind: .typed(origin: "https://eastsea.xyz", host: "eastsea.xyz", prepared: prepared, fields: fields),
+                                           reply: { _ in }), browser: s.browser)
+            }
+            stagePage("account-upgrade", dark, width: 760, prepare: { s in s.model.status?.chainId = 7781 }) { _ in
+                AccountMigrationPanel()
             }
             page("overlay-migration", dark, width: 640, prepare: { _ in MigrationStatus.shared.loadPreview(moving: true, problem: nil) }) {
                 MigrationOverlay(status: MigrationStatus.shared).frame(height: 360)
@@ -231,6 +294,85 @@ final class Renderer {
         }
     }
 
+    /// Real controller/session routing, compiled only in the isolated renderer.
+    /// WALLET_SCREENS records requested navigation and never loads a site.
+    private func verifySeaSearchRouting() {
+        func check(_ value: Bool, _ label: String) {
+            if !value { failed += 1; print("FAIL sea-search controller: \(label)") }
+        }
+        let browser = BrowserController()
+        check(browser.currentURL == SeaSearch.homeURL && browser.addressField == "sea://search", "initial Home")
+        check(browser.webView == nil && browser.searchQuery == "", "Home creates no page")
+        browser.configureScreenFixture(url: URL(string: "https://example.com")!, title: "Example")
+        browser.goHome()
+        check(browser.isSearchHome && browser.searchQuery == "", "Home button")
+        check(browser.webView == nil, "Home releases the old document")
+        browser.load(URL(string: "SEA://SEARCH/")!)
+        check(browser.currentURL == SeaSearch.homeURL, "restored Home URL")
+        let focus = browser.searchFocusRequest
+        browser.focusSearch()
+        check(browser.searchFocusRequest == focus + 1, "native query focus")
+        browser.open("sea://" + String(repeating: "v", count: 51) + "r/")
+        check(browser.screenNavigationRequests.isEmpty && browser.notice != nil, "bad app padding cannot become a name navigation")
+        for query in ["private words", "harbor", "sea://harbor.sea", "https://example.com/path", "42"] {
+            browser.updateSearchQuery(query)
+            check(browser.screenNavigationRequests.isEmpty && browser.webView == nil, "editing \(query) cannot navigate")
+        }
+        browser.updateSearchQuery("private words")
+        browser.submitSearch()
+        check(browser.screenNavigationRequests.isEmpty && browser.isSearchHome, "Enter cannot choose web search")
+        browser.chooseWebSearch(engine: .duckDuckGo)
+        check(browser.screenNavigationRequests == [BrowserSearchEngine.duckDuckGo.searchURL(for: "private words")], "explicit web choice")
+        browser.configureSearchFixture(query: "42")
+        browser.submitSearch()
+        check(browser.screenNavigationRequests.last == SeaSearch.ChainLookup.block(42).explorerURL, "Enter opens the chain result")
+        browser.configureSearchFixture(query: "https://example.com/path")
+        browser.submitSearch()
+        check(browser.screenNavigationRequests.last?.absoluteString == "https://example.com/path", "Enter opens a URL")
+        let session = BrowserSession()
+        session.addTab()
+        check(session.controller.isSearchHome && !session.selectedTab.isPrivate, "new tab Home")
+        session.addTab(isPrivate: true)
+        check(session.controller.isSearchHome && session.selectedTab.isPrivate, "private tab Home")
+        let restoredURL = URL(string: "https://example.com/saved")!
+        let restored = BrowserTab(url: restoredURL, title: "Saved site")
+        check(!restored.hasLoaded && restored.controller.isSearchHome, "background restoration stays unloaded")
+        check(restored.snapshot.url == restoredURL && restored.snapshot.title == "Saved site", "persist preserves unloaded destination and title")
+        restored.hasLoaded = true
+        restored.controller.load(restoredURL)
+        check(restored.snapshot.url == restoredURL && restored.snapshot.title == "Saved site", "uncommitted restoration preserves its destination")
+        restored.controller.close()
+        session.tabs.forEach { $0.controller.close() }
+        browser.close()
+    }
+
+    private func renderSeaSearch(_ dark: Bool) {
+        let address = "0x5397a1c0de4b1b8f6a3cb2d1e0f9c7a6b5d4e502"
+        let examples: [(String, String)] = [
+            ("sea-search-home", ""), ("sea-search-name", "sea://harbor.sea"), ("sea-search-app", "EastSea"),
+            ("sea-search-address", address), ("sea-search-tx", "0x" + String(repeating: "ab", count: 32)),
+            ("sea-search-block", "184210"), ("sea-search-url", "https://eastsea.xyz"), ("sea-search-web", "ocean weather")
+        ]
+        for (kind, query) in examples {
+            stagePage(kind, dark, width: 900, pad: false, prepare: { s in
+                var name: SeaNameResolver.NameRecord?
+                if kind == "sea-search-name", let link = SeaSearch.classify(query).nameLink {
+                    name = SeaNameResolver.NameRecord(link: link, owner: address, address: address)
+                }
+                let records: [AppSearchResult] = kind == "sea-search-app" ? [AppSearchResult(
+                    name: "harbor.sea", title: "EastSea", description: "", category: "", publisher: address,
+                    url: "sea://aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dypq/", verified: true, usage7d: 12, createdAt: 1_791_590_400,
+                    usageComplete: true, lookalike: nil)] : []
+                s.browserSession.controller.configureSearchFixture(query: query, name: name, records: records)
+            }) { s in
+                BrowserWorkspace(session: s.browserSession, browser: s.browserSession.controller).frame(height: 980)
+            }
+        }
+        stagePage("sea-search-home-narrow", dark, width: 380, pad: false) { s in
+            BrowserWorkspace(session: s.browserSession, browser: s.browserSession.controller).frame(height: 900)
+        }
+    }
+
     static let stopReasons: [NodeStopReason] = [
         .switchedOff, .onBattery, .wrongLocation, .noHelper, .migrating, .migrationBlocked(DataMigration.movingSentence()),
         .otherNodeRunning, .diskFull(freeBytes: 3_000_000_000, resumeBytes: 7_000_000_000, volume: nil),
@@ -243,7 +385,9 @@ final class Renderer {
 
     // MARK: drawing
 
-    private func wanted(_ name: String) -> Bool { only.map { name.hasPrefix($0) } ?? true }
+    private func wanted(_ name: String) -> Bool {
+        only.map { $0.split(separator: ",").contains { name.hasPrefix(String($0)) } } ?? true
+    }
 
     private func file(_ name: String, _ dark: Bool) -> URL {
         out.appendingPathComponent("\(name)-\(lang)-\(dark ? "dark" : "light").png")
@@ -264,7 +408,8 @@ final class Renderer {
         let s = Stage()
         if let health { s.health.loadPreview(issue: health) }
         prepare?(s)
-        let view = s.wrap(content(s).padding(pad ? 24 : 0).frame(width: width).background(.background))
+        let view = s.wrap(content(s).padding(pad ? DesignTokens.Space.s6 : 0).frame(width: width)
+            .background(DesignTokens.Palette.bg.color))
         snap(view, name: name, dark: dark, width: width, height: nil)
     }
 
@@ -312,10 +457,23 @@ final class Renderer {
             win.setContentSize(NSSize(width: width, height: min(max(fit.height, 40), 6_000)))
             settle(0.3)
         }
+        // WebKit composites outside NSView.cacheDisplay. Wait for the actual
+        // bundled ES modules and native fixture update before taking its image.
+        guard waitForGlobe(in: host) else {
+            print("globe fixture did not become ready: \(name)")
+            failed += 1
+            win.orderOut(nil)
+            win.contentView = nil
+            return
+        }
+        if height == nil {
+            win.setContentSize(NSSize(width: width, height: min(max(host.fittingSize.height, 40), 6_000)))
+            settle(0.2)
+        }
         // A whole window (sidebar, toolbar, materials) is composited by the
         // window server, which a view's own cacheDisplay cannot draw: ask
         // the server for this process's own window. Pages draw themselves.
-        if !full, name != "explore" {
+        if !full, name != "explore", globes(in: host).isEmpty {
             let renderer = ImageRenderer(content: view.environment(\.colorScheme, dark ? .dark : .light))
             renderer.proposedSize = ProposedViewSize(width: width, height: host.bounds.height)
             renderer.scale = 4
@@ -336,6 +494,29 @@ final class Renderer {
 
     private func settle(_ seconds: TimeInterval) {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    private func globes(in view: NSView) -> [LiveGlobeWebView] {
+        (view as? LiveGlobeWebView).map { [$0] } ?? view.subviews.flatMap { globes(in: $0) }
+    }
+
+    private func waitForGlobe(in root: NSView) -> Bool {
+        for globe in globes(in: root) {
+            var ready = false
+            let deadline = Date().addingTimeInterval(12)
+            while !ready && Date() < deadline {
+                var answered = false
+                globe.evaluateJavaScript("Boolean(globalThis.eastseaGlobe?.ready && document.querySelector('.lg-total')?.textContent.includes('24') && eastseaGlobe.captureFrame())") { result, _ in
+                    ready = result as? Bool == true
+                    answered = true
+                }
+                while !answered && Date() < deadline { settle(0.05) }
+                if !ready { settle(0.1) }
+            }
+            guard ready else { return false }
+            settle(0.15)
+        }
+        return true
     }
 
     /// CGWindowListCreateImage, looked up at run time (the SDK marks it
@@ -368,6 +549,17 @@ final class Renderer {
             if let t = el as? NSTextField { lines.append(t.stringValue) }
         }
         walk(root, depth: 0)
+        if let view = root as? NSView {
+            for globe in globes(in: view) {
+                var answered = false
+                let deadline = Date().addingTimeInterval(3)
+                globe.evaluateJavaScript("document.body.innerText") { value, _ in
+                    if let text = value as? String { lines.append(text) }
+                    answered = true
+                }
+                while !answered && Date() < deadline { settle(0.05) }
+            }
+        }
         let url = file(name, dark).deletingPathExtension().appendingPathExtension("txt")
         try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
     }
@@ -446,7 +638,42 @@ final class Renderer {
         view.layoutSubtreeIfNeeded()
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { failed += 1; return }
         view.cacheDisplay(in: view.bounds, to: rep)
-        guard let image = rep.cgImage else { failed += 1; return }
+        guard let base = rep.cgImage else { failed += 1; return }
+        let embedded = globes(in: view)
+        guard !embedded.isEmpty else { writeImage(base, name: name, dark: dark); return }
+        guard let context = CGContext(data: nil, width: base.width, height: base.height,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { failed += 1; return }
+        context.draw(base, in: CGRect(x: 0, y: 0, width: base.width, height: base.height))
+        for globe in embedded {
+            var rendered = false
+            var drawAnswered = false
+            let drawDeadline = Date().addingTimeInterval(3)
+            globe.evaluateJavaScript("Boolean(globalThis.eastseaGlobe?.captureFrame())") { value, _ in
+                rendered = value as? Bool == true
+                drawAnswered = true
+            }
+            while !drawAnswered && Date() < drawDeadline { settle(0.05) }
+            guard rendered else { print("could not draw bundled globe: \(name)"); failed += 1; return }
+            let configuration = WKSnapshotConfiguration()
+            configuration.rect = globe.bounds
+            var snapshot: NSImage?
+            var answered = false
+            let deadline = Date().addingTimeInterval(8)
+            globe.takeSnapshot(with: configuration) { image, _ in snapshot = image; answered = true }
+            while !answered && Date() < deadline { settle(0.05) }
+            guard let image = snapshot?.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                print("could not snapshot bundled globe: \(name)")
+                failed += 1
+                return
+            }
+            let bounds = view.convert(globe.bounds, from: globe)
+            let sx = CGFloat(base.width) / view.bounds.width
+            let sy = CGFloat(base.height) / view.bounds.height
+            let y = view.isFlipped ? view.bounds.height - bounds.maxY : bounds.minY
+            context.draw(image, in: CGRect(x: bounds.minX * sx, y: y * sy, width: bounds.width * sx, height: bounds.height * sy))
+        }
+        guard let image = context.makeImage() else { failed += 1; return }
         writeImage(image, name: name, dark: dark)
     }
 }

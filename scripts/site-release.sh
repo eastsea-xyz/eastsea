@@ -21,6 +21,10 @@ if [ "$old" != "$new" ]; then
   printf '{"version": "%s"}\n' "$new" > site/release.json
 fi
 grep -c "$new" site/index.html >/dev/null
+# Fewer than 3 signed locators (e.g. before nodes publish them): keep the
+# previous seeds file; clients still discover nodes over the DHT at runtime.
+node scripts/refresh-read-seeds.mjs || echo "seed refresh: keeping the previous public-read seeds" >&2
+bash scripts/package-public-reader.sh
 CLOUDFLARE_ACCOUNT_ID=41629a6d8d7dd09287249a57f1f604c4 \
   wrangler pages deploy site --project-name eastsea-site --branch main --commit-dirty=true >/dev/null
 echo "eastsea.xyz now says $new (was $old)"

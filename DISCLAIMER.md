@@ -35,11 +35,53 @@ EastSea is open-source software built for production use: a Mac app that runs a 
 
 ## 4. Networking and Privacy
 
-1. **Peer-to-peer connections.** The Software connects to other nodes over encrypted QUIC connections (iroh). Nodes publish and look up their network addresses as records on the public BitTorrent Mainline DHT (BEP 44). The DHT is used only for addresses; the Software does not download, share, or store any files through BitTorrent.
-2. **Relays.** When two nodes cannot connect directly, traffic passes through public relay servers. It stays end-to-end encrypted.
-3. **What others can see.** Other nodes can see your IP address. Nodes that answer your wallet's requests can see which addresses you look up. On a Mac, the wallet asks its own node first.
-4. **Voting-node registration.** Joining as a voting node sends an Apple DeviceCheck token to the registration service, currently run by Pipln, which checks it with Apple. Apple does not sponsor or endorse EastSea. What the registration service receives and how it is handled is described in the Privacy Policy (https://eastsea.xyz/privacy).
-5. The Software contains no analytics. Other than the registration data described in item 4 and in the Privacy Policy, we collect no personal data through the Software.
+The Software connects to other nodes over encrypted QUIC connections (iroh). Nodes publish and look up their network addresses on the public BitTorrent Mainline DHT (BEP 44); the Software does not download, share or store files through BitTorrent. When nodes cannot connect directly, public relays carry the traffic while transport encryption is maintained.
+
+**Local keys and the public network**
+
+Private keys stay on your device. Addresses, balances, transactions, rewards, voting public keys, node identifiers and registration events are public on chain and may remain public indefinitely. Leaving the network or deleting the app does not erase earlier blocks, archives or copies held by others.
+
+Peers, relays and the public address-discovery network can see connection IP addresses. RPC nodes can see the addresses you query. The Mac wallet normally asks its own node first; a remote fallback or the public gateway receives the query when used.
+
+**Registration and repeated Apple checks**
+
+Apple does not sponsor or endorse EastSea.
+
+Registering a voting node encrypts the Apple DeviceCheck token to the authenticated registrar key. Relaying validators receive ciphertext and cannot read the token. Pipln's registrar decrypts it and sends it to Apple Inc. (USA) over HTTPS to check genuine hardware and prior registration. This happens at initial registration and during daily re-attestation while participating. Apple also receives a request identifier and time, and the registrar's connection IP address.
+
+Apple keeps a per-device registration bit associated with the developer's apps; it can survive reinstalling the app. We do not control Apple's retention or promise that deleting our records clears this bit. Refusing DeviceCheck prevents voting-node registration and daily eligibility checks; the wallet remains available. Touch ID authorizes a signature and is not itself privacy consent.
+
+**What the registrar keeps, and for how long**
+
+The registrar uses the raw token in request memory and does not write it to its registration store. On your Mac, a protected local token file is refreshed about hourly while the app runs. The registrar persists the voting public key, operator address, node identifier, beacon address and original registration time to prevent duplicate registration and permit re-attestation. This store has no automatic expiry or deletion timer; records remain until an operator removes them or retires the service.
+
+Registration token hashes used to prevent simultaneous requests are removed when the request finishes. Successful daily checks keep voting-key and token-hash rate limits in memory for the current and two preceding periods; older entries are pruned on a later successful check, and all are lost when the process exits. The registration store does not retain client IP addresses. We have not verified a fixed retention period for operational logs, backups or providers' logs, and do not promise deletion after 30 days.
+
+**Optional country and aggregate presence**
+
+The Mac's Region setting selects a default UN M49 sub-region using a bundled mapping. This is independent of country sharing: only the sub-region code is passed to the local node before a country choice. First launch asks you to choose Share country or decline; no raw country preference is passed to the node before an affirmative choice. Declining or turning sharing off preserves the default sub-region and all wallet and node features. A chosen country stays on this Mac and selects its canonical M49 parent; unlisted areas remain unknown. No GPS or IP geolocation is used, and the choice is not stored on chain.
+
+Public presence RPC and gossip carry only unverified cohort counts by role and region, with versions reported as unknown. They expose no per-node list, observer identity, country code or exact observation time. Times use fixed 10-minute windows; groups smaller than three are folded into broader groups or withheld, including complementary suppression of small remainders. Missing counts are withheld or unreported, not zero. These are observations, not a census of distinct Macs, and aggregation does not guarantee anonymity. Operation quality is unavailable in this public protocol. Already received aggregate copies cannot be recalled.
+
+The current producer normally knows only its own endpoint's region and treats other peers' regions as unknown. Its single local contribution can therefore be folded or withheld; selecting a country does not guarantee a named public sub-region or country. The wallet labels this Mac's region and an affirmatively selected country as local preferences, separately from public counts. Legacy relay-based observations remain broad regions and are not expanded into invented sub-regions.
+
+**Website, gateway and updates**
+
+Cloudflare hosts the website and carries public-gateway requests. It can receive your IP address, request time, URL and browser information; gateway requests can include the queried public address. The page adds no analytics or tracking cookies. Your language choice is stored in localStorage on your device.
+
+On macOS, Sparkle checks for updates about hourly and downloads releases from GitHub and its download services. Those services can receive your IP address and app/version information from requests. Sparkle is the updater in the app, not a separate EastSea analytics service; its optional system profiling is disabled, including a previously saved opt-in. Apple, Cloudflare, GitHub and Google are US-based providers and may process data in other countries. Their processing locations and retention depend on their services; EastSea cannot promise to erase provider-controlled logs.
+
+**Diagnostics, email and deletion requests**
+
+The diagnostic report is copied to your clipboard only; the app does not upload it automatically. There is no separate remote usage-analytics upload. If you send a report or privacy request, we receive your email address, message and any attachments. privacy@eastsea.xyz uses Cloudflare Email Routing to forward mail to the operator's Gmail mailbox, so Cloudflare and Google handle those messages.
+
+Email privacy@eastsea.xyz to request access, correction, deletion or a stop to processing of data we control. Identify the relevant public address or node key and the records you mean; never send a private key or DeviceCheck token. We will explain what can be deleted and any reason for retaining it. Removing a registrar binding can prevent future daily checks; it does not reset Apple's bit. We cannot erase public chain history or recall other participants' copies, and cannot promise deletion of provider-controlled records. Local files and preferences can be removed on your device.
+
+**Contact and changes**
+
+Privacy contact: Pipln privacy officer, privacy@eastsea.xyz. Updated policies are published here with an effective date; material changes are also explained in the app.
+
+[Privacy policy / 개인정보 처리방침](https://eastsea.xyz/privacy) · English, 한국어, 日本語, 简体中文, Español.
 
 ---
 
@@ -107,11 +149,54 @@ Any dispute arising out of or in connection with the Software shall be governed 
 3. 네트워크 거래는 한 번 확정되면 되돌릴 수 없습니다. 승인하기 전에 주소와 금액을 확인하십시오.
 
 ### 4. 네트워크와 개인정보
-1. **P2P 연결.** 소프트웨어는 다른 노드와 암호화된 QUIC 연결(iroh)로 통신합니다. 노드는 자신의 네트워크 주소를 공개 BitTorrent Mainline DHT(BEP 44) 레코드로 등록·조회합니다. DHT는 주소에만 쓰이며, BitTorrent로 파일을 내려받거나 공유·저장하지 않습니다.
-2. **중계.** 두 노드가 직접 연결되지 않으면 공개 중계 서버를 거치며, 종단 간 암호화는 유지됩니다.
-3. **다른 노드가 볼 수 있는 것.** 다른 노드는 이용자의 IP 주소를 볼 수 있습니다. 지갑 조회에 응답하는 노드는 조회된 주소를 볼 수 있습니다. Mac에서는 지갑이 자기 노드에 먼저 묻습니다.
-4. **투표 노드 등록.** 투표 노드로 참여하면 Apple DeviceCheck 토큰이 현재 Pipln이 운영하는 등록 서비스로 전송되어 Apple에 확인을 받습니다. Apple은 동해를 후원하거나 보증하지 않습니다. 등록 서비스가 받는 정보와 그 처리 방법은 개인정보 처리방침(https://eastsea.xyz/privacy)에 적혀 있습니다.
-5. 소프트웨어에는 분석 도구가 없습니다. 위 4항의 등록 데이터와 개인정보 처리방침에 적힌 정보 외에, 소프트웨어를 통해 수집하는 개인정보는 없습니다.
+
+소프트웨어는 다른 노드와 암호화된 QUIC 연결(iroh)로 통신합니다. 노드는 네트워크 주소를 공개 BitTorrent Mainline DHT(BEP 44)에 등록·조회하며, BitTorrent로 파일을 내려받거나 공유·저장하지 않습니다. 직접 연결할 수 없으면 공개 릴레이를 거치며 전송 암호화는 유지됩니다.
+
+**기기의 키와 공개 네트워크**
+
+개인키는 이용자의 기기에 남습니다. 주소, 잔액, 거래, 보상, 투표 공개키, 노드 식별자와 등록 이벤트는 체인에 공개되며 무기한 공개될 수 있습니다. 네트워크를 떠나거나 앱을 삭제해도 과거 블록, 아카이브와 다른 사람이 보관한 사본은 지워지지 않습니다.
+
+피어, 릴레이와 공개 주소 탐색 네트워크는 연결 IP 주소를 볼 수 있습니다. RPC 응답 노드는 조회한 주소를 볼 수 있습니다. Mac 지갑은 보통 자기 노드에 먼저 묻지만, 원격 대체 노드나 공개 게이트웨이를 이용하면 그곳이 조회를 받습니다.
+
+**등록과 반복되는 Apple 확인**
+
+Apple은 동해를 후원하거나 보증하지 않습니다.
+
+투표 노드 등록 시 Apple DeviceCheck 토큰을 인증된 등록기의 키로 암호화합니다. 요청을 중계하는 검증자는 암호문만 받아 토큰을 읽을 수 없습니다. Pipln 등록기가 복호화한 토큰을 HTTPS로 Apple Inc.(미국)에 보내 정품 기기와 기존 등록 여부를 확인합니다. 최초 등록 때와 참여 중 매일 재인증 때 전송합니다. Apple은 요청 식별자, 시각과 등록기의 연결 IP 주소도 받습니다.
+
+Apple은 개발자의 앱에 연결된 기기별 등록 비트를 보관하며, 이 비트는 앱 재설치 후에도 남을 수 있습니다. Apple의 보유기간을 우리가 통제하지 않으며, 우리 기록을 삭제하면 비트도 지워진다고 약속하지 않습니다. DeviceCheck를 거절하면 투표 노드 등록과 일일 자격 확인은 불가능하지만 지갑은 이용할 수 있습니다. Touch ID는 서명을 승인하며 그 자체가 개인정보 동의는 아닙니다.
+
+**등록기가 보관하는 항목과 기간**
+
+등록기는 원토큰을 요청 처리 메모리에서 사용하고 등록 저장소에 쓰지 않습니다. Mac에서는 앱이 실행되는 동안 보호된 로컬 토큰 파일을 약 한 시간마다 갱신합니다. 등록기는 중복 등록 방지와 재인증을 위해 투표 공개키, 운영자 주소, 노드 식별자, 비콘 주소와 최초 등록 시각을 지속 저장합니다. 이 저장소에는 자동 만료나 삭제 타이머가 없으며, 운영자가 삭제하거나 서비스를 종료할 때까지 기록이 남습니다.
+
+동시 요청을 막기 위한 등록 토큰 해시는 요청이 끝나면 제거합니다. 성공한 일일 확인의 투표키·토큰 해시 제한 기록은 현재 기간과 앞선 두 기간에 대해 메모리에 보관합니다. 더 오래된 항목은 이후 확인 성공 때 정리되고 프로세스 종료 시 모두 사라집니다. 등록 저장소는 이용자 IP 주소를 보관하지 않습니다. 운영 로그, 백업과 제공업체 로그의 고정 보유기간은 검증되지 않았으며 30일 후 삭제를 약속하지 않습니다.
+
+**선택적인 국가 설정과 접속 집계**
+
+Mac의 지역 설정은 앱에 포함된 매핑으로 기본 UN M49 세부 지역을 정합니다. 국가 공유와 별개이며 국가를 선택하기 전에는 세부 지역 코드만 로컬 노드로 전달합니다. 첫 실행에서 국가 공유 또는 거절을 선택하며, 명시적으로 공유를 선택하기 전에는 원래 국가 설정을 노드에 전달하지 않습니다. 거절하거나 공유를 꺼도 기본 세부 지역과 지갑·노드 기능은 유지됩니다. 선택한 국가는 이 Mac에만 남고 표준 M49 상위 지역을 정하며, 목록에 없는 지역은 미상으로 둡니다. GPS나 IP 기반 위치 추적을 쓰지 않고 선택을 체인에 저장하지 않습니다.
+
+공개 presence RPC와 가십에는 검증되지 않은 관측 그룹의 역할별·지역별 수만 담으며 버전은 미상으로 표시합니다. 개별 노드 목록, 관찰자 신원, 국가 코드나 정확한 관측 시각은 공개하지 않습니다. 시각은 고정된 10분 구간을 쓰며 3개 미만 그룹과 작은 잔여 그룹은 보완적 숨김을 포함해 넓은 그룹으로 합치거나 숨깁니다. 빠진 수치는 비공개 또는 미보고이며 0이 아닙니다. 서로 다른 Mac의 총조사가 아닌 관측값이고 집계만으로 익명성을 보장하지 않습니다. 이 공개 프로토콜은 운영 품질을 제공하지 않습니다. 이미 받은 집계 사본은 회수할 수 없습니다.
+
+현재 집계기는 보통 자신의 엔드포인트 지역만 알고 다른 피어의 지역은 미상으로 취급합니다. 자기 지역의 단일 기여도 합치거나 숨길 수 있으므로 국가를 선택해도 공개 수치에 이름이 붙은 세부 지역이나 국가가 나타난다고 보장하지 않습니다. 지갑은 이 Mac의 지역과 명시적으로 선택한 국가를 공개 수치와 구분해 로컬 설정으로 표시합니다. 이전 릴레이 관측은 넓은 지역으로 유지하며 없는 세부 지역을 만들어 내지 않습니다.
+
+**웹사이트, 게이트웨이와 업데이트**
+
+Cloudflare는 웹사이트를 호스팅하고 공개 게이트웨이 요청을 전달합니다. IP 주소, 요청 시각, URL과 브라우저 정보를 받을 수 있으며, 게이트웨이 요청에는 조회한 공개 주소가 포함될 수 있습니다. 이 페이지는 분석 도구나 추적 쿠키를 추가하지 않습니다. 언어 선택은 이용자 기기의 localStorage에 저장합니다.
+
+macOS의 Sparkle은 약 한 시간마다 업데이트를 확인하고 GitHub와 그 다운로드 서비스에서 배포본을 받습니다. 이 서비스는 요청에서 IP 주소와 앱·버전 정보를 받을 수 있습니다. Sparkle은 앱에 포함된 업데이트 도구이며 별도의 동해 분석 서비스가 아닙니다. 선택적인 시스템 프로파일 전송은 이전에 저장된 동의를 포함해 비활성화되어 있습니다. Apple, Cloudflare, GitHub와 Google은 미국 기반 제공업체이며 다른 국가에서도 데이터를 처리할 수 있습니다. 처리 장소와 보유기간은 각 서비스에 따르며, 동해는 제공업체가 관리하는 로그의 삭제를 약속할 수 없습니다.
+
+**진단, 이메일과 삭제 요청**
+
+진단 보고서는 클립보드에만 복사되며 앱이 자동으로 업로드하지 않습니다. 별도의 원격 사용 분석 업로드는 없습니다. 보고서나 개인정보 문의를 보내면 이메일 주소, 메시지와 첨부파일을 받습니다. privacy@eastsea.xyz는 Cloudflare Email Routing을 통해 운영자의 Gmail 사서함으로 전달되므로 Cloudflare와 Google도 해당 메일을 처리합니다.
+
+우리가 관리하는 데이터의 열람·정정·삭제·처리 정지는 privacy@eastsea.xyz로 요청하세요. 관련 공개 주소나 노드 키와 원하는 기록을 알려주시고, 개인키나 DeviceCheck 토큰은 보내지 마세요. 삭제 가능한 항목과 보관해야 하는 이유를 설명하겠습니다. 등록기 연결 기록을 삭제하면 향후 일일 확인이 불가능할 수 있으며 Apple의 비트는 초기화되지 않습니다. 공개 체인 이력이나 다른 참여자의 사본을 지우거나 회수할 수 없으며 제공업체 관리 기록의 삭제도 약속할 수 없습니다. 로컬 파일과 설정은 이용자 기기에서 제거할 수 있습니다.
+
+**연락처와 변경**
+
+개인정보 문의: Pipln 개인정보 보호담당자, privacy@eastsea.xyz. 방침을 바꾸면 시행일과 함께 이 페이지에 게시하고 중요한 변경은 앱에서도 설명합니다.
+
+[Privacy policy / 개인정보 처리방침](https://eastsea.xyz/privacy) · English, 한국어, 日本語, 简体中文, Español.
 
 ### 5. 무보증 ("AS IS")
 본 소프트웨어는 "있는 그대로(AS IS)", "이용 가능한 상태로(AS AVAILABLE)" 제공되며, 명시적이든 묵시적이든 다음을 포함한 어떠한 보증도 하지 않습니다:
@@ -138,3 +223,152 @@ P2P 소프트웨어, 블록체인 노드, 디지털 자산의 법적 지위는 �
 ### 8. 준거법 및 분쟁 해결
 본 소프트웨어에서 발생하거나 이와 관련된 분쟁은 대한민국 법률을 준거법으로 합니다. 소송은 대한민국 민사소송법에 따른 관할 법원에 제기합니다. 이 약관은 이용자가 자신의 주소지 관할 법원 등 강행법규상 인정되는 법원에 소를 제기할 권리를 제한하지 않습니다.
 
+---
+
+## Privacy notice — 日本語 (ja)
+
+PiplnはEastSeaの投票ノード登録サービスを運営します。この方針はウォレット、ノード、ウェブサイト、公開ゲートウェイ、更新とプライバシーに関する問い合わせを対象とします。施行日：2026年10月8日。
+
+### 1. 端末の鍵と公開ネットワーク
+
+秘密鍵は端末に残ります。アドレス、残高、取引、報酬、投票公開鍵、ノード識別子と登録イベントはチェーン上で公開され、無期限に公開される可能性があります。ネットワークから離れたりアプリを削除しても、過去のブロック、アーカイブや他者のコピーは消えません。
+
+ピア、リレーと公開アドレス探索ネットワークは接続IPアドレスを確認できます。RPCに応答するノードは照会したアドレスを確認できます。Macのウォレットは通常まず自分のノードに問い合わせますが、リモートの代替ノードや公開ゲートウェイを使うと、そこが照会を受け取ります。
+
+### 2. 登録と繰り返されるAppleの確認
+
+投票ノードの登録時、Apple DeviceCheckトークンを認証済み登録サービスの鍵で暗号化します。中継する検証者は暗号文のみを受け取り、トークンを読めません。Piplnの登録サービスが復号し、HTTPSでApple Inc.（米国）に送り、正規ハードウェアと登録済みかどうかを確認します。初回登録時と、参加中の毎日の再認証時に行われます。Appleはリクエスト識別子、時刻と登録サービスの接続IPアドレスも受け取ります。
+
+Appleは開発者のアプリに関連する端末ごとの登録ビットを保持し、アプリの再インストール後も残る場合があります。当社はAppleの保持期間を管理せず、当社の記録の削除でこのビットも消えるとは約束しません。DeviceCheckを拒否すると投票ノード登録と日次の資格確認はできませんが、ウォレットは利用できます。Touch IDは署名を承認するもので、それ自体がプライバシーへの同意ではありません。
+
+### 3. 登録サービスが保持する情報と期間
+
+登録サービスは生のトークンをリクエスト処理のメモリ内で使用し、登録ストアには書き込みません。Macではアプリの実行中、保護されたローカルトークンファイルを約1時間ごとに更新します。重複登録を防ぎ再認証を可能にするため、投票公開鍵、運営者アドレス、ノード識別子、ビーコンアドレスと初回登録時刻を永続保存します。このストアには自動期限や削除タイマーがなく、運営者が削除するかサービスを終了するまで記録が残ります。
+
+同時リクエストを防ぐ登録トークンのハッシュは、リクエスト終了時に除去します。成功した日次確認の投票鍵とトークンハッシュの制限記録は、現在と過去2期間分をメモリ内に保持します。古い項目はその後の確認成功時に整理され、プロセス終了時にはすべて消えます。登録ストアは利用者のIPアドレスを保持しません。運用ログ、バックアップや提供者のログの固定保持期間は検証されておらず、30日後の削除は約束しません。
+
+### 4. 任意の国設定と接続集計
+
+Macの地域設定から、アプリに含まれる対応表で既定のUN M49地域区分を選びます。国の共有とは独立しており、国を選ぶ前は地域区分のコードのみをローカルノードに渡します。初回起動時に国の共有か拒否を選び、明示的に共有を選ぶまで元の国設定をノードに渡しません。拒否または共有の停止後も既定の区分とウォレット・ノードの機能は維持します。選んだ国はこのMacに残り、正規のM49上位区分を選びます。未掲載の地域は不明とし、GPSやIPによる位置測定は行わず、選択をチェーンに保存しません。
+
+公開presence RPCとゴシップには、未検証の観測集団の役割別・地域別の数のみを含め、バージョンは不明とします。個別ノード一覧、観察者の身元、国コードや正確な観測時刻は公開しません。時刻は固定の10分区間を使い、3件未満の集団と小さな残余は補完的な秘匿を含めて広い集団に統合または非表示にします。欠けた数値は非公開または未報告であり、ゼロではありません。異なるMacの全数調査ではなく観測値であり、集計だけで匿名性を保証しません。この公開プロトコルでは運用品質は利用できません。受信済みの集計コピーは回収できません。
+
+現在の生成側は通常、自分のエンドポイントの地域のみを知り、他のピアの地域は不明とします。自分の単独の寄与も統合または非表示になり得るため、国の選択によって名前付きの地域区分や国が公開数に現れるとは保証しません。ウォレットはこのMacの地域と明示的に選んだ国を、公開数とは別のローカル設定として表示します。従来のリレーに基づく観測は広域区分のままとし、存在しない詳細区分を作りません。
+
+### 5. ウェブサイト、ゲートウェイと更新
+
+Cloudflareはウェブサイトをホストし、公開ゲートウェイのリクエストを中継します。IPアドレス、リクエスト時刻、URLとブラウザ情報を受け取ることがあり、ゲートウェイのリクエストには照会した公開アドレスが含まれる場合があります。このページは分析ツールや追跡Cookieを追加しません。言語の選択は端末のlocalStorageに保存します。
+
+macOSのSparkleは約1時間ごとに更新を確認し、GitHubとそのダウンロードサービスからリリースを取得します。これらのサービスはリクエストからIPアドレスとアプリ・バージョン情報を受け取ることがあります。Sparkleはアプリ内の更新ツールであり、別のEastSea分析サービスではありません。任意のシステムプロファイル送信は、以前の同意設定も含め無効です。Apple、Cloudflare、GitHubとGoogleは米国を拠点とし、他国でデータを処理する場合もあります。処理場所と保持期間は各サービスによるため、EastSeaは提供者管理のログの削除を約束できません。
+
+### 6. 診断、メールと削除請求
+
+診断レポートはクリップボードにコピーするだけで、アプリが自動アップロードすることはありません。別途のリモート利用分析のアップロードもありません。レポートや問い合わせを送ると、当社はメールアドレス、本文と添付ファイルを受け取ります。privacy@eastsea.xyzはCloudflare Email Routingで運営者のGmailに転送されるため、CloudflareとGoogleもメールを処理します。
+
+当社が管理するデータの閲覧、訂正、削除や処理停止はprivacy@eastsea.xyzにメールで請求してください。関連する公開アドレスまたはノード鍵と対象の記録を示し、秘密鍵やDeviceCheckトークンは送らないでください。削除できる情報と保持が必要な理由を説明します。登録サービスの関連付け記録を削除すると、今後の日次確認ができなくなる場合があり、Appleのビットもリセットされません。公開チェーン履歴や他の参加者のコピーを消去・回収できず、提供者管理の記録の削除も約束できません。ローカルファイルと設定は端末で削除できます。
+
+### 7. 連絡先と変更
+
+プライバシー窓口：Piplnプライバシー担当、privacy@eastsea.xyz。変更した方針は施行日とともにこのページに掲載し、重要な変更はアプリ内でも説明します。
+
+[Privacy policy / 개인정보 처리방침](https://eastsea.xyz/privacy)
+
+---
+
+## Privacy notice — 简体中文 (zh-Hans)
+
+Pipln运营EastSea投票节点注册服务。本政策涵盖钱包、节点、网站、公共网关、更新和隐私请求。生效日期：2026年10月8日。
+
+### 1. 本地密钥与公共网络
+
+私钥保留在你的设备上。地址、余额、交易、奖励、投票公钥、节点标识符和注册事件在链上公开，可能无限期保持公开。退出网络或删除应用不会删除历史区块、存档或他人保存的副本。
+
+对等节点、中继和公共地址发现网络可以看到连接IP地址。响应RPC的节点可以看到你查询的地址。Mac钱包通常先查询本机节点；使用远程备用节点或公共网关时，对方会收到查询。
+
+### 2. 注册与重复的Apple验证
+
+注册投票节点时，Apple DeviceCheck令牌使用经过认证的注册服务密钥加密。中转验证者只能收到密文，无法读取令牌。Pipln注册服务解密后，通过HTTPS将令牌发送给Apple Inc.（美国），以验证正版硬件和既有注册。首次注册时及参与期间每日重新认证时都会发送。Apple还会收到请求标识符、时间和注册服务的连接IP地址。
+
+Apple保存与开发者应用关联的设备注册位，重新安装应用后仍可能保留。我们不控制Apple的保留期限，也不承诺删除我们的记录会清除此位。拒绝DeviceCheck会使投票节点注册和每日资格检查无法进行，但仍可使用钱包。Touch ID用于授权签名，本身不代表隐私同意。
+
+### 3. 注册服务保存的内容与期限
+
+注册服务在请求处理内存中使用原始令牌，不将其写入注册存储。Mac上的受保护本地令牌文件会在应用运行时约每小时刷新。为防止重复注册并允许重新认证，注册服务持久保存投票公钥、运营者地址、节点标识符、信标地址和首次注册时间。该存储没有自动到期或删除计时器，记录会保留至运营者删除或服务终止。
+
+用于阻止并发注册请求的令牌哈希会在请求结束后移除。成功的每日检查将投票密钥和令牌哈希限流记录保存在内存中，涵盖当前及前两个周期；更早的记录在后续检查成功时清理，进程退出时全部消失。注册存储不保存用户IP地址。运营日志、备份和服务提供方日志的固定保留期限尚未验证，我们不承诺30天后删除。
+
+### 4. 可选国家设置与在线汇总
+
+Mac地区设置通过应用内置的对应表选择默认UN M49次区域。这独立于国家共享：选择国家之前，仅将次区域代码传给本地节点。首次启动会要求选择共享国家或拒绝，在明确同意之前不会将原始国家偏好传给节点。拒绝或关闭共享仍保留默认次区域及全部钱包和节点功能。所选国家保留在此Mac，并选择其标准M49上级次区域；未列出的地区保持未知。不使用GPS或IP定位，也不将选择存储到链上。
+
+公开presence RPC和gossip只包含未经验证的观测群体按角色和地区划分的数量，版本报告为未知。不公开单个节点列表、观测者身份、国家代码或精确观测时间。时间使用固定的10分钟窗口；不足3个的群体及小规模余数会通过互补抑制等方式合并到更大群体或隐藏。缺失数量表示隐藏或未报告，而非零。这是观测值，并非不同Mac的普查，汇总本身不保证匿名。此公开协议不提供运行质量，已收到的汇总副本无法收回。
+
+当前生成方通常只知道自身端点的地区，将其他对等节点的地区视为未知。因此自身的单条贡献也可能被合并或隐藏，选择国家并不保证公开数量中会显示具名次区域或国家。钱包将此Mac的地区及明确选择的国家作为本地偏好显示，与公开数量分开。旧版中继观测保留为大范围地区，不据此编造更细的次区域。
+
+### 5. 网站、网关与更新
+
+Cloudflare托管网站并传递公共网关请求，可能收到IP地址、请求时间、URL和浏览器信息；网关请求可能包含查询的公开地址。此页面不添加分析工具或追踪Cookie。语言选择存储在你设备的localStorage中。
+
+macOS上的Sparkle约每小时检查更新，并从GitHub及其下载服务获取发行版。这些服务可能从请求中收到IP地址和应用、版本信息。Sparkle是应用内的更新工具，不是独立的EastSea分析服务；可选系统配置资料发送已禁用，包括以前保存的同意设置。Apple、Cloudflare、GitHub和Google是美国服务提供方，也可能在其他国家处理数据。处理地点及保留期限取决于各项服务，EastSea无法承诺删除提供方控制的日志。
+
+### 6. 诊断、邮件与删除请求
+
+诊断报告仅复制到剪贴板，应用不会自动上传，也没有单独的远程使用分析上传。如果你发送报告或隐私请求，我们会收到你的邮件地址、正文和附件。privacy@eastsea.xyz通过Cloudflare Email Routing转发至运营者的Gmail邮箱，因此Cloudflare和Google也会处理这些邮件。
+
+若要请求访问、更正、删除或停止处理我们控制的数据，请发送邮件至privacy@eastsea.xyz。说明相关公开地址或节点密钥及所需记录，切勿发送私钥或DeviceCheck令牌。我们会解释哪些内容可删除及需要保留的原因。删除注册服务的绑定记录可能阻止今后的每日检查，并不会重置Apple的注册位。我们无法删除公共链历史或收回其他参与者的副本，也无法承诺删除提供方控制的记录。本地文件及偏好可在你自己的设备上移除。
+
+### 7. 联系与变更
+
+隐私联系人：Pipln隐私负责人，privacy@eastsea.xyz。更新的政策会在此处发布并注明生效日期，重大变化也会在应用中说明。
+
+[Privacy policy / 개인정보 처리방침](https://eastsea.xyz/privacy)
+
+---
+
+## Privacy notice — Español (es)
+
+Pipln opera el servicio de registro de nodos de votación de EastSea. Esta política cubre la cartera, el nodo, el sitio web, la pasarela pública, las actualizaciones y las solicitudes de privacidad. Vigente desde el 8 de octubre de 2026.
+
+### 1. Claves locales y red pública
+
+Las claves privadas permanecen en tu dispositivo. Las direcciones, saldos, transacciones, recompensas, claves públicas de votación, identificadores de nodos y eventos de registro son públicos en la cadena y pueden seguir siendo públicos indefinidamente. Salir de la red o borrar la app no elimina bloques anteriores, archivos ni copias de terceros.
+
+Los pares, relés y la red pública de descubrimiento de direcciones pueden ver las direcciones IP de conexión. Los nodos RPC pueden ver las direcciones que consultas. La cartera de Mac suele consultar primero su propio nodo; al usar un nodo remoto alternativo o la pasarela pública, este recibe la consulta.
+
+### 2. Registro y verificaciones repetidas con Apple
+
+Al registrar un nodo de votación, el token de Apple DeviceCheck se cifra con la clave autenticada del registrador. Los validadores intermediarios reciben texto cifrado y no pueden leerlo. El registrador de Pipln lo descifra y lo envía a Apple Inc. (EE. UU.) mediante HTTPS para comprobar el hardware y registros previos. Esto ocurre en el registro inicial y en la verificación diaria mientras participas. Apple también recibe un identificador y la hora de la solicitud, y la IP de conexión del registrador.
+
+Apple conserva un bit de registro por dispositivo asociado a las apps del desarrollador; puede sobrevivir a una reinstalación. No controlamos su plazo de conservación ni prometemos que borrar nuestros registros elimine ese bit. Rechazar DeviceCheck impide registrar el nodo de votación y verificar su elegibilidad diaria; la cartera sigue disponible. Touch ID autoriza una firma y no constituye por sí mismo consentimiento de privacidad.
+
+### 3. Qué conserva el registrador y durante cuánto tiempo
+
+El registrador usa el token original en la memoria de la solicitud y no lo escribe en su almacén de registros. En tu Mac, un archivo local protegido se actualiza aproximadamente cada hora mientras la app está abierta. Para impedir registros duplicados y permitir verificaciones posteriores, el registrador conserva de forma persistente la clave pública de votación, dirección del operador, identificador del nodo, dirección de baliza y hora del primer registro. Este almacén no tiene caducidad ni borrado automático: los registros permanecen hasta que el operador los elimina o retira el servicio.
+
+Los hashes de tokens para impedir solicitudes de registro simultáneas se eliminan al terminar la solicitud. Las verificaciones diarias satisfactorias guardan límites por clave y hash del token en memoria para el período actual y los dos anteriores; las entradas más antiguas se depuran tras otra verificación satisfactoria, y todas desaparecen al cerrar el proceso. El almacén de registros no conserva IP de clientes. No hemos verificado un plazo fijo para registros operativos, copias de seguridad o registros de proveedores, y no prometemos borrarlos a los 30 días.
+
+### 4. País opcional y presencia agregada
+
+La región del Mac selecciona una subregión UN M49 predeterminada mediante una tabla incluida en la app. Es independiente del país compartido: antes de elegir un país solo se pasa el código de subregión al nodo local. El primer inicio pide compartir el país o rechazarlo; no se pasa la preferencia de país original al nodo antes de una elección afirmativa. Rechazar o desactivar conserva la subregión predeterminada y todas las funciones. El país elegido permanece en este Mac y selecciona su grupo M49 canónico; las áreas no incluidas quedan desconocidas. No se utiliza GPS ni geolocalización por IP y la elección no se guarda en la cadena.
+
+La RPC pública de presencia y el gossip solo contienen recuentos de grupos observados sin verificar por función y región; la versión se indica como desconocida. No exponen listas individuales, identidad del observador, códigos de país ni horas exactas. Los tiempos usan ventanas fijas de 10 minutos; los grupos menores de tres y los restos pequeños se combinan u ocultan, incluida la supresión complementaria. Los recuentos ausentes están ocultos o no comunicados, no son cero. Son observaciones, no un censo de Macs distintos, y la agregación no garantiza anonimato. Este protocolo público no proporciona calidad de funcionamiento. Las copias agregadas ya recibidas no se pueden recuperar.
+
+El productor actual normalmente solo conoce la región de su propio endpoint y considera desconocidas las regiones de otros pares. Su contribución individual puede agruparse u ocultarse; elegir un país no garantiza que aparezca una subregión o un país con nombre en los recuentos públicos. La cartera indica la región de este Mac y el país elegido afirmativamente como preferencias locales, separadas de los recuentos públicos. Las observaciones anteriores basadas en relés siguen siendo regiones amplias y no se convierten en subregiones inventadas.
+
+### 5. Sitio web, pasarela y actualizaciones
+
+Cloudflare aloja el sitio web y transporta las solicitudes de la pasarela pública. Puede recibir tu IP, hora, URL e información del navegador; las solicitudes de la pasarela pueden incluir la dirección pública consultada. La página no añade herramientas de análisis ni cookies de seguimiento. Tu elección de idioma se guarda en el localStorage del dispositivo.
+
+En macOS, Sparkle busca actualizaciones aproximadamente cada hora y descarga versiones desde GitHub y sus servicios de descarga. Estos servicios pueden recibir tu IP e información de la app y su versión en las solicitudes. Sparkle es el actualizador de la app, no un servicio separado de análisis de EastSea; el envío opcional del perfil del sistema está desactivado, incluso si había una autorización anterior. Apple, Cloudflare, GitHub y Google son proveedores con sede en EE. UU. y pueden procesar datos en otros países. La ubicación y conservación dependen de sus servicios; EastSea no puede prometer borrar registros controlados por proveedores.
+
+### 6. Diagnósticos, correo y solicitudes de borrado
+
+El informe de diagnóstico solo se copia al portapapeles; la app no lo sube automáticamente. No hay una carga separada de análisis remoto de uso. Si envías un informe o solicitud, recibimos tu correo, mensaje y adjuntos. privacy@eastsea.xyz usa Cloudflare Email Routing para reenviar los mensajes al Gmail del operador, por lo que Cloudflare y Google también los procesan.
+
+Escribe a privacy@eastsea.xyz para solicitar acceso, corrección, borrado o cese del tratamiento de datos que controlamos. Indica la dirección pública o clave del nodo y los registros afectados; nunca envíes una clave privada ni un token de DeviceCheck. Explicaremos qué se puede borrar y cualquier motivo para conservarlo. Borrar un vínculo del registrador puede impedir futuras verificaciones diarias y no restablece el bit de Apple. No podemos borrar el historial público de la cadena ni recuperar copias de otros participantes, y no prometemos borrar registros de proveedores. Los archivos y preferencias locales se pueden eliminar en tu dispositivo.
+
+### 7. Contacto y cambios
+
+Contacto: responsable de privacidad de Pipln, privacy@eastsea.xyz. Publicamos las políticas actualizadas aquí con su fecha de entrada en vigor; los cambios sustanciales también se explican en la app.
+
+[Privacy policy / 개인정보 처리방침](https://eastsea.xyz/privacy)

@@ -504,6 +504,20 @@ pub fn expected_parent_is_current(expected: u32) -> bool {
     expected > 0 && std::os::unix::process::parent_id() == expected
 }
 
+/// Resolve one listener for the background child and the node's iroh forwarder.
+/// Keep consecutive local validators out of each other's consensus ports.
+pub fn resolve_reshare_port(port: u16, rpc_port: u16, configured: Option<u16>) -> Result<u16, String> {
+    let reshare = match configured {
+        Some(port) => port,
+        None => port.checked_add(11_000)
+            .ok_or("--port + 11000 exceeds 65535; set --reshare-port explicitly")?,
+    };
+    if reshare == 0 || reshare == port || reshare == rpc_port {
+        return Err("--reshare-port must be nonzero and different from --port and --rpc-port".into());
+    }
+    Ok(reshare)
+}
+
 pub struct Supervisor {
     /// The `aether` binary to run children with.
     pub exe: PathBuf,
@@ -512,8 +526,8 @@ pub struct Supervisor {
     pub data: PathBuf,
     /// Validator p2p port.
     pub port: u16,
-    /// Background reshare port (a running validator's node forwards reshare
-    /// links over iroh to `port + 1`, so keep that default on public networks).
+    /// Dedicated background reshare listener. The validator child forwards
+    /// incoming iroh reshare links to this same configured port.
     pub reshare_port: u16,
     pub rpc_port: u16,
     /// Extra args for `aether node` (faucet, DeviceCheck, block time, …).
@@ -1016,6 +1030,8 @@ impl Supervisor {
                     &self.port.to_string(),
                     "--rpc-port",
                     &self.rpc_port.to_string(),
+                    "--reshare-port",
+                    &self.reshare_port.to_string(),
                 ]);
                 if let Some(rec) = &self.ceremony {
                     cmd.args(["--ceremony", &path_str(rec)]);
@@ -2327,11 +2343,30 @@ mod tests {
 
     // Task-owned subprocess fixtures for the actual supervisor spawn path.
     // Helper tests return immediately unless a scoped Command selects a role.
+    const R06_PHASE_TIMEOUT: Duration = Duration::from_secs(60);
+    const R06_FIXTURE_LIFETIME: Duration = Duration::from_secs(3 * R06_PHASE_TIMEOUT.as_secs());
+    fn r06_cancelled(dir: &Path) -> bool {
+        !dir.exists() || dir.join("stop").exists()
+    }
     struct R06NativeFixture(PathBuf);
     impl Drop for R06NativeFixture {
         fn drop(&mut self) {
             let _ = std::fs::write(self.0.join("stop"), b"stop");
+            // Only this fixture's spawned writer owns the completion marker.
+            // Stop it cooperatively; an orphan PID must never be signalled.
+            if self.0.join("writer-started").exists() || self.0.join("writer-spawned").exists() {
+                let deadline = Instant::now() + R06_PHASE_TIMEOUT;
+                while self.0.exists() && !self.0.join("writer-exited").exists() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    struct R06WriterExit(PathBuf);
+    impl Drop for R06WriterExit {
+        fn drop(&mut self) {
+            let _ = crate::atomic::replace(&self.0.join("writer-exited"), b"exited", 0o600);
         }
     }
     struct R06NativeParent(Child);
@@ -2343,12 +2378,30 @@ mod tests {
             }
         }
     }
-    fn r06_wait_file(path: &Path) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !path.exists() && Instant::now() < deadline {
+    fn r06_wait_file(path: &Path, mut parent: Option<&mut R06NativeParent>) -> Result<(), String> {
+        let dir = path.parent().expect("fixture marker has a parent");
+        let deadline = Instant::now() + R06_PHASE_TIMEOUT;
+        loop {
+            if path.exists() { return Ok(()); }
+            if r06_cancelled(dir) {
+                return Err(format!("R06 fixture cancelled before {}", path.display()));
+            }
+            if dir.join("writer-exited").exists() {
+                if path.exists() { return Ok(()); }
+                return Err(format!("R06 writer exited before {}", path.display()));
+            }
+            if let Some(parent) = parent.as_deref_mut() {
+                if let Some(status) = parent.0.try_wait().map_err(|e| format!("R06 parent status: {e}"))? {
+                    // The marker can become visible while the parent exits.
+                    if path.exists() { return Ok(()); }
+                    return Err(format!("R06 parent exited with {status} before {}", path.display()));
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("R06 fixture did not reach {} within {R06_PHASE_TIMEOUT:?}", path.display()));
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(path.exists(), "R06 fixture did not reach {}", path.display());
     }
     fn r06_fixture(mode: &str) -> (R06NativeFixture, R06NativeParent) {
         use std::os::unix::fs::PermissionsExt as _;
@@ -2358,6 +2411,7 @@ mod tests {
         let dir = root.join(format!("r06-native-{mode}-{}-{}", std::process::id(),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let fixture = R06NativeFixture(dir.clone());
         std::fs::create_dir(dir.join("node")).unwrap();
         let script = dir.join("writer.sh");
@@ -2406,11 +2460,13 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
         let mut options = sup(&dir.join("node"));
         options.exe = dir.join("writer.sh");
         let mut child = options.spawn(Role::Keyless, None, &lock).unwrap();
+        crate::atomic::replace(&dir.join("writer-spawned"), child.id().to_string().as_bytes(), 0o600).unwrap();
         // Keep the parent's lock until the outer test deliberately SIGKILLs
         // this process. The writer exits by fixture marker or hard deadline.
         let _keep_parent_lock = lock;
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while dir.exists() && !dir.join("stop").exists() && Instant::now() < deadline {
+        let deadline = Instant::now() + R06_FIXTURE_LIFETIME;
+        while !r06_cancelled(&dir) && Instant::now() < deadline {
+            if child.try_wait().expect("observe fixture writer").is_some() { return; }
             std::thread::sleep(Duration::from_millis(10));
         }
         let _ = child.kill();
@@ -2422,11 +2478,16 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
         if std::env::var("AETHER_R06_ROLE").as_deref() != Ok("writer") { return; }
         use std::os::unix::io::AsRawFd as _;
         let dir = PathBuf::from(std::env::var_os("AETHER_R06_DIR").unwrap());
+        // Declared before every lease owner, so completion follows guard drop.
+        let _writer_exit = R06WriterExit(dir.clone());
+        if r06_cancelled(&dir) { return; }
+        crate::atomic::replace(&dir.join("writer-started"), b"started", 0o600).unwrap();
         let late = std::env::var("AETHER_R06_MODE").as_deref() == Ok("late");
         if late {
             crate::atomic::replace(&dir.join("late-start-ready"), b"waiting", 0o600).unwrap();
-            r06_wait_file(&dir.join("start"));
+            if r06_wait_file(&dir.join("start"), None).is_err() { return; }
         }
+        if r06_cancelled(&dir) { return; }
         let mode = std::env::var("AETHER_R06_MODE").unwrap_or_default();
         if mode == "capability" {
             assert_eq!(crate::rpc::writer_lease_status_for_test()["writer_lease_protocol"], json!(0),
@@ -2482,8 +2543,8 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
             .env_remove(WRITER_LEASE_ENV).status().unwrap().success(),
             "R06 unrelated prover exec must not inherit the writer lease");
         crate::atomic::replace(&dir.join("writer-ready"), std::process::id().to_string().as_bytes(), 0o600).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while dir.exists() && !dir.join("stop").exists() && Instant::now() < deadline {
+        let deadline = Instant::now() + R06_FIXTURE_LIFETIME;
+        while !r06_cancelled(&dir) && Instant::now() < deadline {
             let _ = std::fs::write(dir.join("writer-heartbeat"), b"still writing");
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -2491,8 +2552,8 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
 
     #[test]
     fn r06_validated_sender_pid1_is_accepted_without_pid_namespace() {
-        let (fixture, _parent) = r06_fixture("pid1");
-        r06_wait_file(&fixture.0.join("adoption-result"));
+        let (fixture, mut parent) = r06_fixture("pid1");
+        r06_wait_file(&fixture.0.join("adoption-result"), Some(&mut parent)).expect("PID-1 adoption result");
         assert_eq!(std::fs::read_to_string(fixture.0.join("adoption-result")).unwrap(), "accepted",
             "R06 validated inherited writer lease accepts explicit sender PID 1");
     }
@@ -2500,8 +2561,8 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
     #[test]
     fn r06_malformed_or_wrong_inode_payload_never_adopts() {
         for mode in ["bad-inode", "bad-format", "oversized"] {
-            let (fixture, _parent) = r06_fixture(mode);
-            r06_wait_file(&fixture.0.join("adoption-result"));
+            let (fixture, mut parent) = r06_fixture(mode);
+            r06_wait_file(&fixture.0.join("adoption-result"), Some(&mut parent)).expect("malformed adoption result");
             assert_eq!(std::fs::read_to_string(fixture.0.join("adoption-result")).unwrap(), "rejected",
                 "R06 {mode} payload must not adopt the inherited descriptor");
         }
@@ -2509,21 +2570,21 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
 
     #[test]
     fn r11_rpc_writer_capability_tracks_actual_guard_lifetime() {
-        let (fixture, _parent) = r06_fixture("capability");
-        r06_wait_file(&fixture.0.join("capability-result"));
+        let (fixture, mut parent) = r06_fixture("capability");
+        r06_wait_file(&fixture.0.join("capability-result"), Some(&mut parent)).expect("writer capability result");
         assert_eq!(std::fs::read(fixture.0.join("capability-result")).unwrap(), b"passed");
     }
 
     #[test]
     fn r06_writer_lease_survives_supervisor_sigkill() {
         let (fixture, mut parent) = r06_fixture("normal");
-        r06_wait_file(&fixture.0.join("writer-ready"));
+        r06_wait_file(&fixture.0.join("writer-ready"), Some(&mut parent)).expect("writer readiness");
         parent.0.kill().unwrap();
         parent.0.wait().unwrap();
         assert!(lock_data_dir(&fixture.0.join("node")).is_err(),
             "R06 writer lease must keep run.lock busy after supervisor SIGKILL");
         std::fs::write(fixture.0.join("stop"), b"stop").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + R06_PHASE_TIMEOUT;
         while lock_data_dir(&fixture.0.join("node")).is_err() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -2534,13 +2595,14 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
     #[test]
     fn r06_late_writer_rejects_dead_supervisor() {
         let (fixture, mut parent) = r06_fixture("late");
-        r06_wait_file(&fixture.0.join("late-start-ready"));
+        r06_wait_file(&fixture.0.join("late-start-ready"), Some(&mut parent)).expect("late writer readiness");
         parent.0.kill().unwrap();
         parent.0.wait().unwrap();
         std::fs::write(fixture.0.join("start"), b"start").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + R06_PHASE_TIMEOUT;
         while !fixture.0.join("late-rejected").exists() && Instant::now() < deadline {
-            if fixture.0.join("writer-ready").exists() { break; }
+            if fixture.0.join("writer-ready").exists() || fixture.0.join("writer-exited").exists()
+                || r06_cancelled(&fixture.0) { break; }
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(fixture.0.join("late-rejected").exists() && !fixture.0.join("writer-heartbeat").exists(),
@@ -2996,6 +3058,27 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
     }
 
     #[test]
+    fn reshare_ports_keep_consecutive_validators_separate() {
+        for port in 9101..=9104 {
+            assert_eq!(resolve_reshare_port(port, 8600, None).unwrap(), port + 11_000);
+        }
+        assert_eq!(resolve_reshare_port(9000, 8545, None).unwrap(), 20000);
+        assert_ne!(resolve_reshare_port(9101, 8601, None).unwrap(), 19101,
+            "the testnet listener must avoid the shipped app consensus port");
+        assert_eq!(resolve_reshare_port(19101, 18545, None).unwrap(), 30101);
+        assert_eq!(resolve_reshare_port(49151, 8545, None).unwrap(), 60151);
+        assert_eq!(resolve_reshare_port(54535, 8545, None).unwrap(), 65535);
+        assert!(resolve_reshare_port(54536, 8545, None).is_err());
+        assert_eq!(resolve_reshare_port(60000, 8545, Some(19000)).unwrap(), 19000,
+            "explicit overrides must bypass default overflow");
+        assert!(resolve_reshare_port(60000, 8545, None).unwrap_err().contains("set --reshare-port explicitly"));
+        for invalid in [0, 9000, 8545] {
+            assert!(resolve_reshare_port(9000, 8545, Some(invalid)).is_err());
+        }
+        assert!(resolve_reshare_port(9000, 20000, None).is_err(), "the default must not collide with RPC");
+    }
+
+    #[test]
     fn a_later_attempt_uses_a_fresh_reshare_round() {
         let old = 9;
         assert_eq!(reshare_round(old, 24).unwrap(), reshare_round(old, 24).unwrap(), "restart resumes its journal");
@@ -3065,6 +3148,7 @@ exec "$AETHER_R06_EXE" --exact supervisor::tests::r06_fixture_writer --nocapture
             max_committee: None,
             genesis_validators: Some(vec![]),
             release: None,
+            search: None,
         }
     }
 

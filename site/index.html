@@ -26,7 +26,9 @@
 <link rel="preload" href="fonts/newsreader-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="design-components.css">
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="live-globe/globe.css">
 <script>
 /* Language: stored choice first (storage can be blocked), then navigator.language.
    Runs before <body> so the right language paints first. No network, no cookies. */
@@ -77,10 +79,10 @@
       <a href="#faq">FAQ</a>
     </nav>
     <div class="header-actions">
-      <button id="lang-toggle" class="lang" type="button">
+      <button id="lang-toggle" class="lang es-control" type="button">
         <span class="ko" lang="ko"><span class="sr-only">언어 바꾸기: </span>EN</span><span class="en" lang="en"><span class="sr-only">Language: </span>한국어</span>
       </button>
-      <a class="btn btn-sm btn-primary" href="https://github.com/eastsea-xyz/eastsea/releases/latest">
+      <a class="btn btn-sm btn-primary es-control primary" href="https://github.com/eastsea-xyz/eastsea/releases/latest">
         <span class="ko" lang="ko">내려받기</span><span class="en" lang="en">Download</span>
       </a>
     </div>
@@ -106,7 +108,7 @@
         <span class="en" lang="en">EastSea is a blockchain with the wallet and the node in one Mac app. Touch ID replaces the seed phrase, and your Mac verifies every balance proof it receives. One switch, and your Mac joins the network.</span>
       </p>
       <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/eastsea-xyz/eastsea/releases/latest">
+        <a class="btn btn-primary es-control primary" href="https://github.com/eastsea-xyz/eastsea/releases/latest">
           <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2v8m0 0L4.5 6.5M8 10l3.5-3.5M3 13h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="ko" lang="ko">Mac용 내려받기</span><span class="en" lang="en">Download for Mac</span>
         </a>
@@ -158,17 +160,17 @@
           <div class="w-content">
             <div class="w-home">
               <div class="w-col">
-                <div class="plate">
+                <div class="plate es-plate">
                   <svg class="plate-waves" viewBox="0 0 900 220" preserveAspectRatio="none" fill="none" stroke="rgba(232,191,89,.2)" stroke-width="1"><path d="M0 40 Q30 34 60 40 T120 40 T180 40 T240 40 T300 40 T360 40 T420 40 T480 40 T540 40 T600 40 T660 40 T720 40 T780 40 T840 40 T900 40"/><path d="M0 66 Q34 59 69 66 T138 66 T207 66 T276 66 T345 66 T414 66 T483 66 T552 66 T621 66 T690 66 T759 66 T828 66 T897 66"/><path d="M0 91 Q39 83 78 91 T156 91 T234 91 T312 91 T390 91 T468 91 T546 91 T624 91 T702 91 T780 91 T858 91 T936 91"/><path d="M0 117 Q43 108 87 117 T174 117 T261 117 T348 117 T435 117 T522 117 T609 117 T696 117 T783 117 T870 117 T957 117"/><path d="M0 143 Q48 133 96 143 T192 143 T288 143 T384 143 T480 143 T576 143 T672 143 T768 143 T864 143 T960 143"/><path d="M0 169 Q52 158 105 169 T210 169 T315 169 T420 169 T525 169 T630 169 T735 169 T840 169 T945 169"/><path d="M0 194 Q57 182 114 194 T228 194 T342 194 T456 194 T570 194 T684 194 T798 194 T912 194"/></svg>
                   <img class="plate-coin" src="assets/coin-256.webp" srcset="assets/coin-256.webp 256w, assets/coin-512.webp 512w" sizes="190px" width="256" height="256" alt="">
                   <p class="plate-acct"><span class="ko" lang="ko">계정 1</span><span class="en" lang="en">Account 1</span> · <span class="mono">0x5397…E502</span></p>
-                  <p class="plate-amt">12.5 <small>DBLN</small></p>
+                  <p class="plate-amt es-amount">12.5 <small>DBLN</small></p>
                   <p class="plate-ver"><svg><use href="#i-checkseal"/></svg><span class="ko" lang="ko">이 Mac에서 확인함 · 방금</span><span class="en" lang="en">Verified on this Mac · just now</span></p>
                 </div>
                 <div class="w-actions">
-                  <span class="w-act primary"><svg><use href="#i-touchid"/></svg><span class="ko" lang="ko">보내기</span><span class="en" lang="en">Send</span></span>
-                  <span class="w-act"><svg><use href="#i-receive"/></svg><span class="ko" lang="ko">받기</span><span class="en" lang="en">Receive</span></span>
-                  <span class="w-act"><svg><use href="#i-assets"/></svg><span class="ko" lang="ko">자산</span><span class="en" lang="en">Assets</span></span>
+                  <span class="w-act primary es-control"><svg><use href="#i-touchid"/></svg><span class="ko" lang="ko">보내기</span><span class="en" lang="en">Send</span></span>
+                  <span class="w-act es-control"><svg><use href="#i-receive"/></svg><span class="ko" lang="ko">받기</span><span class="en" lang="en">Receive</span></span>
+                  <span class="w-act es-control"><svg><use href="#i-assets"/></svg><span class="ko" lang="ko">자산</span><span class="en" lang="en">Assets</span></span>
                 </div>
                 <div class="w-sec"><b><span class="ko" lang="ko">최근 활동</span><span class="en" lang="en">Recent activity</span></b><span><span class="ko" lang="ko">모두 보기</span><span class="en" lang="en">See all</span></span></div>
                 <div class="w-group">
@@ -255,6 +257,26 @@
   </div>
 </section>
 
+<!-- Live presence: locally bundled artwork, continent aggregates only. -->
+<section class="section live-network" id="live-network" aria-labelledby="live-network-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 id="live-network-title" class="h2">
+        <span class="ko" lang="ko">지금 동해를 돌리는 Mac</span>
+        <span class="en" lang="en">Macs running EastSea right now</span>
+      </h2>
+      <p class="lead">
+        <span class="ko" lang="ko">어디에 있든, 같은 바다에 연결되어 있습니다.</span>
+        <span class="en" lang="en">Across continents, connected to the same sea.</span>
+      </p>
+    </div>
+    <div id="live-network-globe"></div>
+    <noscript>
+      <p class="fine"><span class="ko" lang="ko">실시간 연결 수를 보려면 JavaScript를 켜 주세요. 정확한 위치는 수집하지 않습니다.</span><span class="en" lang="en">Enable JavaScript to see live counts. Exact locations are not collected.</span></p>
+    </noscript>
+  </div>
+</section>
+
 <!-- 3 · How it works: four numbered chapters, each with its own UI vignette -->
 <section class="section how" id="how" aria-labelledby="how-title">
   <div class="wrap">
@@ -290,7 +312,7 @@
         <p><span class="ko" lang="ko">지갑은 잔액마다 네트워크가 합의했다는 서명과 장부의 증명을 내 맥에서 직접 검사합니다. 답해 준 노드가 느리거나 오래된 값을 줄 수는 있어도, 틀린 값을 통과시키지는 않습니다.</span><span class="en" lang="en">For every balance, the wallet checks the network's agreed signature and a proof from the ledger, right on your Mac. A serving node can be slow or stale, but it cannot slip a wrong number past your Mac.</span></p>
       </div>
       <div class="vignette" aria-hidden="true">
-        <div class="v-proof">
+        <div class="v-proof es-plate">
           <p><span class="ok">✓</span> <span class="ko" lang="ko">네트워크가 합의한 서명</span><span class="en" lang="en">The network's agreed signature</span></p>
           <p><span class="ok">✓</span> <span class="ko" lang="ko">장부에서 가져온 증명</span><span class="en" lang="en">A proof from the ledger</span></p>
           <p><span class="ok">✓</span> <span class="ko" lang="ko">이 Mac에서 직접 계산</span><span class="en" lang="en">Checked on this Mac</span></p>
@@ -415,7 +437,7 @@
       </div>
       <div>
         <dt><span class="ko" lang="ko">개인정보</span><span class="en" lang="en">Privacy</span></dt>
-        <dd><span class="ko" lang="ko">지갑에는 분석 도구가 없습니다. 맥 등록에 필요한 정보 외에는 개인정보를 수집하지 않습니다.</span><span class="en" lang="en">The wallet has no analytics. Apart from what Mac registration needs, it collects no personal data.</span> <a href="privacy.html"><span class="ko" lang="ko">개인정보 처리방침</span><span class="en" lang="en">Privacy policy</span></a></dd>
+        <dd><span class="ko" lang="ko">개인키는 기기에 남지만 주소·잔액·거래·보상·등록 기록은 체인에 무기한 공개될 수 있습니다. 등록과 일일 확인에는 Pipln·Apple이 참여합니다. 웹·게이트웨이 제공업체는 IP를, GitHub 업데이트 서비스는 IP와 앱 버전을 볼 수 있습니다. 보관·삭제 범위는 5개 언어 처리방침에서 확인하세요.</span><span class="en" lang="en">Private keys stay on your device; addresses, balances, transactions, rewards and registration records can remain public on chain indefinitely. Registration and daily checks involve Pipln and Apple. Website and gateway providers see IP addresses; GitHub update services see IP and app version. See the five-language policy for retention and deletion limits.</span> <a href="privacy.html"><span class="ko" lang="ko">개인정보 처리방침</span><span class="en" lang="en">Privacy policy</span></a></dd>
       </div>
       <div>
         <dt><span class="ko" lang="ko">소스 코드</span><span class="en" lang="en">Source code</span></dt>
@@ -442,7 +464,7 @@
           <h3 class="h3"><span class="ko" lang="ko">Mac용 EastSea</span><span class="en" lang="en">EastSea for Mac</span></h3>
           <p class="mono get-meta">0.7.3.2 · <span class="ko" lang="ko">Apple 실리콘</span><span class="en" lang="en">Apple silicon</span> · macOS 14+</p>
           <p><span class="ko" lang="ko">지갑과 노드가 한 앱에. Touch ID 결제, 잔액 그래프, 노드 스위치, 테스트 DBLN 받기까지 들어 있습니다.</span><span class="en" lang="en">Wallet and node in one app: Touch ID payments, a balance chart, the node switch, and free test DBLN to try it with.</span></p>
-          <a class="btn btn-primary" href="https://github.com/eastsea-xyz/eastsea/releases/latest"><span class="ko" lang="ko">GitHub에서 내려받기</span><span class="en" lang="en">Download from GitHub</span></a>
+          <a class="btn btn-primary es-control primary" href="https://github.com/eastsea-xyz/eastsea/releases/latest"><span class="ko" lang="ko">GitHub에서 내려받기</span><span class="en" lang="en">Download from GitHub</span></a>
           <p class="fine"><span class="ko" lang="ko">테스트넷 전용 빌드입니다. 테스트 DBLN에는 가치가 없습니다.</span><span class="en" lang="en">Testnet build. Test DBLN has no value.</span></p>
         </div>
       </article>
@@ -456,7 +478,7 @@
         <h3 class="h3"><span class="ko" lang="ko">탐색기</span><span class="en" lang="en">Explorer</span></h3>
         <p class="mono get-meta">explorer.eastsea.xyz</p>
         <p><span class="ko" lang="ko">테스트넷의 블록과 거래를 누구나 볼 수 있습니다.</span><span class="en" lang="en">Anyone can browse the testnet's blocks and transactions.</span></p>
-        <a class="link" href="https://explorer.eastsea.xyz/"><span class="ko" lang="ko">탐색기 열기</span><span class="en" lang="en">Open the explorer</span> <span aria-hidden="true">↗</span></a>
+        <a class="link" href="/explorer/"><span class="ko" lang="ko">탐색기 열기</span><span class="en" lang="en">Open the explorer</span> <span aria-hidden="true">↗</span></a>
       </article>
     </div>
   </div>
@@ -528,7 +550,7 @@
       <p class="wordmark" aria-hidden="true"><span class="wm-ko">동해</span><span class="wm-en">EastSea</span></p>
       <ul class="footer-links">
         <li><a href="https://github.com/eastsea-xyz/eastsea/releases/latest"><span class="ko" lang="ko">내려받기</span><span class="en" lang="en">Download</span></a></li>
-        <li><a href="https://explorer.eastsea.xyz/"><span class="ko" lang="ko">탐색기</span><span class="en" lang="en">Explorer</span></a></li>
+        <li><a href="/explorer/"><span class="ko" lang="ko">탐색기</span><span class="en" lang="en">Explorer</span></a></li>
         <li><a href="https://github.com/eastsea-xyz">GitHub</a></li>
         <li><a href="https://github.com/eastsea-xyz/eastsea/blob/main/DISCLAIMER.md"><span class="ko" lang="ko">고지 및 이용 약관</span><span class="en" lang="en">Disclaimer and terms</span></a></li>
         <li><a href="privacy.html"><span class="ko" lang="ko">개인정보 처리방침</span><span class="en" lang="en">Privacy policy</span></a></li>
@@ -553,5 +575,6 @@
   });
 })();
 </script>
+<script type="module" src="live-network.js"></script>
 </body>
 </html>

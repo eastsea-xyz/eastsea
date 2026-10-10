@@ -11,10 +11,16 @@ import { nextPauseState, pausedLine, PAUSE_HELP } from '../src/lib/pause.js';
 import { TERMS_VERSION, DISCLAIMER_URL, noticePoints } from '../src/lib/terms.js';
 import { mergeHistory } from '../src/lib/history.js';
 import { displayTokenName } from '../src/lib/knownTokens.js';
+import { tokenArtSource, tokenFallbackAppearance } from './token-art.js';
+import { t, language } from '../src/lib/i18n.js';
+import { browserInput, externalNameMessage, suggestedHTTPS } from '../src/lib/sea-url.mjs';
+import { createAccountIcon, deriveAccountIcon } from '../src/lib/accountIcon.js';
 
 const params = new URLSearchParams(location.search);
 const approveId = params.get('approve');
 if (approveId) document.body.classList.add('window');
+if (approveId) document.documentElement.lang = language();
+let approvalBusy = false;
 const app = document.getElementById('app');
 let tab = 'home';
 let developmentNetwork = false;
@@ -38,12 +44,60 @@ function h(tag, props = {}, ...children) {
     else if (k === 'class') el.className = v;
     else el.setAttribute(k, v === true ? '' : v);
   }
+  if (tag === 'button') el.classList.add('es-control');
+  if (tag === 'h2') el.classList.add('es-section-title');
   for (const c of children.flat()) if (c != null && c !== false) el.append(c instanceof Node ? c : String(c));
   return el;
 }
 
+function nativeArt(className = 'avatar token-art') {
+  return h('img', { class: className, src: new URL('assets/dawn-flat.svg', import.meta.url).href, alt: '', 'aria-hidden': 'true', width: 40, height: 40 });
+}
+
+function holdingArt(token) {
+  const src = tokenArtSource(defaultChainId, token.address);
+  if (src) return h('img', { class: 'avatar token-art', src, alt: '', 'aria-hidden': 'true', width: 40, height: 40 });
+  const { fill, letter } = tokenFallbackAppearance(token);
+  const disc = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  disc.setAttribute('viewBox', '0 0 36 36');
+  disc.setAttribute('class', 'unverified-disc');
+  disc.setAttribute('aria-hidden', 'true');
+  const circle = document.createElementNS(disc.namespaceURI, 'circle');
+  for (const [key, value] of Object.entries({ cx: 18, cy: 18, r: 18, fill })) circle.setAttribute(key, value);
+  disc.append(circle);
+  return h('span', { class: 'avatar unverified-art', role: 'img', 'aria-label': 'Unverified token' },
+    disc,
+    h('span', { class: 'unverified-initial', 'aria-hidden': 'true' }, letter),
+    h('span', { class: 'unverified-question', 'aria-hidden': 'true' }, '?'));
+}
+
+function actionIcon(name) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  for (const [key, value] of Object.entries({ viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.7', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', class: 'ico' })) svg.setAttribute(key, value);
+  const path = document.createElementNS(svg.namespaceURI, 'path');
+  path.setAttribute('d', name === 'receive' ? 'M12 4v16M6 14l6 6 6-6' : 'M6 18 18 6M6 6h12v12');
+  svg.append(path);
+  return svg;
+}
+
+function accountIdentity(address, size = 24) {
+  return h('span', { class: 'account-identity' }, createAccountIcon(address, size), h('span', { class: 'mono' }, address));
+}
+
+/** Display-only ABI identities. Exact lengths and zero-padded address words
+ * prevent malformed call data from appearing as a valid account identity. */
+function callIdentity(tx) {
+  if (typeof tx.data !== 'string') return null;
+  const data = tx.data.toLowerCase();
+  let word;
+  if (data.length === 138 && /^0x(?:a9059cbb|095ea7b3)[0-9a-f]{128}$/.test(data)) word = data.slice(10, 74);
+  else if (data.length === 202 && /^0x23b872dd[0-9a-f]{192}$/.test(data)) word = data.slice(74, 138);
+  if (!word || !/^0{24}[0-9a-f]{40}$/.test(word)) return null;
+  return `0x${word.slice(24)}`;
+}
+
 function header(extra) {
-  return h('header', {}, h('div', { class: 'logo', 'aria-hidden': 'true' }), h('h1', {}, `${Brand.project} Wallet`),
+  return h('header', {}, nativeArt('logo'), h('h1', { class: 'es-wordmark' }, Brand.project), h('span', { class: 'header-kind' }, 'Wallet'),
     developmentNetwork ? h('span', { class: 'pill warn' }, 'Dev network') : null, extra);
 }
 
@@ -103,7 +157,7 @@ function onboarding() {
     h('label', {}, 'Password again', pw2),
     create,
     h('details', {}, h('summary', { class: 'small muted' }, 'Import an existing key instead'),
-      h('div', { class: 'list', style: 'margin-top:8px' }, h('label', {}, 'Private key', secret), importBtn)),
+      h('div', { class: 'list import-fields' }, h('label', {}, 'Private key', secret), importBtn)),
     out,
   );
   form.addEventListener('submit', action(create, out, async () => { check(); await op('create', { password: pw.value }); refresh(); }));
@@ -116,7 +170,7 @@ function unlockView(address) {
   const out = h('div');
   const pw = h('input', { type: 'password', autocomplete: 'current-password', required: true });
   const btn = h('button', { class: 'primary', type: 'submit' }, 'Unlock');
-  const form = h('form', { class: 'card' }, h('h2', {}, 'Unlock'), h('div', { class: 'mono muted' }, address), h('label', {}, 'Password', pw), btn, out);
+  const form = h('form', { class: 'card' }, h('h2', {}, 'Unlock'), accountIdentity(address, 32), h('label', {}, 'Password', pw), btn, out);
   form.addEventListener('submit', action(btn, out, async () => { await op('unlock', { password: pw.value }); refresh(); }));
   render(header(h('span', { class: 'pill' }, 'Locked')), form);
   pw.focus();
@@ -124,42 +178,119 @@ function unlockView(address) {
 
 // ---- approval window ----
 
+function readableField(field, domain = false) {
+  const labels = { name: 'domainName', chainId: 'chainId', verifyingContract: 'verifyingContract', version: 'domainVersion' };
+  const value = field.displayKey ? t(field.displayKey) : field.byteLength != null ? t('byteCount', { count: field.byteLength }) : field.value;
+  return h('div', { class: 'signing-field' }, h('div', { class: 'small muted' }, domain && labels[field.path] ? t(labels[field.path]) : field.path),
+    h('div', { class: field.type === 'address' ? 'mono' : 'signing-value', dir: 'auto' }, value),
+    field.detail ? h('details', {}, h('summary', { class: 'small muted' }, t('callData')), h('div', { class: 'mono' }, field.detail)) : null);
+}
+
+function simulatedEffects(simulation) {
+  const body = [message(simulation.success ? 'ok' : 'error', t(simulation.success ? 'simulationPassed' : 'simulationReverted'))];
+  if (!simulation.success) body.push(h('div', { class: 'kv' }, h('span', {}, t('failureReason')), h('strong', {}, simulation.failureReason)));
+  if (simulation.success) {
+    body.push(h('h2', {}, t('balanceChanges')));
+    if (!simulation.tokenCoverageComplete) body.push(h('div', { class: 'small warn' }, t('incompleteTokenCoverage')));
+    if (!simulation.balanceChanges.length) body.push(h('p', { class: 'small muted' }, t('noBalanceChanges')));
+    for (const change of simulation.balanceChanges) {
+      const sign = BigInt(change.delta) > 0n ? '+' : '';
+      const amount = change.baseUnits ? t('baseUnits', { amount: `${sign}${change.amount}` }) : `${sign}${change.amount}${change.kind === 'native' ? ` ${change.symbol}` : ''}`;
+      body.push(h('div', { class: 'signing-effect' },
+        h('div', { class: 'row' }, h('strong', { class: 'grow' }, change.kind === 'nft' ? t('nftLabel', { id: change.tokenId }) : change.symbol || t('token')), h('strong', { class: BigInt(change.delta) < 0n ? 'warn' : 'positive' }, amount)),
+        change.kind !== 'native' ? h('div', { class: 'mono muted' }, change.address) : null,
+        change.kind === 'erc20' && !change.trusted ? h('div', { class: 'small warn' }, t('unverifiedUnits')) : null,
+        change.source === 'log' ? h('div', { class: 'small warn' }, t('reportedByContract')) : null));
+    }
+    body.push(h('h2', {}, t('approvalsGranted')));
+    if (!simulation.approvals.length) body.push(h('p', { class: 'small muted' }, t('noApprovals')));
+    for (const grant of simulation.approvals) {
+      const amount = grant.revoked ? t('approvalRevoke') : grant.kind === 'all' ? t('approvalAll') : grant.kind === 'nft' ? t('approvalNFT', { id: grant.tokenId }) : grant.unlimited ? t('allowanceUnlimited') : grant.baseUnits ? t('baseUnits', { amount: grant.amount }) : `${grant.amount} ${grant.symbol || ''}`;
+      body.push(h('div', { class: 'signing-effect' }, h('strong', { class: grant.revoked ? '' : 'warn' }, amount),
+        h('div', { class: 'small muted' }, t('token')), h('div', { class: 'mono' }, grant.address),
+        h('div', { class: 'small muted' }, t('spender')), h('div', { class: 'mono' }, grant.spender),
+        grant.kind === 'erc20' && !grant.trusted ? h('div', { class: 'small warn' }, t('unverifiedUnits')) : null));
+    }
+    if (simulation.unrecognizedLogs) body.push(h('div', { class: 'small warn' }, t('unrecognizedLogs')));
+    body.push(h('p', { class: 'small muted' }, t('effectsNotice')));
+  }
+  body.push(h('p', { class: 'small muted' }, t('simulationNotice')));
+  return body;
+}
+
 async function approvalView(s) {
   const a = s.approvals.find((x) => x.id === approveId);
   if (!a) {
-    render(header(), h('div', { class: 'card' }, h('p', {}, 'This request was already answered or has expired.'), h('button', { onclick: () => window.close() }, 'Close')));
+    render(header(), h('div', { class: 'card' }, h('p', {}, t('expired')), h('button', { onclick: () => window.close() }, t('close'))));
     return;
   }
   const out = h('div');
-  let retryFee = null;
-  const yes = h('button', { class: 'primary' }, a.kind === 'connect' ? 'Connect' : 'Approve');
-  const no = h('button', {}, 'Reject');
-  const body = [h('div', { class: 'small muted' }, a.kind === 'connect' ? 'This site asks to see your address' : 'This site asks you to send a transaction'), h('div', { class: 'origin' }, a.origin)];
+  let shownPreview = null, loading = a.kind === 'send', submitting = false;
+  const yes = h('button', { class: 'primary' }, t(a.kind === 'connect' ? 'connect' : a.kind === 'typed' ? 'signMessage' : 'approve'));
+  const no = h('button', {}, t('reject'));
+  const extraConfirm = h('input', { type: 'checkbox' });
+  const confirmation = h('label', { class: 'confirm-check', hidden: true }, extraConfirm, h('span', {}, t('revertAck')));
+  const syncButton = () => { yes.disabled = submitting || (a.kind === 'send' && (loading || !shownPreview || (!shownPreview.simulation.success && !extraConfirm.checked))); };
+  extraConfirm.addEventListener('change', syncButton);
+  const body = [h('div', { class: 'small muted' }, t(a.kind === 'connect' ? 'connectRequest' : a.kind === 'typed' ? 'typedRequest' : 'sendRequest')), h('div', { class: 'origin' }, a.origin)];
+  let loadPreview = null;
   if (a.kind === 'connect') {
     body.push(h('p', { class: 'small muted' }, 'It will see your address and balance, and can ask for transactions. Every transaction still needs your approval.'),
-      h('div', { class: 'kv' }, h('span', {}, 'Account'), h('span', { class: 'mono' }, s.address)));
+      h('div', { class: 'kv' }, h('span', {}, t('account')), accountIdentity(s.address)));
+  } else if (a.kind === 'typed') {
+    body.push(h('div', { class: 'kv' }, h('span', {}, t('account')), accountIdentity(a.account)),
+      ...a.domainFields.map((field) => readableField(field, true)),
+      !a.domainFields.some((field) => field.path === 'verifyingContract') ? h('div', { class: 'warn' }, t('noVerifyingContract')) : null,
+      h('p', { class: 'small muted' }, t('domainNotice')),
+      h('h2', {}, `${t('messageFields')} · ${a.primaryType}`), ...a.fields.map((field) => readableField(field)),
+      h('div', { class: 'warn' }, t('typedWarning')));
   } else {
     const fee = h('span', { class: 'muted' }, '…');
-    // The same status snapshot is used for signing, so this is the cap that gets signed.
-    const loadFee = () => op('quote', { id: approveId }).then((w) => fee.replaceChildren(`up to ${formatAeth(w, 6)} ${coinTicker(defaultChainId)}`)).catch((e) => fee.replaceChildren(`unknown (${e.message})`));
-    loadFee();
-    retryFee = loadFee;
+    const previewBox = h('div', { class: 'list', role: 'status' }, t('simulationRunning'));
+    const retry = h('button', { class: 'link small' }, t('retryPreview'));
+    loadPreview = async () => {
+      if (submitting) return;
+      loading = true; shownPreview = null; extraConfirm.checked = false; confirmation.hidden = true; retry.disabled = true; syncButton();
+      previewBox.replaceChildren(t('simulationRunning'));
+      try {
+        const fresh = await op('preview', { id: approveId });
+        shownPreview = fresh;
+        fee.replaceChildren(t('maxFee', { amount: formatAeth(fresh.fee, 6), symbol: coinTicker(fresh.chainId) }));
+        previewBox.replaceChildren(...simulatedEffects(fresh.simulation));
+        confirmation.hidden = fresh.simulation.success;
+      } catch (e) {
+        fee.replaceChildren('—');
+        previewBox.replaceChildren(message('error', e.message || t('simulationUnavailable')));
+      } finally { loading = false; retry.disabled = false; syncButton(); }
+    };
+    retry.addEventListener('click', () => loadPreview());
+    const callAddress = callIdentity(a.tx);
     body.push(h('div', { class: 'kv' },
-      h('span', {}, 'Action'), h('strong', {}, a.what),
-      h('span', {}, 'To'), h('span', { class: 'mono' }, a.tx.to || '(new contract)'),
-      h('span', {}, 'Sends'), h('strong', {}, `${a.value} ${coinTicker(defaultChainId)}`),
-      h('span', {}, 'Network fee'), fee,
-      h('span', {}, 'From'), h('span', { class: 'mono' }, s.address)));
-    if (a.tx.data !== '0x') body.push(h('details', {}, h('summary', { class: 'small muted' }, 'Call data'), h('div', { class: 'mono muted', style: 'max-height:120px;overflow:auto' }, a.tx.data)));
+      h('span', {}, 'Action'), h('div', { class: 'approval-action' }, h('strong', {}, a.what), callAddress ? accountIdentity(callAddress) : null),
+      h('span', {}, t('contractCalled')), a.tx.to ? accountIdentity(a.tx.to) : h('span', { class: 'mono' }, t('contractCreation')),
+      h('span', {}, t('intendedValue')), h('strong', {}, `${a.value} ${coinTicker(a.chainId)}`),
+      h('span', {}, t('networkFee')), fee,
+      h('span', {}, t('from')), accountIdentity(a.account)),
+      h('h2', {}, t('simulationTitle')), previewBox, retry, confirmation);
+    if (a.tx.data !== '0x') body.push(h('details', {}, h('summary', { class: 'small muted' }, t('callData')), h('div', { class: 'mono muted call-data' }, a.tx.data)));
     if (a.what.startsWith('Token approval')) body.push(h('div', { class: 'warn' }, 'An approval lets the contract move your tokens later. Approve only contracts you trust.'));
   }
-  yes.addEventListener('click', action(yes, out, async () => {
-    const r = await op('approve', { id: approveId }).catch((e) => { retryFee?.(); throw e; });
-    render(header(), h('div', { class: 'card' }, message('ok', r.hash ? `Sent. Transaction ${shortAddress(r.hash)}` : 'Connected.'), r.hash ? h('div', { class: 'mono muted' }, r.hash) : null));
-    setTimeout(() => window.close(), r.hash ? 1400 : 600);
-  }));
+  yes.addEventListener('click', async () => {
+    submitting = true; approvalBusy = true; no.disabled = true; syncButton(); out.replaceChildren();
+    try {
+      const r = await op('approve', { id: approveId, previewId: shownPreview?.previewId || a.previewId, confirmRevert: extraConfirm.checked });
+      render(header(), h('div', { class: 'card' }, message('ok', t(r.hash ? 'transactionSent' : r.signed ? 'signatureSigned' : 'connected')), r.hash ? h('div', { class: 'mono muted' }, r.hash) : null));
+      setTimeout(() => window.close(), r.hash ? 1400 : 600);
+    } catch (e) {
+      out.replaceChildren(message('error', e.message || String(e)));
+      submitting = false;
+      if (loadPreview) await loadPreview();
+    } finally { submitting = false; approvalBusy = false; no.disabled = false; syncButton(); }
+  });
   no.addEventListener('click', action(no, out, async () => { await op('reject', { id: approveId }); window.close(); }));
-  render(header(h('span', { class: 'pill' }, developmentNetwork ? 'Dev network' : `Chain ${defaultChainId}`)), h('div', { class: 'card' }, ...body), h('div', { class: 'row' }, h('div', { class: 'grow' }), no, yes), out);
+  render(header(h('span', { class: 'pill' }, t('chainLabel', { chain: a.chainId }))), h('div', { class: 'card' }, ...body), h('div', { class: 'row' }, h('div', { class: 'grow' }), no, yes), out);
+  syncButton();
+  loadPreview?.();
 }
 
 // ---- main popup ----
@@ -171,16 +302,16 @@ function nav() {
 
 /** The balance pill: "Block N", or the paused state when no block for 60 s. */
 function nodePill() {
-  const node = h('span', { class: 'pill' }, 'Connecting…');
+  const node = h('span', { class: 'pill es-status' }, 'Connecting…');
   const show = (a) => {
     pauseState = nextPauseState(pauseState, { now: Date.now(), height: a.height, blockAt: a.blockAt });
     if (pauseState.pausedSince != null) {
       node.textContent = pausedLine(pauseState.pausedSince, Date.now());
-      node.className = 'pill paused';
+      node.className = 'pill es-status paused';
       node.title = PAUSE_HELP;
     } else {
       node.textContent = `Block ${a.height}`;
-      node.className = 'pill good';
+      node.className = 'pill es-status good';
       node.removeAttribute('title');
     }
   };
@@ -189,18 +320,21 @@ function nodePill() {
 
 async function home(s) {
   const out = h('div');
-  const bal = h('div', { class: 'balance' }, '…');
-  const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : `Checking ${coinTicker(defaultChainId)} balance…`);
+  const balanceValue = h('span', { class: 'balance-value' }, '…');
+  const bal = h('div', { class: 'balance es-amount' }, balanceValue, h('span', { class: 'balance-unit' }, ` ${coinTicker(defaultChainId)}`));
+  const proofNote = h('div', { class: 'small plate-proof' }, developmentNetwork ? 'Dev network · read from the node' : `Checking ${coinTicker(defaultChainId)} balance…`);
   const { node, show } = nodePill();
-  const addr = h('button', { class: 'link mono', title: 'Copy address', onclick: async () => { await navigator.clipboard.writeText(s.address); addr.textContent = 'Copied'; setTimeout(() => { addr.textContent = shortAddress(s.address); }, 900); } }, shortAddress(s.address));
-  const load = () => op('account').then((a) => { bal.textContent = `${formatAeth(a.balance)} ${coinTicker(defaultChainId)}`; show(a); if (!developmentNetwork) proofNote.textContent = `${coinTicker(defaultChainId)} balance verified with a certificate and state proof`; })
-    .catch((e) => { bal.textContent = '—'; node.textContent = 'No node'; node.className = 'pill'; proofNote.textContent = `${coinTicker(defaultChainId)} balance unavailable`; out.replaceChildren(message('error', e.message)); });
+  const addrText = h('span', { class: 'mono' }, s.address);
+  const addr = h('button', { class: 'link account-identity', title: 'Copy address', onclick: async () => { await navigator.clipboard.writeText(s.address); addrText.textContent = 'Copied'; setTimeout(() => { addrText.textContent = s.address; }, 900); } }, createAccountIcon(s.address, 32), addrText);
+  const load = () => op('account').then((a) => { balanceValue.textContent = formatAeth(a.balance); show(a); if (!developmentNetwork) proofNote.textContent = `${coinTicker(defaultChainId)} balance verified with a certificate and state proof`; })
+    .catch((e) => { balanceValue.textContent = '—'; node.textContent = 'No node'; node.className = 'pill es-status'; proofNote.textContent = `${coinTicker(defaultChainId)} balance unavailable`; out.replaceChildren(message('error', e.message)); });
   load();
   updaters = [load];
 
   // ---- the send form: AETH or any held token, with the send-flow checks of
   // token-spam-2026.md §6 (look-alike recipient, first send, dry-run) ----
   const to = h('input', { placeholder: '0x… recipient', spellcheck: 'false' });
+  const recipientPreview = h('div', { class: 'recipient-preview', hidden: true });
   const amount = h('input', { placeholder: `Amount in ${coinTicker(defaultChainId)}`, inputmode: 'decimal' });
   const max = h('button', { type: 'button', class: 'link small' }, 'Max');
   const assetPick = h('select');
@@ -208,7 +342,7 @@ async function home(s) {
   const sendBtn = h('button', { class: 'primary', type: 'submit' }, 'Send');
   const sendForm = h('form', { class: 'card', hidden: true }, h('h2', {}, 'Send'),
     h('label', {}, 'Asset', assetPick),
-    h('label', {}, 'To', to),
+    h('label', {}, 'To', to), recipientPreview,
     h('label', {}, 'Amount', h('div', { class: 'row' }, amount, max)),
     warnBox, sendBtn,
     h('p', { class: 'small muted' }, 'Before signing, the recipient is checked against your history and the transfer is tried on the node (an estimate, not a guarantee). These checks read public chain data and settings on this device; nothing new is written on chain.'));
@@ -224,6 +358,9 @@ async function home(s) {
 
   const warnings = () => {
     acked = false;
+    const recipient = to.value.trim();
+    recipientPreview.hidden = !deriveAccountIcon(recipient);
+    recipientPreview.replaceChildren(...(recipientPreview.hidden ? [] : [accountIdentity(recipient)]));
     const risk = addressRisk(to.value, sent);
     const parts = [];
     if (asset && asset.token.origin === 'launchpad') parts.push(h('span', { class: 'pill warn' }, 'Launchpad · unverified'));
@@ -317,8 +454,8 @@ async function home(s) {
           h('span', {}, 'You will send'), h('strong', {}, `${grouped(units)} units`),
           h('span', {}, 'Shown as'), h('span', { class: 'mono' }, `${formatTokenAmount(units, pin.decimals)} ${pin.symbol}`),
           h('span', {}, 'Decimals'), h('span', { class: 'mono' }, pin.trusted ? `${pin.decimals} (shipped list)` : `${pin.decimals} (unverified claim)`),
-          h('span', {}, 'To'), h('span', { class: 'mono' }, intent.recipient),
-          h('span', {}, 'From'), h('span', { class: 'mono' }, shortAddress(s.address))),
+          h('span', {}, 'To'), accountIdentity(intent.recipient),
+          h('span', {}, 'From'), accountIdentity(s.address)),
         pin.trusted ? null : h('div', { class: 'warn' },
           h('strong', {}, 'Unverified units'),
           h('div', { class: 'small' }, `This token is not on the wallet’s trusted list, so the wallet cannot check what one unit is. The count above follows the token contract’s unverified claim of ${pin.decimals} decimals. Compare it with what you expect before sending.`),
@@ -334,10 +471,12 @@ async function home(s) {
       sendForm.hidden = true;
     }
   }));
-  const receive = h('button', { onclick: () => navigator.clipboard.writeText(s.address).then(() => out.replaceChildren(message('ok', 'Address copied.'))) }, h('span', { class: 'ico' }, '⬇'), 'Receive');
-  const send = h('button', { onclick: () => { sendForm.hidden = !sendForm.hidden; if (!sendForm.hidden) { to.focus(); pickAssets(); op('activity').then((l) => { sent = l.filter((a) => !a.owner || a.owner.toLowerCase() === s.address.toLowerCase()).map((a) => a.to).filter(Boolean); warnings(); }).catch(() => {}); } } }, h('span', { class: 'ico' }, '↗'), 'Send');
-  return [h('div', { class: 'card hero' }, h('div', { class: 'row', style: 'justify-content:center' }, addr, node), bal,
-    h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network' : `${Brand.project} chain ${defaultChainId}`),
+  const receive = h('button', { onclick: () => navigator.clipboard.writeText(s.address).then(() => out.replaceChildren(h('div', { class: 'card' }, accountIdentity(s.address, 32), message('ok', 'Address copied.')))) }, actionIcon('receive'), 'Receive');
+  const send = h('button', { class: 'primary', onclick: () => { sendForm.hidden = !sendForm.hidden; if (!sendForm.hidden) { to.focus(); pickAssets(); op('activity').then((l) => { sent = l.filter((a) => !a.owner || a.owner.toLowerCase() === s.address.toLowerCase()).map((a) => a.to).filter(Boolean); warnings(); }).catch(() => {}); } } }, actionIcon('send'), 'Send');
+  return [h('section', { class: 'es-plate hero', 'aria-label': `${coinTicker(defaultChainId)} balance` },
+    h('div', { class: 'row plate-top' }, nativeArt('plate-coin'), h('div', { class: 'grow' }, h('div', { class: 'plate-title' }, coinName(defaultChainId)), addr)),
+    bal,
+    h('div', { class: 'row plate-network' }, node, h('span', { class: 'small' }, developmentNetwork ? 'Dev network' : `${Brand.project} chain ${defaultChainId}`)),
     proofNote),
     h('div', { class: 'actions' }, receive, send), sendForm, out];
 }
@@ -362,15 +501,15 @@ function holdingRow(x, officialSymbols, { onHide, onShow } = {}) {
   if (!x.token.trusted && x.token.metadataChanged) badges.push(h('span', { class: 'pill warn' }, 'Details changed'));
   else if (x.token.unconfirmed) badges.push(h('span', { class: 'pill warn' }, 'Details not confirmed'));
   const act = onHide ? h('button', { class: 'small', onclick: onHide }, 'Hide')
-    : onShow ? h('button', { class: 'small', onclick: onShow }, 'Show in main list') : null;
-  return h('div', { class: 'item', title: x.token.address },
-    h('span', { class: 'avatar', 'aria-hidden': 'true' }, (x.token.symbol[0] || '?').toUpperCase()),
+    : onShow ? h('button', { class: 'small show-token', onclick: onShow }, 'Show in main list') : null;
+  return h('div', { class: onShow ? 'item unverified-item' : 'item', title: x.token.address },
+    holdingArt(x.token),
     h('div', { class: 'grow' },
       h('div', {}, displayTokenName(defaultChainId, x.token.address, x.token.name) || x.token.symbol),
       h('div', { class: 'small muted mono' }, tokenLabel(x.token)),
-      badges.length ? h('div', { class: 'row', style: 'gap:4px;margin-top:2px;flex-wrap:wrap' }, ...badges) : null),
+      badges.length ? h('div', { class: 'row holding-badges' }, ...badges) : null),
     act,
-    h('strong', { class: 'nowrap' }, formatTokenAmount(x.balance, x.token.decimals)), ' ', h('span', { class: 'muted' }, x.token.symbol));
+    h('div', { class: 'holding-amount' }, h('strong', { class: 'es-amount' }, formatTokenAmount(x.balance, x.token.decimals)), h('span', { class: 'small muted' }, ` ${x.token.symbol}`)));
 }
 
 /** The audit-A3 review card: the details saved on this device and the changed
@@ -401,10 +540,10 @@ async function tokenReviewCard(token, done) {
 }
 
 async function assetsView(s) {
-  const aethAmt = h('strong', {}, '…');
+  const aethAmt = h('strong', { class: 'es-amount' }, '…');
   const proofNote = h('div', { class: 'small muted' }, developmentNetwork ? 'Dev network · read from the node' : `Checking ${coinTicker(defaultChainId)} balance…`);
   const rows = h('div', { class: 'list' });
-  const review = h('div', { class: 'list', style: 'gap:10px' });
+  const review = h('div', { class: 'list token-reviews' });
   const unverified = h('div', { class: 'list' });
   const unverifiedBox = h('details', { hidden: true },
     h('summary', {}, 'Unverified'),
@@ -415,7 +554,7 @@ async function assetsView(s) {
   const load = async (force) => {
     const [acct, assets] = await Promise.allSettled([op('account'), op('assets', { force })]);
     if (acct.status === 'fulfilled') {
-      aethAmt.replaceChildren(`${formatAeth(acct.value.balance)} ${coinTicker(defaultChainId)}`);
+      aethAmt.replaceChildren(formatAeth(acct.value.balance));
       if (!developmentNetwork) proofNote.textContent = `${coinTicker(defaultChainId)} verified · token balances read from the node`;
     } else {
       aethAmt.replaceChildren('—');
@@ -452,9 +591,9 @@ async function assetsView(s) {
     h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Assets'), h('span', { class: 'small muted nowrap' }, developmentNetwork ? 'Dev network' : `${Brand.project} network`)),
     proofNote,
     h('div', { class: 'item', title: s.address },
-      h('span', { class: 'avatar', 'aria-hidden': 'true' }, Brand.project[0]),
+      nativeArt(),
       h('div', { class: 'grow' }, h('div', {}, coinName(defaultChainId)), h('div', { class: 'small muted mono' }, shortAddress(s.address))),
-      aethAmt, ' ', h('span', { class: 'muted' }, coinTicker(defaultChainId))),
+      h('div', { class: 'holding-amount' }, aethAmt, h('span', { class: 'small muted' }, ` ${coinTicker(defaultChainId)}`))),
     h('h2', {}, 'Tokens'),
     review, rows, unverifiedBox, note, updated)];
 }
@@ -489,7 +628,7 @@ async function activity() {
   form.addEventListener('submit', action(add, output, async () => { await op('linkWallet', { address: address.value }); refresh(); }));
   const links = h('div', { class: 'card' }, h('h2', {}, 'Linked wallets'),
     h('p', { class: 'small muted' }, 'View activity for up to 8 other addresses. Their signing keys stay in their own wallets.'),
-    ...linked.map((a) => h('div', { class: 'item' }, h('span', { class: 'mono grow', title: a }, shortAddress(a)),
+    ...linked.map((a) => h('div', { class: 'item' }, h('span', { class: 'grow' }, accountIdentity(a, 32)),
       h('button', { onclick: async () => { await op('unlinkWallet', { address: a }); refresh(); } }, 'Remove'))), form, output);
   const first = Math.max(0, ...Object.values(starts || {}));
   return [links, first ? h('p', { class: 'small muted' }, `This node's retained history starts at block #${first}.`) : null, rows, more];
@@ -498,8 +637,27 @@ async function activity() {
 async function sitesView() {
   const s = await op('sites');
   const entries = Object.entries(s);
-  if (!entries.length) return [h('div', { class: 'card' }, h('p', { class: 'muted' }, 'No sites are connected.'))];
-  return [h('div', { class: 'card list' }, entries.map(([origin, e]) => h('div', { class: 'item' },
+  const input = h('input', { placeholder: 'harbor.sea or sea://harbor', spellcheck: 'false' });
+  const out = h('div');
+  const names = h('form', { class: 'card' }, h('h2', {}, 'Open an EastSea name'),
+    h('label', {}, 'Name or link', input), h('button', { type: 'submit' }, 'Check link'), out);
+  names.addEventListener('submit', (event) => {
+    event.preventDefault();
+    out.replaceChildren();
+    try {
+      const link = browserInput(input.value, defaultChainId);
+      const href = link.kind === 'name' ? link.canonicalURL : link.kind === 'action' ? link.raw : link.url;
+      out.append(h('a', { href, target: '_blank', rel: 'noopener noreferrer' }, href));
+      if (link.kind !== 'web') out.append(h('p', { class: 'small muted' },
+        'Open this link in the installed wallet. Payments require its approval screen. Content delivery comes next.'));
+    } catch (error) {
+      out.append(message('error', error.code === 'externalTLD' ? externalNameMessage(navigator.language) : error.message));
+      const https = suggestedHTTPS(input.value);
+      if (https) out.append(h('a', { href: https, target: '_blank', rel: 'noopener noreferrer' }, 'Open with https://'));
+    }
+  });
+  if (!entries.length) return [names, h('div', { class: 'card' }, h('p', { class: 'muted' }, 'No sites are connected.'))];
+  return [names, h('div', { class: 'card list' }, entries.map(([origin, e]) => h('div', { class: 'item' },
     h('div', { class: 'grow' }, h('div', { class: 'mono' }, origin), h('div', { class: 'small muted' }, `since ${new Date(e.at).toLocaleDateString()}`)),
     h('button', { class: 'danger', onclick: async () => { await op('disconnect', { origin }); refresh(); } }, 'Disconnect'))))];
 }
@@ -516,16 +674,20 @@ function settingsView(s) {
   networkFields.hidden = !developerMode.checked;
   developerMode.addEventListener('change', () => { networkFields.hidden = !developerMode.checked; });
   const rpcs = h('textarea', { placeholder: 'https://node.example (one per line)', spellcheck: 'false' }, s.rpcs.join('\n'));
+  const readRelays = h('textarea', { placeholder: 'n0 public relays (default)', spellcheck: 'false' }, (s.readRelays || []).join('\n'));
   const save = h('button', { type: 'submit' }, 'Save');
   const form = h('form', { class: 'card' }, h('h2', {}, 'Settings'), h('label', {}, 'Lock after (minutes)', minutes),
-    h('label', {}, 'Extra default-network nodes', rpcs), h('p', { class: 'small muted' }, `Default: the ${Brand.project} app\'s node on this computer (127.0.0.1:18545).`),
+    h('label', {}, 'Extra default-network nodes', rpcs), h('p', { class: 'small muted' }, `Reads try the ${Brand.project} app's node (127.0.0.1:18545), then verified public peers. Sending needs your own HTTP node.`),
+    h('label', {}, 'Public read WebSocket relay URLs (one per line)', readRelays),
     h('label', {}, developerMode, ' Developer mode'), networkFields, save);
   form.addEventListener('submit', action(save, out, async () => {
     const list = rpcs.value.split(/\s+/).filter(Boolean);
     if (network.value === 'development' && !developerMode.checked) throw new Error('Turn on Developer mode to use a local development network.');
     const extra = list.filter((u) => !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(u));
     if (extra.length && !(await chrome.permissions.request({ origins: extra.map((u) => `${new URL(u).origin}/*`) }))) throw new Error('The browser did not allow those nodes.');
-    await op('settings', { lockMinutes: minutes.value, rpcs: list, developerMode: developerMode.checked,
+    const relays = readRelays.value.split(/\s+/).filter(Boolean);
+    for (const u of relays) if (!['http:', 'https:'].includes(new URL(u).protocol)) throw new Error('Relays must use http:// or https://.');
+    await op('settings', { lockMinutes: minutes.value, rpcs: list, readRelays: relays, developerMode: developerMode.checked,
       developmentNetwork: network.value === 'development', developmentPort: Number(port.value) });
     out.replaceChildren(message('ok', 'Saved.'));
     if (developerMode.checked !== s.developerMode || (network.value === 'development') !== s.developmentNetwork) refresh();
@@ -575,5 +737,11 @@ async function refresh() {
   const views = { home, assets: assetsView, activity, sites: sitesView, settings: settingsView };
   render(header(lock), nav(), pendingNote, ...(await views[tab](s)));
 }
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (!approveId || approvalBusy) return;
+  if ((area === 'session' && changes.approvals && !(changes.approvals.newValue || []).some((a) => a.id === approveId))
+    || (area === 'session' && changes.unlocked) || (area === 'local' && changes.vault)) refresh();
+});
 
 refresh();

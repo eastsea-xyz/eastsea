@@ -1,7 +1,8 @@
 //! Transaction building for browsers: the Aether extension wallet signs with a
 //! WebCrypto P-256 key and uses this module for the parts that must match the
 //! chain byte for byte (addresses, envelopes, the signing message, low-s).
-//! Network calls stay in JavaScript; the rules mirror `aether-ffi::prepare`.
+//! Public reads use iroh's browser WebSocket relay transport. The transaction
+//! rules mirror `aether-ffi::prepare`.
 
 use aether_crypto::{address_of, verify, PublicKey};
 use aether_execution::{tx::payload_commitment, EvmCall};
@@ -11,6 +12,18 @@ use aether_types::{Address, Bytes, FeeVector, GasVector, SignerScheme, TxEnvelop
 use commonware_codec::Decode;
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
+
+#[path = "../../ffi/src/typed_data.rs"]
+mod typed_data;
+
+#[cfg(test)]
+#[path = "../../ffi/src/typed_data_tests.rs"]
+mod typed_data_tests;
+
+#[cfg(target_arch = "wasm32")]
+mod public_read;
+#[cfg(target_arch = "wasm32")]
+pub use public_read::PublicReadTransport;
 
 const GWEI: u128 = 1_000_000_000;
 /// Same cap as the app wallet (`aether-ffi::prepare_call`).
@@ -127,6 +140,96 @@ pub fn public_key_from_secret(secret: &[u8]) -> Result<Vec<u8>, String> {
     Ok(sk.verifying_key().to_sec1_point(false).as_bytes().to_vec())
 }
 
+/// Decode a certified header for browser display. Only the installed network
+/// configuration is trusted. Status is a locator hint and, for a live head,
+/// must agree with the certified height, digest and timestamp. Execution state
+/// and other status fields that this header cannot prove are never returned.
+pub fn verified_block(
+    network: &Value,
+    status: &Value,
+    finalized: &Value,
+    expected_height: u64,
+    minimum_height: u64,
+    now_ms: u64,
+    require_fresh: bool,
+) -> Result<Value, String> {
+    let chain = network["chain_id"].as_u64().ok_or("network chain_id")?;
+    if status["chain_id"].as_u64() != Some(chain) {
+        return Err("node chain differs from pinned network".into());
+    }
+    let group = match network.get("group") {
+        None | Some(Value::Null) => 0,
+        Some(v) => v.as_u64().and_then(|n| u16::try_from(n).ok()).ok_or("network group")?,
+    };
+    let set = ValidatorSet::from_hex(network["identity"].as_str().ok_or("network identity")?)
+        .map_err(|e| format!("identity: {e}"))?.with_group(group);
+    let block = from_hex(finalized["block"].as_str().ok_or("finalized block")?).map_err(|e| e.to_string())?;
+    let certificate = from_hex(finalized["finalization"].as_str().ok_or("finalization")?).map_err(|e| e.to_string())?;
+    let links = finalized["links"].as_array().ok_or("finalized links")?
+        .iter().map(|v| from_hex(v.as_str().ok_or("link")?).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, String>>()?;
+    let anchor = verify_finalized_chain(&set, &block, &certificate, &links).map_err(|e| format!("certificate: {e}"))?;
+    if anchor.height != expected_height {
+        return Err("certificate is for another height".into());
+    }
+    if anchor.height < minimum_height {
+        return Err("finalized blocks never go back".into());
+    }
+    // Older account-shaped responses tagged the state height (H-1), rather
+    // than certified block H. Never use that untrusted label as the height.
+    let labeled = finalized["height"].as_u64().ok_or("finalized height")?;
+    if labeled != anchor.height && labeled.checked_add(1) != Some(anchor.height) {
+        return Err("finalized answer is for another height".into());
+    }
+    if require_fresh {
+        if status["height"].as_u64() != Some(anchor.height) {
+            return Err("status height differs from certificate".into());
+        }
+        let claimed_hash = status["hash"].as_str().ok_or("status hash")?;
+        if from_hex(claimed_hash).map_err(|_| "status hash")?
+            != from_hex(&anchor.digest).map_err(|_| "certified hash")? {
+            return Err("status hash differs from certificate".into());
+        }
+        if status["timestamp_ms"].as_u64() != Some(anchor.timestamp_ms) {
+            return Err("status timestamp differs from certificate".into());
+        }
+        if now_ms.saturating_sub(anchor.timestamp_ms) > 10 * 60 * 1000 {
+            return Err("stale certificate".into());
+        }
+        if anchor.timestamp_ms > now_ms.saturating_add(60 * 1000) {
+            return Err("certificate timestamp is in the future".into());
+        }
+    }
+    let decode = |bytes: &[u8]| {
+        aether_light::block::Block::decode_cfg(bytes,
+            &aether_light::block::Block::codec_config(aether_light::MAX_BLOCK_BYTES))
+            .map_err(|e| format!("block: {e}"))
+    };
+    for bytes in std::iter::once(block.as_slice()).chain(links.iter().map(Vec::as_slice)) {
+        let payload = decode(bytes)?.payload().ok_or("block payload")?;
+        if payload.txs.iter().any(|tx| tx.header.chain_id != chain)
+            || payload.upgrade.iter().any(|u| u.upgrade.chain_id != chain) {
+            return Err("certificate commits to another chain".into());
+        }
+    }
+    let decoded = decode(&block)?;
+    let payload = decoded.payload().ok_or("block payload")?;
+    let proposer = if anchor.height == 0 {
+        Address::ZERO
+    } else {
+        address_of(&PublicKey { scheme: SignerScheme::Ed25519,
+            bytes: decoded.context.leader.as_ref().to_vec() }).map_err(|e| e.to_string())?
+    };
+    let hashes: Vec<_> = payload.txs.iter().map(aether_execution::tx_hash).collect();
+    Ok(json!({ "chain_id": chain, "group": group, "height": anchor.height,
+        "hash": anchor.digest, "digest": anchor.digest, "parent": decoded.parent.to_string(),
+        "timestamp_ms": anchor.timestamp_ms, "proposer": proposer,
+        "parent_state_root": anchor.parent_state_root, "receipts_root": anchor.receipts_root,
+        "history_root": anchor.history_root, "txs": hashes,
+        "gas_used": payload.gas.exec, "prove_gas": payload.gas.prove, "state_gas": payload.gas.state,
+        "protocol": payload.version.max(1) }))
+}
+
 /// Check an account answer against a certificate and a proof using the pinned
 /// committee, chain, height and freshness checks of the native wallet.
 /// `minimum_height` is stored by the caller across service-worker restarts.
@@ -154,7 +257,7 @@ pub fn verified_account(
     if certified_height < minimum_height {
         return Err("finalized blocks never go back".into());
     }
-    if finalized["height"].as_u64() != Some(height) {
+    if !matches!(finalized["height"].as_u64(), Some(h) if h == height || h == certified_height) {
         return Err("finalized answer is for another height".into());
     }
     let block = from_hex(finalized["block"].as_str().ok_or("finalized block")?).map_err(|e| e.to_string())?;
@@ -267,6 +370,18 @@ pub fn verified_receipt(
 
 // ---- JavaScript API (JSON strings in and out) ----
 
+/// Verify a live head or a historical block. The expected height is always
+/// explicit (including genesis zero); history may disable only freshness.
+#[wasm_bindgen(js_name = verifyBlock)]
+pub fn verify_block_js(network_json: &str, status_json: &str, finalized_json: &str,
+    expected_height: u64, minimum_height: u64, now_ms: u64, require_fresh: bool) -> Result<String, JsError> {
+    let network = serde_json::from_str(network_json).map_err(err)?;
+    let status = serde_json::from_str(status_json).map_err(err)?;
+    let finalized = serde_json::from_str(finalized_json).map_err(err)?;
+    Ok(verified_block(&network, &status, &finalized, expected_height, minimum_height,
+        now_ms, require_fresh).map_err(err)?.to_string())
+}
+
 /// Verify one account answer. All JSON is untrusted except bundled `network_json`.
 #[wasm_bindgen(js_name = verifyAccount)]
 pub fn verify_account_js(network_json: &str, status_json: &str, account_json: &str,
@@ -287,6 +402,71 @@ pub fn verify_receipt_js(network_json: &str, status_json: &str, receipt_json: &s
     let receipt = serde_json::from_str(receipt_json).map_err(err)?;
     let finalized = serde_json::from_str(finalized_json).map_err(err)?;
     Ok(verified_receipt(&network, &status, &receipt, &finalized, minimum_height, now_ms).map_err(err)?.to_string())
+}
+
+/// Prepare the owner's account-bound ERC-1271 message for an EIP-712 v4 request.
+/// The caller checks current account/implementation code with
+/// `accountSigningSupport` before asking WebCrypto to sign.
+pub fn prepare_typed_message(
+    public_key: &[u8],
+    typed_json: &str,
+    expected_chain: u64,
+) -> Result<Value, String> {
+    let account = address_of(&p256_key(public_key)?).map_err(|e| e.to_string())?;
+    let prepared = typed_data::prepare(typed_json, expected_chain, account)?;
+    Ok(json!({
+        "chain_id": prepared.chain_id,
+        "account": prepared.account.to_checksum(None),
+        "signing_message": alloy_primitives::hex::encode_prefixed(prepared.signing_message),
+        "digest_hex": prepared.digest.to_string(),
+        "typed_data": prepared.typed_data,
+    }))
+}
+
+pub fn attach_typed_signature(
+    typed_json: &str,
+    expected_chain: u64,
+    account: &str,
+    signature: &[u8],
+    public_key: &[u8],
+) -> Result<String, String> {
+    let account = account
+        .parse()
+        .map_err(|_| "invalid signing account address")?;
+    typed_data::attach(typed_json, expected_chain, account, signature, public_key)
+}
+
+pub fn account_signing_support(account_code: &str, implementation_code: &str) -> bool {
+    typed_data::supports(account_code, implementation_code)
+}
+
+#[wasm_bindgen(js_name = prepareTypedMessage)]
+pub fn prepare_typed_message_js(
+    public_key: &[u8],
+    typed_json: &str,
+    expected_chain: u64,
+) -> Result<String, JsError> {
+    Ok(
+        prepare_typed_message(public_key, typed_json, expected_chain)
+            .map_err(err)?
+            .to_string(),
+    )
+}
+
+#[wasm_bindgen(js_name = attachTypedSignature)]
+pub fn attach_typed_signature_js(
+    typed_json: &str,
+    expected_chain: u64,
+    account: &str,
+    signature: &[u8],
+    public_key: &[u8],
+) -> Result<String, JsError> {
+    attach_typed_signature(typed_json, expected_chain, account, signature, public_key).map_err(err)
+}
+
+#[wasm_bindgen(js_name = accountSigningSupport)]
+pub fn account_signing_support_js(account_code: &str, implementation_code: &str) -> bool {
+    account_signing_support(account_code, implementation_code)
 }
 
 /// Checksummed account address for a P-256 public key (raw SEC1 bytes).
@@ -331,6 +511,128 @@ mod tests {
 
     fn key() -> SigningKey {
         SigningKey::from_slice(&[7u8; 32]).unwrap()
+    }
+
+    fn public_read_fixture() -> (Value, Value, Value, aether_light::VerifiedBlock) {
+        let f: Value = serde_json::from_str(include_str!("../../light/tests/fixtures/devnet4.json")).unwrap();
+        let set = ValidatorSet::devnet(4);
+        let anchor = verify_finalized(&set, &from_hex(f["anchor_block"].as_str().unwrap()).unwrap(),
+            &from_hex(f["anchor_finalization"].as_str().unwrap()).unwrap()).unwrap();
+        let network = json!({ "chain_id": 7777, "identity": set.identity_hex() });
+        let status = json!({ "chain_id": 7777, "height": anchor.height,
+            "hash": anchor.digest, "timestamp_ms": anchor.timestamp_ms });
+        let finalized = json!({ "height": anchor.height, "block": f["anchor_block"],
+            "finalization": f["anchor_finalization"], "links": [] });
+        (network, status, finalized, anchor)
+    }
+
+    #[test]
+    fn public_read_head_returns_only_certified_header_fields() {
+        let (network, mut status, finalized, anchor) = public_read_fixture();
+        // A provider's execution summary is not committed by this header.
+        status["state_root"] = json!("forged current root");
+        status["mempool"] = json!(123456);
+        let verified = verified_block(&network, &status, &finalized, anchor.height, 0,
+            anchor.timestamp_ms, true).unwrap();
+        assert_eq!(verified["height"], anchor.height);
+        assert_eq!(verified["hash"], anchor.digest);
+        assert_eq!(verified["parent_state_root"], anchor.parent_state_root.to_string());
+        assert!(verified.get("state_root").is_none());
+        assert!(verified.get("mempool").is_none());
+        assert!(verified["txs"].is_array());
+        // The old account-shaped height label must not choose the block height.
+        let mut legacy = finalized.clone();
+        legacy["height"] = json!(anchor.height - 1);
+        assert_eq!(verified_block(&network, &status, &legacy, anchor.height, 0,
+            anchor.timestamp_ms, true).unwrap(), verified);
+    }
+
+    #[test]
+    fn public_read_forged_header_or_certificate_is_rejected() {
+        let (network, status, finalized, anchor) = public_read_fixture();
+        let check = |status: &Value, finalized: &Value| {
+            verified_block(&network, status, finalized, anchor.height, 0, anchor.timestamp_ms, true)
+        };
+        let mut forged_status = status.clone();
+        forged_status["hash"] = json!("00".repeat(32));
+        assert!(check(&forged_status, &finalized).unwrap_err().contains("hash"));
+        forged_status = status.clone();
+        forged_status["timestamp_ms"] = json!(anchor.timestamp_ms + 1);
+        assert!(check(&forged_status, &finalized).unwrap_err().contains("timestamp"));
+        forged_status = status.clone();
+        forged_status["height"] = json!(anchor.height + 1);
+        assert!(check(&forged_status, &finalized).unwrap_err().contains("height"));
+        let mut forged = finalized.clone();
+        let mut certificate = from_hex(forged["finalization"].as_str().unwrap()).unwrap();
+        let end = certificate.len() - 1;
+        certificate[end] ^= 1;
+        forged["finalization"] = json!(aether_light::to_hex(&certificate));
+        assert!(check(&status, &forged).is_err());
+        forged = finalized.clone();
+        forged["block"] = json!("00");
+        assert!(check(&status, &forged).is_err());
+        // Re-encode a structurally valid header with one changed commitment.
+        // The original quorum certificate must reject its new digest.
+        use commonware_codec::Encode as _;
+        let original = from_hex(finalized["block"].as_str().unwrap()).unwrap();
+        let decoded = aether_light::block::Block::decode_cfg(original.as_slice(),
+            &aether_light::block::Block::codec_config(aether_light::MAX_BLOCK_BYTES)).unwrap();
+        let mut payload = decoded.payload().unwrap();
+        payload.parent_state_root = aether_types::B256::repeat_byte(0xaa);
+        let forged_block = aether_light::block::Block::new(decoded.context.clone(), decoded.parent,
+            decoded.height, decoded.timestamp, payload.to_bytes());
+        forged = finalized.clone();
+        forged["block"] = json!(aether_light::to_hex(&forged_block.encode()));
+        assert!(check(&status, &forged).unwrap_err().contains("certificate"));
+        let mut wrong_network = network.clone();
+        wrong_network["group"] = json!(1);
+        assert!(verified_block(&wrong_network, &status, &finalized, anchor.height, 0,
+            anchor.timestamp_ms, true).is_err());
+    }
+
+    #[test]
+    fn public_read_head_rejects_replay_but_history_remains_readable() {
+        let (network, status, finalized, anchor) = public_read_fixture();
+        assert!(verified_block(&network, &status, &finalized, anchor.height, anchor.height + 1,
+            anchor.timestamp_ms, true).unwrap_err().contains("never go back"));
+        assert!(verified_block(&network, &status, &finalized, anchor.height + 1, 0,
+            anchor.timestamp_ms, false).unwrap_err().contains("height"));
+        assert!(verified_block(&network, &status, &finalized, 0, 0,
+            anchor.timestamp_ms, false).unwrap_err().contains("height"));
+        assert!(verified_block(&network, &status, &finalized, anchor.height, 0,
+            anchor.timestamp_ms + 600_001, true).unwrap_err().contains("stale"));
+        assert!(verified_block(&network, &status, &finalized, anchor.height, 0,
+            anchor.timestamp_ms.saturating_sub(60_001), true).unwrap_err().contains("future"));
+        let history = verified_block(&network, &json!({"chain_id": 7777}), &finalized,
+            anchor.height, 0, u64::MAX, false).unwrap();
+        assert_eq!(history["height"], anchor.height);
+    }
+
+    #[test]
+    fn public_read_account_accepts_the_rpc_certified_height_label() {
+        let f: Value = serde_json::from_str(include_str!("../../light/tests/fixtures/devnet4.json")).unwrap();
+        let (network, status, finalized, anchor) = public_read_fixture();
+        let account = json!({ "address": f["address"], "height": f["height"],
+            "state_root": f["state_root"], "balance": f["balance"], "nonce": 0, "proof": f["proof"] });
+        let verified = verified_account(&network, &status, &account, &finalized,
+            f["address"].as_str().unwrap(), 0, anchor.timestamp_ms).unwrap();
+        assert_eq!(verified["certified_block"], anchor.height);
+        assert_eq!(verified["balance_wei"], "4242");
+    }
+
+    #[test]
+    fn browser_typed_message_adapter_returns_contract_ready_values() {
+        let k = key();
+        let public = pubkey(&k);
+        let data = crate::typed_data_tests::mail().to_string();
+        let prepared = prepare_typed_message(&public, &data, 1).unwrap();
+        assert_eq!(prepared["chain_id"], 1);
+        assert_eq!(prepared["account"], address_for(&public).unwrap());
+        assert_eq!(prepared["typed_data"], crate::typed_data_tests::mail());
+        let bytes = alloy_primitives::hex::decode(prepared["signing_message"].as_str().unwrap()).unwrap();
+        let signature: p256::ecdsa::Signature = k.sign(&bytes);
+        let packed = attach_typed_signature(&data, 1, prepared["account"].as_str().unwrap(), &signature.to_bytes(), &public).unwrap();
+        assert_eq!(alloy_primitives::hex::decode(packed).unwrap().len(), 128);
     }
 
     #[test]

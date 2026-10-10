@@ -131,8 +131,100 @@ impl ResourceArgs {
     }
 }
 
+/// Optional country disclosure; default off. The hidden loopback-only overlay
+/// permits a devnet test without DHT publishing, relays or real node data.
+#[derive(clap::Args, Clone, Debug, Default)]
+struct PresenceArgs {
+    /// Broad Mac Region setting, sent without a country preference.
+    #[arg(long, value_parser = parse_presence_region)]
+    presence_region: Option<String>,
+    #[arg(long, value_parser = parse_presence_country)]
+    presence_country: Option<String>,
+    /// Existing logical node key directory; never creates or changes keys.
+    #[arg(long, hide = true)]
+    presence_identity: Option<String>,
+    #[arg(long, hide = true, value_parser = parse_presence_bind)]
+    dev_presence_bind: Option<SocketAddr>,
+    #[arg(long, hide = true, requires = "dev_presence_bind", value_parser = parse_presence_peer)]
+    dev_presence_peer: Vec<aether_net::EndpointAddr>,
+}
+
+fn parse_presence_region(s: &str) -> Result<String, String> {
+    aether_node::presence::validate_region(Some(s))?;
+    Ok(s.into())
+}
+
+fn parse_presence_country(s: &str) -> Result<String, String> {
+    aether_node::presence::validate_country(Some(s))?;
+    Ok(s.into())
+}
+
+fn parse_presence_bind(s: &str) -> Result<SocketAddr, String> {
+    let addr: SocketAddr = s.parse().map_err(|_| "presence bind must be a loopback socket address")?;
+    if !addr.ip().is_loopback() { return Err("dev presence binds must be loopback".into()); }
+    Ok(addr)
+}
+
+fn parse_presence_peer(s: &str) -> Result<aether_net::EndpointAddr, String> {
+    let (id, addr) = s.split_once('@').ok_or("dev presence peer must be node-id@loopback:port")?;
+    let id: aether_net::EndpointId = id.parse().map_err(|_| "invalid presence peer node id")?;
+    Ok(aether_net::EndpointAddr::from_parts(id, [aether_net::TransportAddr::Ip(parse_presence_bind(addr)?)]))
+}
+
+impl PresenceArgs {
+    fn seeds(&self, nodes: &[aether_net::EndpointId]) -> Vec<aether_net::EndpointAddr> {
+        if self.dev_presence_bind.is_some() { self.dev_presence_peer.clone() }
+        else { nodes.iter().copied().map(aether_net::EndpointAddr::from).collect() }
+    }
+
+    fn forward(&self) -> Vec<String> {
+        self.presence_country.as_ref().map(|c| vec![format!("--presence-country={c}")]).unwrap_or_default()
+    }
+}
+
+#[derive(Subcommand)]
+enum AppBundleCmd {
+    /// Build a deterministic static-app archive; prints its index SHA-256.
+    Build {
+        #[arg(long)]
+        folder: std::path::PathBuf,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Verify and pin an archive in an owned node's app cache.
+    Pin {
+        #[arg(long)]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        archive: std::path::PathBuf,
+        #[arg(long)]
+        hash: Option<String>,
+    },
+    /// Remove an app's eviction pin without deleting its verified content.
+    Unpin {
+        #[arg(long)]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        hash: String,
+    },
+    /// Set cache/download opt-out and peer seeding (default off). Restart the node to apply.
+    Configure {
+        #[arg(long)]
+        data: std::path::PathBuf,
+        #[arg(long, action = clap::ArgAction::Set)]
+        enabled: Option<bool>,
+        #[arg(long, action = clap::ArgAction::Set)]
+        seed: Option<bool>,
+    },
+}
+
 #[derive(Subcommand)]
 enum Cmd {
+    /// Build, verify, pin, or configure hash-addressed app content.
+    AppBundle {
+        #[command(subcommand)]
+        command: AppBundleCmd,
+    },
     /// Run a validator.
     Node {
         /// Devnet: this validator's index (1-based). With --network, derived from the local key.
@@ -151,6 +243,10 @@ enum Cmd {
         ceremony: Option<String>,
         #[arg(long)]
         port: u16,
+        /// Dedicated background reshare listener forwarded over iroh.
+        /// Default: --port + 11000. Use the same port for a staged reshare child.
+        #[arg(long)]
+        reshare_port: Option<u16>,
         #[arg(long)]
         rpc_port: u16,
         #[arg(long)]
@@ -209,6 +305,8 @@ enum Cmd {
         public_read_only: bool,
         #[command(flatten)]
         history: HistoryArgs,
+        #[command(flatten)]
+        presence: PresenceArgs,
         #[command(flatten)]
         resources: ResourceArgs,
     },
@@ -373,6 +471,8 @@ enum Cmd {
         #[arg(long)]
         node_key: Option<String>,
         #[command(flatten)]
+        presence: PresenceArgs,
+        #[command(flatten)]
         history: HistoryArgs,
         #[command(flatten)]
         resources: ResourceArgs,
@@ -447,8 +547,8 @@ enum Cmd {
         port: u16,
         #[arg(long, default_value_t = 8545)]
         rpc_port: u16,
-        /// Background reshare port (default: --port + 1, where a running
-        /// validator's node forwards reshare links).
+        /// Dedicated background reshare port (default: --port + 11000).
+        /// The running validator forwards reshare links to this listener.
         #[arg(long)]
         reshare_port: Option<u16>,
         /// Extra argument for `aether node` (repeatable), e.g. --node-arg=--faucet-key=…
@@ -471,6 +571,8 @@ enum Cmd {
         #[arg(long)]
         public_read_only: bool,
         #[command(flatten)]
+        presence: PresenceArgs,
+        #[command(flatten)]
         resources: ResourceArgs,
     },
     /// This Mac's voting-node identity in <data> (created the first time), as JSON.
@@ -488,6 +590,13 @@ enum Cmd {
     CandidateRegister {
         #[arg(long)]
         data: String,
+        /// Pinned network.json (defaults to <data>/network.json).
+        #[arg(long)]
+        network: Option<String>,
+        /// Use the public four-member development committee; only the mock
+        /// token "dev" is accepted in this mode, never a real DeviceCheck token.
+        #[arg(long, conflicts_with = "network")]
+        devnet: bool,
         /// The registrar node's RPC.
         #[arg(long)]
         registrar_rpc: String,
@@ -571,8 +680,10 @@ enum Cmd {
         /// registrar node runs `aether run --dev-registrar` (no Apple DeviceCheck).
         #[arg(long, conflicts_with = "registrar")]
         dev_registrar: bool,
-        /// Founder reserve keys (validator.pub.json, up to 3, one Mac): seated only while fewer
-        /// than four independent operators qualify. Needs --node-rewards and --reserve-operator.
+        /// Founder reserve keys (validator.pub.json, up to 3, one Mac): from protocol 4, eligible standby
+        /// while at most four independent operators qualify; fill missing seats or a larger
+        /// committee's survival need. Never join a full four-seat committee.
+        /// Needs --node-rewards and --reserve-operator.
         #[arg(long = "reserve", requires = "reserve_operator")]
         reserve: Vec<String>,
         /// The founder's operator address (its own registered Macs are not independent).
@@ -790,6 +901,14 @@ enum Cmd {
         #[arg(long)]
         identity: Option<String>,
     },
+    /// Measure or compact an existing offline redb database. Work on a copy
+    /// of a cleanly stopped node; a live writer's exclusive lock is refused.
+    DbMaintenance {
+        #[arg(long)]
+        db: std::path::PathBuf,
+        #[arg(long)]
+        compact: bool,
+    },
     /// Transaction receipt.
     Receipt {
         hash: TxHash,
@@ -812,6 +931,43 @@ fn fixture_key_directory_is_internal(data: &std::path::Path, requested: Option<&
         if name.to_str().is_some_and(|name| name.starts_with("aether-")))
 }
 
+fn app_bundle_command(command: AppBundleCmd) -> Result<(), String> {
+    use aether_node::app_bundle::{self, Bundle, Cache};
+    match command {
+        AppBundleCmd::Build { folder, out } => {
+            let bundle = Bundle::from_folder(&folder)?;
+            aether_node::atomic::replace(&out, bundle.archive(), 0o644)?;
+            println!("{}", json!({ "bundleHash": bundle.hash(), "archive": out, "size": bundle.archive().len() }));
+        }
+        AppBundleCmd::Pin { data, archive, hash } => {
+            let cache = Cache::open(&data)?;
+            let bundle_hash = cache.import(&archive, hash.as_deref(), true)?;
+            println!("{}", json!({ "bundleHash": bundle_hash, "pinned": true }));
+        }
+        AppBundleCmd::Unpin { data, hash } => {
+            Cache::open(&data)?.pin(&hash, false)?;
+            println!("{}", json!({ "bundleHash": app_bundle::normalize_hash(&hash)?, "pinned": false }));
+        }
+        AppBundleCmd::Configure { data, enabled, seed } => {
+            let mut config = app_bundle::configuration(&data)?;
+            if let Some(enabled) = enabled { config.enabled = enabled; }
+            if let Some(seed) = seed { config.seed = seed; }
+            app_bundle::configure(&data, config.clone())?;
+            println!("{}", serde_json::to_string(&config).map_err(|e| e.to_string())?);
+        }
+    }
+    Ok(())
+}
+
+fn app_bundle_service(data: &str, endpoint: Option<aether_net::Endpoint>, nodes: Vec<aether_net::EndpointId>) -> Option<std::sync::Arc<aether_node::app_bundle::Service>> {
+    match aether_node::app_bundle::Cache::open(std::path::Path::new(data)) {
+        Ok(cache) => Some(std::sync::Arc::new(aether_node::app_bundle::Service::new(
+            std::sync::Arc::new(cache), endpoint, nodes.into_iter().map(aether_net::EndpointAddr::from).collect(),
+        ))),
+        Err(error) => { tracing::warn!(%error, "app content cache unavailable"); None }
+    }
+}
+
 #[derive(Subcommand)]
 enum KeysCmd {
     /// Bind existing validator keys to this Mac after an intentional move.
@@ -832,12 +988,14 @@ fn main() {
     std::env::remove_var(aether_node::supervisor::WRITER_LEASE_ENV);
     let cli = Cli::parse();
     let res = match cli.cmd {
+        Cmd::AppBundle { command } => app_bundle_command(command),
         Cmd::Node {
             index,
             validators,
             network,
             ceremony,
             port,
+            reshare_port,
             rpc_port,
             data,
             peers,
@@ -856,8 +1014,15 @@ fn main() {
             exit_with_parent,
             public_read_only,
             history,
+            presence,
             resources,
         } => {
+            if presence.dev_presence_bind.is_some() && (!offline || peers.iter().any(|peer| {
+                peer.split_once('@').and_then(|(_, addr)| addr.parse::<SocketAddr>().ok()).is_none_or(|addr| !addr.ip().is_loopback())
+            })) {
+                eprintln!("--dev-presence-bind needs --offline and loopback TCP peers");
+                std::process::exit(2);
+            }
             if exit_with_parent {
                 exit_with_parent_process(_writer_lease.as_ref().map(|lease| lease.expected_parent()));
             }
@@ -925,9 +1090,10 @@ fn main() {
                     let new_genesis = args.4.node_rewards || args.4.history >= 2;
                     let effective_ms = if new_genesis { block_time_ms.max(aether_node::application::MIN_BLOCK_INTERVAL_MS) } else { block_time_ms };
                     let mode = history.mode(args.4.history >= 2, effective_ms)?;
-                    Ok((args, mode))
+                    let reshare_port = aether_node::supervisor::resolve_reshare_port(port, rpc_port, reshare_port)?;
+                    Ok((args, mode, reshare_port))
                 })
-                .map(|((p2p, chain_id, epochs, key_round, mut genesis), history)| {
+                .map(|((p2p, chain_id, epochs, key_round, mut genesis), history, reshare_port)| {
                     if let Some(e) = dev_epoch_blocks {
                         genesis.epoch_blocks = e;
                     }
@@ -939,6 +1105,7 @@ fn main() {
                         epochs,
                         key_round,
                         rpc_port,
+                        reshare_port,
                         data,
                         block_time_ms,
                         dev_censor,
@@ -950,6 +1117,7 @@ fn main() {
                         dev_registrar,
                         network_file,
                         public_read_only,
+                        presence,
                         resources,
                     });
                 })
@@ -1006,7 +1174,7 @@ fn main() {
             println!("signed by the committee: protocol {} at height {} on chain {}", s.upgrade.protocol, s.upgrade.activate_at, s.upgrade.chain_id);
             Ok(())
         })(),
-        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, public_read_only, archive_export, node_key, history, resources } => {
+        Cmd::Follow { network, from_rpc, data, rpc_port, validators, exit_with_parent, candidate, dev_epoch_blocks, keys, checkpoint, dev_storage_fault, public_read_only, archive_export, node_key, history, presence, resources } => {
             if exit_with_parent {
                 exit_with_parent_process(_writer_lease.as_ref().map(|lease| lease.expected_parent()));
             }
@@ -1023,7 +1191,7 @@ fn main() {
                 }
             }
             let node_key = node_key.map(std::path::PathBuf::from).unwrap_or_else(|| std::path::Path::new(&data).join("wallet-node.key"));
-            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, public_read_only, history, resources, export, None, node_key)
+            run_follow(network, from_rpc, data, rpc_port, validators, keys, dev_epoch_blocks, checkpoint, dev_storage_fault, public_read_only, history, resources, export, None, node_key, presence)
         }
         Cmd::Archive { network, from_rpc, data, rpc_port, export_dir, webseed, https_base, bind, export_key, resources } => run_archive(network, from_rpc, data, rpc_port, export_dir, webseed, https_base, bind, export_key, resources),
         Cmd::CandidateInfo { data, operator, chain_id } => (|| {
@@ -1046,7 +1214,7 @@ fn main() {
             );
             Ok(())
         })(),
-        Cmd::Run { data, chain_data, archive, network, ceremony, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, public_read_only, resources } => {
+        Cmd::Run { data, chain_data, archive, network, ceremony, port, rpc_port, reshare_port, node_args, follow_args, reshare_timeout, dev_peer_dir, exit_with_parent, public_read_only, presence, resources } => {
             // First: the app's wake signal must never end the supervisor.
             aether_node::supervisor::install_wake_forwarding();
             if exit_with_parent {
@@ -1056,6 +1224,7 @@ fn main() {
                 .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,commonware=warn".into()))
                 .init();
             (|| {
+                let reshare_port = aether_node::supervisor::resolve_reshare_port(port, rpc_port, reshare_port)?;
                 let dir = std::path::PathBuf::from(&data);
                 // A chain-data disk that is not connected: stop before any
                 // write at all (never create its /Volumes path — that would
@@ -1138,10 +1307,15 @@ fn main() {
                 };
                 // The same resource limits for whichever child runs (the
                 // supervisor adds them to both `aether node` and `aether follow`).
-                let forwarded = resources.forward();
+                let mut forwarded = resources.forward();
+                forwarded.extend(presence.forward());
                 let (mut node_args, mut follow_args) = (node_args, follow_args);
                 node_args.extend(forwarded.iter().cloned());
                 follow_args.extend(forwarded);
+                // Keep signed presence identity through all follower roles,
+                // including paused/keyless-beacon states. RPC transport keeps
+                // its separate key so candidate resharing owns its node id.
+                follow_args.push(format!("--presence-identity={data}"));
                 // The gateway role carries to whichever child runs.
                 if public_read_only {
                     node_args.push("--public-read-only".into());
@@ -1152,7 +1326,7 @@ fn main() {
                     data: dir,
                     port,
                     rpc_port,
-                    reshare_port: reshare_port.unwrap_or(port + 1),
+                    reshare_port,
                     node_args,
                     follow_args,
                     dev_peer_dir: dev_peer_dir.map(Into::into),
@@ -1164,13 +1338,27 @@ fn main() {
                 .run(&_lock)
             })()
         }
-        Cmd::CandidateRegister { data, registrar_rpc, rpc, from_dev, device_token, tip } => (|| {
+        Cmd::CandidateRegister { data, network, devnet, registrar_rpc, rpc, from_dev, device_token, tip } => (|| {
+            validate_registration_mode(devnet, &device_token)?;
             let keys = aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(&data))?;
             let operator = dev_address(from_dev)?;
             let (vk, nid, beaconer) = (keys.validator_key(), keys.node_id(), keys.beaconer());
-            let chain_id = call(&registrar_rpc, "aether_status", json!([]))?["chain_id"].as_u64().ok_or("registrar has no chain id")?;
+            let (chain_id, registrar_key) = registration_registrar(&rpc, std::path::Path::new(&data), network.as_deref(), devnet)?;
             let ownership = hex::encode(keys.ownership(chain_id, operator));
-            let a = call(&registrar_rpc, "aether_registerDevice", json!([device_token, operator, hex::encode(vk), hex::encode(nid), beaconer, ownership]))?;
+            let token = p256::elliptic_curve::zeroize::Zeroizing::new(device_token);
+            let public = vec![json!(operator), json!(hex::encode(vk)), json!(hex::encode(nid)), json!(beaconer), json!(ownership)];
+            let mut attestation = None;
+            for _ in 0..2 {
+                let descriptor: aether_net::registrar::EncryptionKey = serde_json::from_value(call(&registrar_rpc, "aether_registrarEncryptionKey", json!([]))?)
+                    .map_err(|_| "registrar encryption key unavailable")?;
+                let params = aether_node::devicecheck::encrypt_token_request(&token, &descriptor, chain_id, &registrar_key, "aether_registerDevice", public.clone())?;
+                match call(&registrar_rpc, "aether_registerDevice", params) {
+                    Ok(a) => { attestation = Some(a); break; }
+                    Err(e) if e.contains("registrar encryption key expired") => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            let a = attestation.ok_or("registrar encryption key changed; retry registration")?;
             let part = |k: &str| -> Result<[u8; 32], String> {
                 hex::decode(a[k].as_str().unwrap_or_default()).ok().and_then(|b| b.try_into().ok()).ok_or(format!("registrar gave no {k}"))
             };
@@ -1452,12 +1640,32 @@ fn main() {
         })(),
         Cmd::Balance { address, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_balance(&rpc, address, &set)),
         Cmd::Storage { address, slot, rpc, validators, identity } => trusted(validators, identity).and_then(|set| verified_storage(&rpc, address, slot, &set)),
+        Cmd::DbMaintenance { db, compact } => db_maintenance(&db, compact),
         Cmd::Dkg { index, validators, network, port, data, peers, link_base, offline, round } => {
             let _run_lock = aether_node::supervisor::lock_or_inherit_data_dir(std::path::Path::new(&data), _writer_lease.as_ref()).unwrap_or_else(|e| {
                 eprintln!("{e}"); std::process::exit(aether_node::supervisor::EXIT_LOCKED);
             });
             p2p_args(index, validators, network, &data, port, peers, link_base, offline)
-                .map(|(p2p, chain_id, _, _, genesis)| run_dkg(p2p, chain_id, data, round, genesis))
+                .and_then(|(p2p, chain_id, _, _, genesis)| {
+                    // A running committee may contain reserve keys after a handoff,
+                    // but a fresh DKG must never bootstrap with a reserve participant.
+                    // Check the actual roster even on retries of a completed round.
+                    if let Some(reserve) = &genesis.reserve {
+                        use commonware_codec::Encode;
+                        for (key, node) in reserve.bytes()? {
+                            for (i, (validator_key, validator_node)) in p2p.roster.keys.iter().zip(&p2p.roster.nodes).enumerate() {
+                                if validator_key.encode().as_ref() == key.as_slice() {
+                                    return Err(format!("validator {}: its key is also a reserve key", i + 1));
+                                }
+                                if validator_node.as_bytes() == &node {
+                                    return Err(format!("validator {}: its node id is also a reserve key's", i + 1));
+                                }
+                            }
+                        }
+                    }
+                    run_dkg(p2p, chain_id, data, round, genesis);
+                    Ok(())
+                })
         }
         Cmd::Receipt { hash, rpc } => call(&rpc, "aether_getReceipt", json!([hash])).map(|v| println!("{}", pretty(&v))),
     };
@@ -1983,6 +2191,7 @@ fn assemble_network(
         group,
         max_committee,
         release,
+        search: None,
     };
     aether_node::roster::Roster::from_file(&file)?;
     file.genesis()?;
@@ -1997,6 +2206,7 @@ struct NodeArgs {
     /// Key round the network file expects (from its identity), if any.
     key_round: Option<u64>,
     rpc_port: u16,
+    reshare_port: u16,
     data: String,
     block_time_ms: u64,
     dev_censor: Option<Address>,
@@ -2020,6 +2230,7 @@ struct NodeArgs {
     public_read_only: bool,
     /// Memory, CPU and disk limits (docs/ops/resource-limits.md).
     resources: ResourceArgs,
+    presence: PresenceArgs,
 }
 
 /// The open-file limit a node asks for when its hard limit allows it.
@@ -2123,6 +2334,7 @@ fn run_node(a: NodeArgs) {
         epochs,
         key_round,
         rpc_port,
+        reshare_port,
         block_time_ms,
         dev_censor,
         dev_deprioritize,
@@ -2137,6 +2349,7 @@ fn run_node(a: NodeArgs) {
         max_shards,
         public_read_only,
         resources,
+        presence: presence_args,
     } = a;
     aether_node::supervisor::install_fatal_watch(std::path::PathBuf::from(&data));
     // Resource limits (docs/ops/resource-limits.md), before the chain opens:
@@ -2155,6 +2368,8 @@ fn run_node(a: NodeArgs) {
         "resource limits on"
     );
     let faucet = genesis.faucet;
+    let search_sources = aether_node::search_sources::SearchSources::from_network(network_file.as_ref().unwrap_or(&Value::Null))
+        .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(2) });
     let registry = || {
         aether_node::devicecheck::Registry::open(
             std::path::Path::new(&data).join("registrations.json"),
@@ -2255,17 +2470,24 @@ fn run_node(a: NodeArgs) {
         .map(|(k, n)| (hex::encode(k.as_ref()), n.to_string()))
         .collect();
     let peers = aether_node::p2p::peer_addresses(&p2p);
-    let p2p_cfg = aether_node::p2p::config(&p2p, b"_P2P");
+    let mut p2p_cfg = aether_node::p2p::config(&p2p, b"_P2P");
+    if presence_args.dev_presence_bind.is_some() { p2p_cfg.listen = loopback(port); }
     let links = matches!(p2p.transport, Transport::Iroh { .. });
     let executor = cw_tokio::Runner::new(cw_tokio::Config::new().with_storage_directory(&data));
     let cfg = chain_config(chain_id, &genesis, network_file.is_none());
 
     executor.start(async move |context| {
         // Public endpoint first: validator links and wallet RPC share it.
-        let endpoint = aether_node::p2p::open_public(&p2p).await;
+        let peer_tracker = aether_net::peers::PeerTracker::new();
+        let endpoint = if let Some(addr) = presence_args.dev_presence_bind {
+            Some(aether_net::bind_local(p2p.keys.node_secret.clone(), addr, peer_tracker.clone()).await.expect("bind local presence endpoint"))
+        } else {
+            aether_node::p2p::open_public_tracked(&p2p, peer_tracker.clone()).await
+        };
         if links && endpoint.is_none() {
             panic!("iroh transport needs the public endpoint");
         }
+        let app_bundles = app_bundle_service(&data, endpoint.clone(), p2p.roster.nodes.clone());
 
         let (mut network, mut oracle) = lookup::Network::new(context.child("network"), p2p_cfg);
         oracle.track(0, peers);
@@ -2299,14 +2521,15 @@ fn run_node(a: NodeArgs) {
             }
             Err(e) => panic!("open state store: {e}"),
         };
-        let (chain, genesis) = match Chain::open(cfg.clone(), store) {
+        let (chain, genesis) = match Chain::open_with_search_sources(cfg.clone(), store, search_sources.clone()) {
             Ok(opened) => opened,
             Err(e) if aether_node::follow::is_corruption(&e) => {
                 let store = aether_node::follow::reset_store(std::path::Path::new(&data), &e).expect("move a corrupt database aside");
-                Chain::open(cfg.clone(), store).expect("restore state after moving a corrupt database aside")
+                Chain::open_with_search_sources(cfg.clone(), store, search_sources.clone()).expect("restore state after moving a corrupt database aside")
             }
             Err(e) => panic!("restore state (delete the data dir to resync): {e:?}"),
         };
+        chain.watch_releases(network_file.as_ref());
         install_verifier(&chain, &data, false);
         // The registrar key in the registry decides: the committee can rotate
         // or stop the registrar by a threshold-signed upgrade, and then this
@@ -2328,8 +2551,16 @@ fn run_node(a: NodeArgs) {
         // answers, handoff signing, prover, shards) once voting starts.
         let (gossip_tx, mut gossip_rx) = tokio::sync::mpsc::unbounded_channel::<TxEnvelope>();
         let served_snapshot: rpc::SnapshotCache = Default::default();
+        let presence = endpoint.clone().map(|ep| aether_node::presence::Presence::new(
+            ep, peer_tracker, aether_node::presence::Role::Validator, p2p.roster.nodes.clone(),
+            format!("{}:{}", chain_id, cfg.group), presence_args.presence_country.clone(),
+        ));
+        if let Some(p) = &presence {
+            p.set_region(presence_args.presence_region.clone()).expect("validated M49 region");
+        }
         let served_state = std::sync::Arc::new(std::sync::RwLock::new(rpc::RpcState {
             chain: chain.clone(),
+            app_bundles: app_bundles.clone(),
             finality: rpc::Finality::Archive(std::sync::Arc::new(aether_node::follow::FinalityArchive::new(chain.store()))),
             gossip: gossip_tx.clone(),
             faucet: faucet_service.clone(),
@@ -2341,6 +2572,7 @@ fn run_node(a: NodeArgs) {
             prover: None,
             shards: None,
             public_read_only,
+            presence: presence.clone(),
         }));
         // Public access: iroh endpoint published to the BitTorrent Mainline DHT.
         // Wallets find this node by its id alone and verify everything they get;
@@ -2350,18 +2582,32 @@ fn run_node(a: NodeArgs) {
         let _router = endpoint.clone().map(|ep| {
             tracing::info!(node_id = %ep.id(), "public endpoint on iroh; address published to Mainline DHT (serving read-only answers while catching up)");
             let st = served_state.clone();
+            let read_state = served_state.clone();
             let registry = aether_node::announce::checker(st.read().expect("served state").chain.clone());
             let p2p_target = links.then(|| loopback(port));
-            aether_net::serve(
+            let read = aether_node::public_read::service(
+                &ep,
+                std::path::Path::new(&data),
+                p2p.roster.nodes.clone(),
+                p2p.roster.nodes.clone(),
+                move || read_state.read().expect("served state").clone(),
+            );
+            aether_node::public_read::publish_contact(ep.clone(), std::path::Path::new(&data), chain.clone(), polynomial_identity);
+            aether_net::serve_with_services_and_public_read(
                 ep,
                 move |req| {
                     let st = st.read().expect("served state").clone();
-                    async move { rpc::handle_value(&st, req).await }
+                    async move { rpc::handle_remote_value(&st, req).await }
                 },
                 p2p_target,
+                links.then(|| loopback(reshare_port)),
                 Some(registry),
+                presence.as_ref().map(|p| p.callback()),
+                app_bundles.as_ref().map(|service| service.handler()),
+                Some(read),
             )
         });
+        if let Some(p) = &presence { p.start(presence_args.seeds(&p2p.roster.nodes)); }
         // Catch up before voting: a committee member that slept must not
         // propose or vote on views it cannot execute (the committee treats it
         // as offline until then). Follow the network with the follower
@@ -2633,6 +2879,7 @@ fn run_node(a: NodeArgs) {
         let prover = start_prover(&chain, &data, None);
         let rpc_state = RpcState {
             chain,
+            app_bundles,
             finality: aether_node::rpc::Finality::Marshal(marshal_mailbox),
             gossip: gossip_tx,
             faucet: faucet_service,
@@ -2644,6 +2891,7 @@ fn run_node(a: NodeArgs) {
             prover,
             shards,
             public_read_only,
+            presence: presence.clone(),
         };
         // Voting machinery is up: swap the endpoint's served state for the
         // full one (marshal-backed finality answers, handoff signing, prover
@@ -2912,6 +3160,54 @@ fn exit_with_parent_process(expected_parent: Option<u32>) {
     });
 }
 
+/// Changing the target never lowers the two-source certificate requirement.
+fn follower_min_peers() -> Result<usize, String> {
+    let n = match std::env::var("AETHER_FOLLOW_MIN_PEERS") {
+        Ok(raw) => raw.parse::<usize>().map_err(|_| "AETHER_FOLLOW_MIN_PEERS must be 2..=8".to_string())?,
+        Err(std::env::VarError::NotPresent) => aether_node::follow::DEFAULT_MIN_PEERS,
+        Err(e) => return Err(e.to_string()),
+    };
+    if !(2..=8).contains(&n) { return Err("AETHER_FOLLOW_MIN_PEERS must be 2..=8".into()) }
+    Ok(n)
+}
+
+fn db_maintenance(path: &std::path::Path, compact: bool) -> Result<(), String> {
+    let mut store = aether_node::store::Store::open_for_maintenance(path).map_err(|e| e.to_string())?;
+    // Validate authoritative state, not every archival row materialized as a
+    // history cache. Redb holds the exclusive writer lock throughout.
+    let checkpoint = |store: &aether_node::store::Store| {
+        store.load_with_cache_budget(0).map(|cp| cp.map(|cp| (cp.height, cp.digest, cp.state.root())))
+    };
+    let head = checkpoint(&store).map_err(|e| e.to_string())?;
+    let before = store.stats().map_err(|e| e.to_string())?;
+    let compacted = compact && store.compact().map_err(|e| e.to_string())?;
+    let mut after = if compact {
+        let after = store.stats().map_err(|e| e.to_string())?;
+        let after_head = checkpoint(&store).map_err(|e| e.to_string())?;
+        let rows = |stats: &aether_node::store::StoreStats| stats.tables.iter()
+            .map(|t| (t.name, t.entries, t.stored)).collect::<Vec<_>>();
+        if head != after_head || rows(&before) != rows(&after) {
+            return Err("database integrity changed during compaction; preserve this copy for inspection".into());
+        }
+        Some(after)
+    } else { None };
+    // Page and table counters describe the checked database generation. Redb
+    // writes allocator state on close, so measure the final file afterward.
+    drop(store);
+    if let Some(after) = &mut after {
+        let file = std::fs::metadata(path).map_err(|e| e.to_string())?;
+        after.file_bytes = file.len();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            after.filesystem_allocated_bytes = Some(file.blocks().saturating_mul(512));
+        }
+        after.reclaimable_estimate_bytes = file.len().saturating_sub(after.allocated_bytes);
+    }
+    println!("{}", serde_json::to_string_pretty(&json!({"before":before, "after":after, "compacted":compacted})).map_err(|e| e.to_string())?);
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_follow(
     network: Option<String>,
@@ -2931,9 +3227,17 @@ fn run_follow(
     bind: Option<IpAddr>,
     // The wallet-server endpoint key file (`wallet_node_key`).
     node_key: std::path::PathBuf,
+    presence_args: PresenceArgs,
 ) -> Result<(), String> {
     use aether_node::follow::{self, FinalityArchive, Upstream};
     use std::sync::Arc;
+    if presence_args.dev_presence_bind.is_some() && (from_rpc.is_empty() || from_rpc.iter().any(|url| {
+        reqwest::Url::parse(url).ok().is_none_or(|url| {
+            url.scheme() != "http" || url.host_str().and_then(|host| host.parse::<IpAddr>().ok()).is_none_or(|ip| !ip.is_loopback())
+        })
+    })) {
+        return Err("--dev-presence-bind followers need explicit loopback HTTP --from-rpc sources".into());
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -2945,7 +3249,15 @@ fn run_follow(
     aether_node::resources::install(resources.limits()?, std::path::Path::new(&data).to_path_buf());
     // A network.json with no faucet funds nobody (mainnet: 사전 발행 0).
     let dev_alloc = network.is_none();
-    let (chain_id, genesis, set, nodes) = match network {
+    let search_sources = match network.as_ref() {
+        Some(path) => {
+            let value: Value = serde_json::from_slice(&std::fs::read(path).map_err(|e| format!("network.search: {e}"))?)
+                .map_err(|e| format!("network.search: {e}"))?;
+            aether_node::search_sources::SearchSources::from_network(&value)?
+        }
+        None => Default::default(),
+    };
+    let (chain_id, genesis, set, nodes, network_file) = match network {
         Some(path) => {
             let file = aether_node::roster::NetworkFile::load(std::path::Path::new(&path))?;
             let genesis = file.genesis()?;
@@ -2956,7 +3268,8 @@ fn run_follow(
                 .map_err(|e| format!("identity: {e:?}"))?
                 .with_group(genesis.group);
             let nodes = aether_node::roster::Roster::from_file(&file)?.nodes;
-            (file.chain_id, genesis, set, nodes)
+            let network_file = serde_json::to_value(&file).map_err(|e| format!("network.json: {e}"))?;
+            (file.chain_id, genesis, set, nodes, Some(network_file))
         }
         None => {
             let mut genesis = aether_node::roster::Genesis::default();
@@ -2968,6 +3281,7 @@ fn run_follow(
                 genesis,
                 aether_light::ValidatorSet::devnet(validators),
                 (1..=validators).map(aether_net::devnet_node_id).collect(),
+                None,
             )
         }
     };
@@ -3001,7 +3315,11 @@ fn run_follow(
         // data is never moved aside or written — the node stops with the
         // update-required exit code, which the supervisor and the app already
         // turn into "install the newer release" (`is_too_new_error`).
+        #[cfg(test)]
+        let mut test_store = tests::RESTORE_DISK_TEST_STORE.with(|store| store.borrow_mut().take());
         let opened = match dev_storage_fault {
+            #[cfg(test)]
+            _ if test_store.is_some() => Ok((test_store.take().expect("test store present"), false)),
             Some(ms) => {
                 tracing::warn!(ms, "--dev-storage-fault: this disk fails from now on (self-healing test)");
                 follow::open_store_with(
@@ -3024,18 +3342,64 @@ fn run_follow(
         // Following over iroh, this Mac also serves wallets directly (capacity
         // review 2026-09-29): a public endpoint under its own persisted node
         // id, so phones spread their reads over follower Macs instead of
-        // asking the validators. `--from-rpc` followers have no iroh endpoint.
-        let mut wallet_ep = None;
+        // asking the validators. HTTP upstreams still serve public peer reads.
+        let peer_tracker = aether_net::peers::PeerTracker::new();
+        // Signed presence uses the Mac's stable node key, while wallet RPC
+        // keeps its separate transport key (resharing publishes the node key).
+        let announce_keys = candidate_keys.as_ref()
+            .map(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)))
+            .transpose()?.map(Arc::new);
+        let mut wallet_ep = {
+            let secret = wallet_node_key(&node_key)?;
+            Some(if let Some(addr) = presence_args.dev_presence_bind {
+                aether_net::bind_local(secret, addr, peer_tracker.clone()).await
+            } else {
+                aether_net::bind_tracked(Some(secret), vec![aether_net::ALPN_RPC.to_vec(), aether_net::ALPN_APPS.to_vec(), aether_net::ALPN_READ.to_vec()], peer_tracker.clone()).await
+            }.map_err(|e| e.to_string())?)
+        };
         let upstream = Arc::new(if from_rpc.is_empty() {
-            let ep = aether_net::bind(Some(wallet_node_key(&node_key)?), vec![aether_net::ALPN_RPC.to_vec()])
-                .await
-                .map_err(|e| e.to_string())?;
-            let client = aether_net::RpcClient::with_endpoint(ep.clone(), nodes.clone());
-            wallet_ep = Some(ep);
-            Upstream::Iroh(client, Default::default())
+            Upstream::Iroh(aether_net::RpcClient::with_endpoint(wallet_ep.as_ref().expect("iroh follower endpoint").clone(), nodes.clone()).with_relay_diversity().await.map_err(|e| e.to_string())?, Default::default())
         } else {
             Upstream::Http(from_rpc)
+        }.guarded(follower_min_peers()?)?);
+        let app_bundles = app_bundle_service(&data, wallet_ep.clone(), nodes.clone());
+        let role = if announce_keys.is_some() { aether_node::presence::Role::Candidate } else { aether_node::presence::Role::Follower };
+        let identity = announce_keys.as_ref().map(|keys| keys.keys.node_secret.clone()).or_else(|| {
+            presence_args.presence_identity.as_deref()
+                .and_then(|dir| aether_node::roster::LocalKeys::load(std::path::Path::new(dir)).ok())
+                .map(|keys| keys.node_secret)
         });
+        let presence = wallet_ep.clone().map(|ep| {
+            let identity = identity.unwrap_or_else(|| ep.secret_key().clone());
+            aether_node::presence::Presence::with_identity(
+                ep, peer_tracker, identity, role, nodes.clone(), format!("{}:{}", chain_id, cfg.group), presence_args.presence_country.clone(),
+            )
+        });
+        if let Some(p) = &presence {
+            p.set_region(presence_args.presence_region.clone())?;
+        }
+        if bind.is_some_and(|ip| !ip.is_loopback()) {
+            if let Some(p) = &presence { p.disable_country_settings(); }
+        }
+        // Presence works during a long checkpoint sync, before chain RPC is
+        // ready. The same router later reads the verified served state.
+        let served_state = Arc::new(std::sync::RwLock::new(None::<RpcState>));
+        let _wallet_router = wallet_ep.clone().map(|ep| {
+            let state = served_state.clone();
+            let read_state = served_state.clone();
+            let read = aether_node::public_read::service_when_ready(&ep, std::path::Path::new(&data),
+                nodes.clone(), vec![], move || read_state.read().expect("follower read state").clone());
+            aether_net::serve_with_services_and_public_read(ep, move |req: Value| {
+                let st = state.read().expect("follower served state").clone();
+                async move {
+                    match st {
+                        Some(st) => rpc::handle_remote_value(&st, req).await,
+                        None => json!({"jsonrpc":"2.0","id":req.get("id").cloned().unwrap_or(Value::Null),"error":{"code":-32000,"message":"node is starting; try again after checkpoint sync"}}),
+                    }
+                }
+            }, None, None, None, presence.as_ref().map(|p| p.callback()), app_bundles.as_ref().map(|service| service.handler()), Some(read))
+        });
+        if let Some(p) = &presence { p.start(presence_args.seeds(&nodes)); }
         // A new Mac starts from a certified snapshot instead of replaying history.
         if checkpoint && store.head().map_err(|e| e.to_string())?.is_none() {
             // Without a usable snapshot, replay from genesis instead of failing to start.
@@ -3044,7 +3408,14 @@ fn run_follow(
                 tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
             }
         }
-        let (chain, _) = match Chain::open(cfg.clone(), store) {
+        let restore_error = |e: aether_node::store::StoreError| {
+            if e.is_disk() {
+                eprintln!("error: restore state: {e}");
+                std::process::exit(aether_node::store::EXIT_STORAGE);
+            }
+            format!("restore state (delete the data dir to resync): {e}")
+        };
+        let (chain, _) = match Chain::open_with_search_sources(cfg.clone(), store, search_sources.clone()) {
             Ok(opened) => opened,
             // Bad data only the full check catches (the rebuilt state does not
             // match the checkpoint): the same recovery as at open — move the
@@ -3057,10 +3428,11 @@ fn run_follow(
                         tracing::warn!(%e, "checkpoint sync failed; replaying history from genesis");
                     }
                 }
-                Chain::open(cfg, store).map_err(|e| format!("restore state (delete the data dir to resync): {e}"))?
+                Chain::open_with_search_sources(cfg, store, search_sources.clone()).map_err(restore_error)?
             }
-            Err(e) => return Err(format!("restore state (delete the data dir to resync): {e}")),
+            Err(e) => return Err(restore_error(e)),
         };
+        chain.watch_releases(network_file.as_ref());
         install_verifier(&chain, &data, true);
         let archive = Arc::new(FinalityArchive::new(chain.store()));
         let (gossip, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3106,17 +3478,19 @@ fn run_follow(
         let prover = if export.is_none() { start_prover(&chain, &data, Some(upstream.clone())) } else { None };
         let st = RpcState {
             chain,
+            app_bundles,
             finality: aether_node::rpc::Finality::Archive(archive),
             gossip,
             faucet: None,
             registrar: None,
-            network: None,
+            network: network_file,
             upstream: Some(upstream.clone()),
             handoff: None,
             snapshot: Default::default(),
             prover,
             shards,
             public_read_only,
+            presence: presence.clone(),
         };
         // Serve wallets over the public endpoint (the same answers the loopback
         // HTTP server gives; every one is verified by the reader), and announce
@@ -3125,26 +3499,21 @@ fn run_follow(
         // list the announcement only then; red-team 2026-09-29 §3). The
         // router owns the endpoint, so it is bound to outlive this setup —
         // like the validators' `_router`, it must never drop while running.
-        let announce_keys = candidate_keys
-            .as_ref()
-            .map(|dir| aether_node::candidate::CandidateKeys::load_or_create(std::path::Path::new(dir)))
-            .transpose()?
-            .map(std::sync::Arc::new);
-        let _wallet_router = wallet_ep.map(|ep| {
+        *served_state.write().expect("follower served state") = Some(st.clone());
+        if let Some(ep) = wallet_ep.take() {
             tracing::info!(node_id = %ep.id(), "serving wallets over iroh; announced to the validators every minute");
             let endpoint_id = ep.id();
-            let st = st.clone();
-            let router = aether_net::serve_rpc(ep, move |req| {
-                let st = st.clone();
-                async move { rpc::handle_value(&st, req).await }
-            });
+            let identity = st.chain.lock().identity;
+            if let Some(identity) = identity {
+                aether_node::public_read::publish_contact(ep.clone(), std::path::Path::new(&data), st.chain.clone(), &identity);
+            }
             let (announcer, keys) = (upstream.clone(), announce_keys.clone());
             tokio::spawn(async move {
                 if keys.is_none() {
                     tracing::debug!("no candidate keys: serving wallets, but not announced (aether run --candidate)");
                 }
                 loop {
-                    if let (Upstream::Iroh(c, _), Some(keys)) = (announcer.as_ref(), keys.as_ref()) {
+                    if let (Some(c), Some(keys)) = (announcer.iroh_client(), keys.as_ref()) {
                         let params = aether_node::announce::signed(keys, &endpoint_id);
                         if let Err(e) = c.call("aether_announceWalletServer", serde_json::json!(params)).await {
                             tracing::debug!(%e, "wallet-server announce failed; retrying in a minute");
@@ -3153,8 +3522,7 @@ fn run_follow(
                     tokio::time::sleep(Duration::from_secs(60)).await;
                 }
             });
-            router
-        });
+        }
         let listen = bind.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
         let result = rpc::serve(SocketAddr::new(listen, rpc_port), st).await;
         tracing::error!(?result, "follower RPC server stopped; restarting the node");
@@ -3218,7 +3586,7 @@ fn run_archive(
         max_shards: aether_node::shards::DEFAULT_MAX_SHARDS,
     };
     let node_key = std::path::Path::new(&data).join("wallet-node.key");
-    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, false, None, false, history, resources, Some(export), Some(bind), node_key)
+    run_follow(Some(network), from_rpc, data, rpc_port, 4, None, None, false, None, false, history, resources, Some(export), Some(bind), node_key, PresenceArgs::default())
 }
 
 fn run_dkg(
@@ -3647,6 +4015,72 @@ fn candidate_registration_uses_lane(status: &Value) -> bool {
     status["free_registration"].as_bool().unwrap_or(false)
 }
 
+fn validate_registration_mode(devnet: bool, token: &str) -> Result<(), String> {
+    if devnet && token != "dev" { return Err("--devnet accepts only the mock token dev; real DeviceCheck tokens need a pinned network".into()); }
+    Ok(())
+}
+
+/// The development CLI authenticates registrar slots with the existing
+/// committee pin in <data>/network.json (or the explicit public devnet set).
+/// The registrar endpoint's own description is never a trust anchor.
+fn registration_registrar(rpc: &str, data: &std::path::Path, network_path: Option<&str>, devnet: bool) -> Result<(u64, aether_crypto::PublicKey), String> {
+    let file = network_path.map(std::path::PathBuf::from).unwrap_or_else(|| data.join(aether_node::roster::NETWORK_FILE));
+    let network = if file.exists() { Some(aether_node::roster::NetworkFile::load(&file)?) } else { None };
+    if network.is_none() && !devnet { return Err("registration requires pinned network.json (or --devnet with mock token dev)".into()); }
+    let pinned = registration_config_pin(network.as_ref().and_then(|f| f.registrar.as_deref()), devnet)?;
+    let status = call(rpc, "aether_status", json!([]))?;
+    let chain_id = status["chain_id"].as_u64().ok_or("registration RPC has no chain id")?;
+    let set = match network {
+        Some(f) => {
+            if f.chain_id != chain_id { return Err("registration RPC is on another chain".into()); }
+            match f.identity {
+                Some(identity) => trusted(f.validators.len() as u64, Some(identity))?.with_group(f.group.unwrap_or(0)),
+                None if devnet => trusted(4, None)?,
+                None => return Err("network.json has no committee identity; authenticate it before registration".into()),
+            }
+        }
+        None => trusted(4, None)?,
+    };
+    let replies = [call(rpc, "aether_getStorage", json!([aether_execution::registry::REGISTRY, U256::ZERO]))?,
+        call(rpc, "aether_getStorage", json!([aether_execution::registry::REGISTRY, U256::from(1)]))?];
+    let height = replies[0]["height"].as_u64().ok_or("registrar proof has no height")?;
+    if replies[1]["height"].as_u64() != Some(height) { return Err("registrar slots came from different blocks; retry registration".into()); }
+    let anchor = certified_anchor_for_chain(rpc, height, &set, Some(chain_id))?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis() as u64;
+    if anchor.height != height + 1 || now.saturating_sub(anchor.timestamp_ms) > 10 * 60 * 1000 {
+        return Err("registrar certificate has the wrong height or is stale".into());
+    }
+    let mut sec1 = vec![4u8];
+    for (slot, reply) in replies.iter().enumerate() {
+        let proof: Proof = serde_json::from_value(reply["proof"].clone()).map_err(|_| "invalid registrar storage proof")?;
+        let value = aether_light::verify_storage(&anchor, &aether_execution::registry::REGISTRY, U256::from(slot), &proof).map_err(|e| format!("registrar proof: {e}"))?;
+        sec1.extend_from_slice(&value.to_be_bytes::<32>());
+    }
+    aether_crypto::p256_xy(&sec1).map_err(|_| "the authenticated registrar is stopped or invalid")?;
+    let proven = aether_crypto::PublicKey { scheme: aether_types::SignerScheme::P256, bytes: sec1 };
+    registration_match_pin(&proven, &pinned)?;
+    Ok((chain_id, proven))
+}
+
+fn registration_config_pin(raw: Option<&str>, devnet: bool) -> Result<aether_crypto::PublicKey, String> {
+    let Some(raw) = raw else {
+        return if devnet { P256Signer::from_seed(&dev_seed(DEV_REGISTRAR)).map(|s| s.public_key()).map_err(|e| e.to_string()) }
+            else { Err("network.json has no registrar signing-key pin; no DeviceCheck token sent".into()) };
+    };
+    let bytes = hex::decode(raw.trim_start_matches("0x")).map_err(|_| "network.json has an invalid registrar signing-key pin")?;
+    if bytes.len() != 64 { return Err("registrar pin must be 64 bytes (x/y)".into()); }
+    let sec1 = [&[4u8][..], &bytes].concat();
+    aether_crypto::p256_xy(&sec1).map_err(|_| "registrar pin is not a valid P-256 point")?;
+    Ok(aether_crypto::PublicKey { scheme: aether_types::SignerScheme::P256, bytes: sec1 })
+}
+
+fn registration_match_pin(proven: &aether_crypto::PublicKey, pinned: &aether_crypto::PublicKey) -> Result<(), String> {
+    if aether_crypto::p256_xy(&proven.bytes).ok() != aether_crypto::p256_xy(&pinned.bytes).ok() {
+        return Err("certified registrar differs from trusted network.json pin; refresh the trusted config after registrar rotation; no DeviceCheck token sent".into());
+    }
+    Ok(())
+}
+
 /// Fee caps from the node's next base fees: 2x headroom (~70 full blocks of
 /// growth) plus a 1 gwei tip; only the actual base + tip is charged. The
 /// state cap has the same 2x headroom over the B5 price, never under the
@@ -3756,6 +4190,15 @@ fn certified_anchor(
     height: u64,
     set: &aether_light::ValidatorSet,
 ) -> Result<aether_light::VerifiedBlock, String> {
+    certified_anchor_for_chain(rpc, height, set, None)
+}
+
+fn certified_anchor_for_chain(
+    rpc: &str,
+    height: u64,
+    set: &aether_light::ValidatorSet,
+    chain_id: Option<u64>,
+) -> Result<aether_light::VerifiedBlock, String> {
     for _ in 0..40 {
         let v = call(rpc, "aether_getFinalized", json!([height + 1]))?;
         if !v.is_null() {
@@ -3773,12 +4216,27 @@ fn certified_anchor(
                 .transpose()
                 .map_err(|e| e.to_string())?
                 .unwrap_or_default();
-            return aether_light::verify_finalized_chain(set, &block, &fin, &links)
-                .map_err(|e| format!("CERTIFICATE REJECTED: {e} — do not trust this server"));
+            let anchor = aether_light::verify_finalized_chain(set, &block, &fin, &links)
+                .map_err(|e| format!("CERTIFICATE REJECTED: {e} — do not trust this server"))?;
+            if let Some(chain_id) = chain_id { check_registration_anchor_chain(&block, &links, chain_id)?; }
+            return Ok(anchor);
         }
         std::thread::sleep(Duration::from_millis(500));
     }
     Err(format!("block {} not finalized yet", height + 1))
+}
+
+fn check_registration_anchor_chain(block: &[u8], links: &[Vec<u8>], chain_id: u64) -> Result<(), String> {
+    use commonware_codec::Decode as _;
+    for bytes in std::iter::once(block).chain(links.iter().map(Vec::as_slice)) {
+        let block = aether_light::block::Block::decode_cfg(bytes, &aether_light::block::Block::codec_config(aether_light::MAX_BLOCK_BYTES)).map_err(|_| "invalid registrar certified block")?;
+        let payload = block.payload().ok_or("invalid registrar certified payload")?;
+        if payload.txs.iter().any(|tx| tx.header.chain_id != chain_id)
+            || payload.upgrade.iter().any(|u| u.upgrade.chain_id != chain_id) {
+            return Err("registrar certificate belongs to another chain; no token sent".into());
+        }
+    }
+    Ok(())
 }
 
 fn verified_balance(rpc: &str, a: Address, set: &aether_light::ValidatorSet) -> Result<(), String> {
@@ -3847,6 +4305,105 @@ fn print_blocks(v: &Value) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn registration_never_selects_public_dev_trust_implicitly_or_sends_a_real_token_in_dev_mode() {
+        let missing = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp").join(format!("missing-registration-pin-{}", std::process::id()));
+        let err = super::registration_registrar("http://127.0.0.1:9", &missing, None, false).unwrap_err();
+        assert!(err.contains("requires pinned network"), "pin refusal precedes any RPC: {err}");
+        assert!(super::validate_registration_mode(true, "REAL_DEVICECHECK_TOKEN").is_err());
+        assert!(super::validate_registration_mode(true, "dev").is_ok());
+        assert!(super::registration_config_pin(None, false).is_err());
+        assert!(super::registration_config_pin(Some(&"00".repeat(64)), false).is_err());
+        let pin = super::registration_config_pin(None, true).unwrap();
+        let other = super::P256Signer::from_seed(&[6; 32]).unwrap();
+        assert!(super::registration_match_pin(&super::Signer::public_key(&other), &pin).is_err(), "empty certificates cannot choose another registrar");
+        assert!(super::registration_match_pin(&pin, &pin).is_ok());
+    }
+
+    #[test]
+    fn registration_rejects_other_chain_certified_blocks_and_links_before_token_encryption() {
+        use commonware_codec::Encode as _;
+        use aether_light::block::{Block, Payload};
+        let block = |chain_id| {
+            let signer = super::P256Signer::from_seed(&[7; 32]).unwrap();
+            let tx = aether_execution::sign_call_with(&signer, chain_id, 0, Default::default(), 0, &super::EvmCall {
+                to: Some(super::Address::repeat_byte(1)), value: super::U256::ZERO,
+                input: Default::default(), gas_limit: 21_000, delegate: None,
+            }).unwrap();
+            let genesis = Block::genesis(7781, Default::default());
+            let payload = Payload { txs: vec![tx], ..Default::default() };
+            Block::new(genesis.context, genesis.parent, commonware_consensus::types::Height::new(1), 1000, payload.to_bytes()).encode().to_vec()
+        };
+        let correct = block(7781);
+        let other = block(7782);
+        assert!(super::check_registration_anchor_chain(&correct, &[], 7781).is_ok());
+        assert!(super::check_registration_anchor_chain(&other, &[], 7781).is_err());
+        assert!(super::check_registration_anchor_chain(&correct, &[other], 7781).is_err());
+    }
+
+    std::thread_local! {
+        pub(super) static RESTORE_DISK_TEST_STORE: std::cell::RefCell<Option<aether_node::store::Store>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[test]
+    fn restore_disk_failure_exits_with_storage_code() {
+        const CHILD: &str = "AETHER_TEST_RESTORE_DISK_CHILD";
+        if let Some(data) = std::env::var_os(CHILD) {
+            use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+            let data = std::path::PathBuf::from(data);
+            let full = Arc::new(AtomicBool::new(false));
+            let fault = full.clone();
+            let store = aether_node::store::Store::open_with(&data.join("state.redb"), Arc::new(move |path| {
+                let fault = fault.clone();
+                aether_node::store::open_on_a_full_disk(path, Arc::new(move || fault.load(Ordering::Acquire)))
+            })).expect("open the store before filling the disk");
+            full.store(true, Ordering::Release);
+            RESTORE_DISK_TEST_STORE.with(|slot| *slot.borrow_mut() = Some(store));
+            let result = super::run_follow(
+                None, vec!["http://127.0.0.1:1".into()], data.to_str().unwrap().into(), 0, 4,
+                None, None, false, None, true,
+                super::HistoryArgs {
+                    history: Some("archive".into()), retain_days: aether_node::prune::DEFAULT_RETAIN_DAYS,
+                    drop_era_files: false, max_shards: aether_node::shards::DEFAULT_MAX_SHARDS,
+                },
+                super::ResourceArgs { min_free_disk: Some("0".into()), ..Default::default() },
+                None, None, data.join("wallet-node-key"), super::PresenceArgs::default(),
+            );
+            // The same fallback main uses when follower startup returns an error.
+            if let Err(error) = result {
+                eprintln!("error: {error}");
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let data = workspace.join("tmp").join(format!("restore-disk-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&data).unwrap();
+        let log = std::fs::File::create(data.join("node.log")).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::restore_disk_failure_exits_with_storage_code", "--nocapture"])
+            .env(CHILD, &data)
+            .stdout(log.try_clone().unwrap()).stderr(log).spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() { break status; }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("restore fixture never exited: {}", std::fs::read_to_string(data.join("node.log")).unwrap_or_default());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let log = std::fs::read_to_string(data.join("node.log")).unwrap();
+        assert!(data.join("state.redb").is_file(), "a disk failure preserves the database");
+        assert!(!std::fs::read_dir(&data).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with("corrupt-")),
+            "a disk failure must not quarantine the database");
+        assert_eq!(status.code(), Some(aether_node::store::EXIT_STORAGE), "restore disk failure must exit with the storage code: {log}");
+        assert!(log.contains("No space left on device"), "the fixture must exercise restore ENOSPC: {log}");
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
     #[cfg(all(feature = "test-seam", debug_assertions))]
     #[test]
     fn fixture_key_volume_allowance_is_exact_and_confined_to_workspace_tmp() {
@@ -4022,6 +4579,7 @@ mod tests {
             max_committee: None,
             genesis_validators: Some(vec![Member { key: "01".into(), node: "node".into() }]),
             release: None,
+            search: None,
         };
         let dir = std::env::temp_dir().join(format!("aether-runbind-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4188,6 +4746,7 @@ mod tests {
             max_committee: None,
             genesis_validators: genesis.then_some(vec![Member { key: "11".repeat(32), node: aether_net::devnet_node_id(1).to_string() }]),
             release: None,
+            search: None,
         };
         let dir = std::env::temp_dir().join(format!("aether-gate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4218,6 +4777,20 @@ mod tests {
         assert_eq!(rules[21].name, "release pin");
         assert!(!rules[21].ok, "a new genesis without a release pin fails the launch check");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn node_and_supervisor_parse_the_same_reshare_listener() {
+        let node = Cli::try_parse_from([
+            "aether", "node", "--port", "60000", "--rpc-port", "8545", "--data", "d", "--reshare-port", "19000",
+        ]).expect("node reshare target parses");
+        let Cmd::Node { reshare_port, .. } = node.cmd else { panic!("node") };
+        assert_eq!(reshare_port, Some(19000));
+        let run = Cli::try_parse_from([
+            "aether", "run", "--port", "60000", "--data", "d", "--reshare-port", "19000",
+        ]).expect("supervisor reshare target parses");
+        let Cmd::Run { reshare_port, .. } = run.cmd else { panic!("run") };
+        assert_eq!(reshare_port, Some(19000));
     }
 
     #[test]

@@ -13,6 +13,7 @@ file: InstallLocation.swift     # ko/en pair (Tests/install-location)
 file: DiagnosticReport.swift    # a support report: key: value lines, title as a ko/en pair
 file: TxStatusText.swift        # ko/en pairs (Tests/tx-status-text)
 file: UnattendedDecision.swift  # ko/en pairs (Tests/unattended)
+file: AccountIconSpec.swift     # machine identifiers only (silhouette/palette names in the cross-language golden vectors), never shown in the UI
 file: DataMigration.swift       # sentences as ko/en pairs; the rest is the English technical log (Tests/rename-migration)
 file: EarningsExport.swift      # CSV file content: column names and comment lines stay English
 file: ResizeBenchmark.swift     # debug-only benchmark log
@@ -42,6 +43,13 @@ text: a new contract
 text: local devnet keys
 text: missing identity
 text: chain id
+# Schema-2 presence scope discriminator checked against RPC JSON, never UI copy.
+text: unverified cohort observation
+text: what this node can see     # Exact presence schema-1 wire scope, never user-facing copy
+# JavaScript bridge lookup expressions replaced when building the isolated
+# app-provider facade; these are source code, never rendered UI text.
+text: window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.aether
+text: window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.eastsea
 text: Sent \(Wei.format(wei)) \(Brand.networkCoinTicker) (nonce \(prepared.nonce))
 text: Paid \(recipients.count) recipients \(Wei.format(wei)) \(Brand.networkCoinTicker) each with one signature (nonce \(prepared.nonce))
 #
@@ -63,3 +71,4 @@ text: the node refused: node keys found in the block-data folder \(chainDataPath
 text:  (died of the app's SIGUSR1 wake-up: an older node without the handler)
 text: moving block data from \(source.path) to \(target.path)
 text: Test Doubloon     # Brand.coinName on 7780 (English); Korean screens use networkCoinName (테스트 더블룬)
+text: 404 Not Found     # HTTP status reason sent to Sparkle, never user-facing copy

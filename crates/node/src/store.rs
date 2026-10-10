@@ -58,6 +58,11 @@ const ACCOUNT_HISTORY: TableDefinition<&[u8], &[u8]> = TableDefinition::new("acc
 /// the removed blocks rather than every account's lifetime activity.
 const ACCOUNT_BLOCK_KEYS: TableDefinition<u64, &[u8]> = TableDefinition::new("account_block_keys");
 const ACCOUNT_HISTORY_SINCE: &str = "account_history_since";
+/// Bounded discovery facts, not consensus state; rows survive history pruning.
+const SEARCH_RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("search_records_v1");
+const SEARCH_PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("search_pending_v1");
+const SEARCH_USAGE: TableDefinition<&[u8], u64> = TableDefinition::new("search_usage_v1");
+const SEARCH_HEADER: &str = "search_header_v1";
 
 /// The schema version of the tables above, as this binary writes them
 /// (docs/design/24-self-healing.md, red team #15). Version 1 is the layout as
@@ -473,17 +478,22 @@ fn encode_summary(s: &BlockSummary, previous: Option<&(String, B256)>) -> Result
 
 /// Decode a summary row (packed or JSON); `previous` is the row one height below.
 fn decode_summary(v: &[u8], height: u64, previous: Option<&BlockSummary>) -> Option<BlockSummary> {
+    let links = previous.map(|p| (p.hash.clone(), p.state_root));
+    decode_summary_links(v, height, links.as_ref())
+}
+
+fn decode_summary_links(v: &[u8], height: u64, previous: Option<&(String, B256)>) -> Option<BlockSummary> {
     if !matches!(v.first(), Some(&PACKED) | Some(&PACKED_ARCHIVE)) {
         return json_summary(v);
     }
     let (p, archive_excess) = packed_summary(v)?;
     let parent = match p.parent {
         Some(d) => hex::encode(d),
-        None => previous?.hash.clone(),
+        None => previous?.0.clone(),
     };
     let parent_state_root = match p.parent_state_root {
         Some(r) => B256::from(r),
-        None => previous?.state_root,
+        None => previous?.1,
     };
     Some(BlockSummary {
         height,
@@ -551,6 +561,17 @@ pub struct StoreStats {
     pub stored: u64,
     pub metadata: u64,
     pub fragmented: u64,
+    /// Logical file length, including free pages and preallocation.
+    pub file_bytes: u64,
+    /// Blocks allocated by the filesystem (Unix st_blocks * 512).
+    /// Filesystem compression and sparse files can differ from logical length.
+    pub filesystem_allocated_bytes: Option<u64>,
+    /// redb allocated pages times their size; not filesystem allocation.
+    pub allocated_bytes: u64,
+    /// Upper estimate of free/preallocated space: file length minus redb's
+    /// allocated pages. Headers and allocator overhead mean compaction may
+    /// return fewer bytes; only before/after filesystem measurements prove it.
+    pub reclaimable_estimate_bytes: u64,
 }
 
 pub struct Store {
@@ -572,6 +593,37 @@ pub struct Store {
 impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         Self::open_migrating(path, Arc::new(|p| Database::create(p).map_err(dberr)), migrations())
+    }
+
+    /// Open an existing, offline database for measurement or compaction.
+    /// Takes redb's exclusive file lock, skips startup compaction and schema
+    /// adoption/migration writes, and never creates a missing database.
+    /// Callers should work on a copy of a cleanly stopped node's database.
+    pub fn open_for_maintenance(path: &Path) -> Result<Self, StoreError> {
+        let metadata = std::fs::symlink_metadata(path).map_err(dberr)?;
+        if !metadata.file_type().is_file() {
+            return Err(StoreError::Db("maintenance requires an existing regular database file".into()));
+        }
+        let db = Database::open(path).map_err(dberr)?;
+        match Self::read_schema(&db)? {
+            Schema::Undecodable => return Err(StoreError::TooNew { found: None, min_read: None, ours: CURRENT_SCHEMA }),
+            Schema::Recorded { version, min_read } if min_read.unwrap_or(version) > CURRENT_SCHEMA => {
+                return Err(StoreError::TooNew { found: Some(version), min_read, ours: CURRENT_SCHEMA });
+            }
+            Schema::Recorded { version, .. } if version < CURRENT_SCHEMA => {
+                return Err(StoreError::Db("database needs a schema migration before maintenance".into()));
+            }
+            _ => {}
+        }
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let store = Store {
+            db: Mutex::new(Some(db)),
+            open: Arc::new(|p| Database::open(p).map_err(dberr)),
+            path: path.to_path_buf(),
+            dir,
+        };
+        store.verify_head()?;
+        Ok(store)
     }
 
     /// `open` with a custom way to open the database file.
@@ -612,6 +664,9 @@ impl Store {
         tx.open_table(REWARDS).map_err(dberr)?;
         tx.open_table(ACCOUNT_HISTORY).map_err(dberr)?;
         tx.open_table(ACCOUNT_BLOCK_KEYS).map_err(dberr)?;
+        tx.open_table(SEARCH_RECORDS).map_err(dberr)?;
+        tx.open_table(SEARCH_PENDING).map_err(dberr)?;
+        tx.open_table(SEARCH_USAGE).map_err(dberr)?;
         Ok(())
     }
 
@@ -768,9 +823,9 @@ impl Store {
         }
     }
 
-    /// redb never shrinks its file: pages freed by copy-on-write stay in it
-    /// (on the 7780 testnet ~40% of the file). Compact at start-up, when nothing
-    /// else holds the store, once a large share of the file is free.
+    /// Copy-on-write can leave free pages inside the file even when redb
+    /// shrinks its free tail. Compact at start-up, when nothing else holds
+    /// the store, once a large share of the file is free.
     fn compact_if_sparse(&mut self, path: &Path) -> Result<(), StoreError> {
         let file = std::fs::metadata(path).map_err(dberr)?.len();
         if file < COMPACT_MIN_FILE {
@@ -839,6 +894,56 @@ impl Store {
         receipts.get(hash.as_slice()).map_err(dberr)?
             .map(|value| serde_json::from_slice(value.value()).map_err(|_| StoreError::Corrupt("receipt")))
             .transpose()
+    }
+
+    /// A finalized summary after its memory copy was evicted. Packed rows
+    /// need only the previous row's own hash/root, never its full ancestry.
+    pub fn block_summary(&self, height: u64) -> Result<Option<BlockSummary>, StoreError> {
+        Ok(self.block_summaries(height..=height)?.pop())
+    }
+
+    /// Finalized summaries in an inclusive range, in height order. The caller
+    /// bounds the range for its RPC; this method does not populate a cache.
+    pub fn block_summaries(&self, range: std::ops::RangeInclusive<u64>) -> Result<Vec<BlockSummary>, StoreError> {
+        let tx = self.read_tx()?;
+        let blocks = tx.open_table(BLOCKS).map_err(dberr)?;
+        let mut out = Vec::new();
+        for row in blocks.range(range).map_err(dberr)? {
+            let (height, value) = row.map_err(dberr)?;
+            let previous = height.value().checked_sub(1)
+                .map(|h| blocks.get(h).map_err(dberr))
+                .transpose()?
+                .flatten()
+                .and_then(|row| summary_links(row.value()));
+            let summary = decode_summary_links(value.value(), height.value(), previous.as_ref())
+                .ok_or(StoreError::Corrupt("block summary"))?;
+            out.push(summary);
+        }
+        Ok(out)
+    }
+
+    /// A contiguous, bounded range of archival hashes for history proofs.
+    /// Missing rows fail rather than producing a shorter, misleading proof.
+    pub fn block_hashes(&self, range: std::ops::Range<u64>) -> Result<Vec<[u8; 32]>, StoreError> {
+        let tx = self.read_tx()?;
+        let blocks = tx.open_table(BLOCKS).map_err(dberr)?;
+        let mut next = range.start;
+        let end = range.end;
+        let mut out = Vec::new();
+        for row in blocks.range(range).map_err(dberr)? {
+            let (height, value) = row.map_err(dberr)?;
+            if height.value() != next {
+                return Err(StoreError::Corrupt("missing history summary"));
+            }
+            let hash = summary_links(value.value()).and_then(|(hash, _)| hex32(&hash))
+                .ok_or(StoreError::Corrupt("block summary"))?;
+            out.push(hash);
+            next += 1;
+        }
+        if next != end {
+            return Err(StoreError::Corrupt("missing history summary"));
+        }
+        Ok(out)
     }
 
     /// Record a reward paid to `prover` in block `height` (one per proven block: `proven`).
@@ -1134,11 +1239,17 @@ impl Store {
     /// Storage use per table and for the whole file.
     pub fn stats(&self) -> Result<StoreStats, StoreError> {
         fn one<K: redb::Key + 'static, V: redb::Value + 'static>(
-            tx: &redb::WriteTransaction,
+            tx: &redb::ReadTransaction,
             def: TableDefinition<K, V>,
             name: &'static str,
         ) -> Result<TableUse, StoreError> {
-            let t = tx.open_table(def).map_err(dberr)?;
+            let t = match tx.open_table(def) {
+                Ok(table) => table,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(TableUse {
+                    name, entries: 0, stored: 0, metadata: 0, fragmented: 0, pages: 0,
+                }),
+                Err(error) => return Err(dberr(error)),
+            };
             let st = t.stats().map_err(dberr)?;
             Ok(TableUse {
                 name,
@@ -1149,7 +1260,10 @@ impl Store {
                 pages: st.leaf_pages() + st.branch_pages(),
             })
         }
-        let tx = self.write_tx()?;
+        // The write transaction holds a stable generation for both database
+        // and read-only table stats. Missing optional tables stay missing.
+        let write = self.write_tx()?;
+        let tx = self.read_tx()?;
         let tables = vec![
             one(&tx, STATE, "state")?,
             one(&tx, CODE, "code")?,
@@ -1160,10 +1274,22 @@ impl Store {
             one(&tx, REWARDS, "rewards")?,
             one(&tx, ACCOUNT_HISTORY, "account_history")?,
             one(&tx, ACCOUNT_BLOCK_KEYS, "account_block_keys")?,
+            one(&tx, SEARCH_RECORDS, "search_records_v1")?,
+            one(&tx, SEARCH_PENDING, "search_pending_v1")?,
+            one(&tx, SEARCH_USAGE, "search_usage_v1")?,
             one(&tx, ERA_BLOCKS, "era_blocks")?,
             one(&tx, ERA_ROOTS, "era_roots")?,
         ];
-        let db = tx.stats().map_err(dberr)?;
+        let db = write.stats().map_err(dberr)?;
+        let file = std::fs::metadata(&self.path).map_err(dberr)?;
+        #[cfg(unix)]
+        let filesystem_allocated_bytes = {
+            use std::os::unix::fs::MetadataExt;
+            Some(file.blocks().saturating_mul(512))
+        };
+        #[cfg(not(unix))]
+        let filesystem_allocated_bytes = None;
+        let allocated_bytes = db.allocated_pages().saturating_mul(db.page_size() as u64);
         let out = StoreStats {
             tables,
             allocated_pages: db.allocated_pages(),
@@ -1171,8 +1297,13 @@ impl Store {
             stored: db.stored_bytes(),
             metadata: db.metadata_bytes(),
             fragmented: db.fragmented_bytes(),
+            file_bytes: file.len(),
+            filesystem_allocated_bytes,
+            allocated_bytes,
+            reclaimable_estimate_bytes: file.len().saturating_sub(allocated_bytes),
         };
-        tx.abort().map_err(dberr)?;
+        drop(tx);
+        write.abort().map_err(dberr)?;
         Ok(out)
     }
 
@@ -1186,17 +1317,21 @@ impl Store {
 
     /// Persist one finalized block atomically (durable: the commit fsyncs).
     pub fn commit(&self, c: Commit<'_>) -> Result<(), StoreError> {
-        self.write(c, &[], redb::Durability::Immediate, false, None)
+        self.write(c, &[], redb::Durability::Immediate, false, None, None)
     }
 
     /// Install a checked snapshot and its recovery plan in the same durable
     /// transaction, so no restart can see the new head without its gap.
     pub(crate) fn commit_with_meta(&self, c: Commit<'_>, key: &str, value: &[u8]) -> Result<(), StoreError> {
-        self.write(c, &[], redb::Durability::Immediate, false, Some((key, value)))
+        self.write(c, &[], redb::Durability::Immediate, false, Some((key, value)), None)
     }
 
     pub fn commit_with_history(&self, c: Commit<'_>, history: &[crate::account_history::Entry], relaxed: bool) -> Result<(), StoreError> {
-        self.write(c, history, if relaxed { redb::Durability::None } else { redb::Durability::Immediate }, true, None)
+        self.write(c, history, if relaxed { redb::Durability::None } else { redb::Durability::Immediate }, true, None, None)
+    }
+
+    pub fn commit_with_search(&self, c: Commit<'_>, history: &[crate::account_history::Entry], search: &crate::search::SearchDelta, index: &crate::search::SearchIndex, sources: B256, relaxed: bool) -> Result<(), StoreError> {
+        self.write(c, history, if relaxed { redb::Durability::None } else { redb::Durability::Immediate }, true, None, Some((search, index, sources)))
     }
 
     /// The same write without the fsync, while a certified backlog is being
@@ -1204,12 +1339,15 @@ impl Store {
     /// commit, so a crash loses only the blocks after the last one — every
     /// block is re-fetchable, so they simply replay.
     pub fn commit_relaxed(&self, c: Commit<'_>) -> Result<(), StoreError> {
-        self.write(c, &[], redb::Durability::None, false, None)
+        self.write(c, &[], redb::Durability::None, false, None, None)
     }
 
-    fn write(&self, c: Commit<'_>, history: &[crate::account_history::Entry], durability: redb::Durability, indexing: bool, metadata: Option<(&str, &[u8])>) -> Result<(), StoreError> {
+    fn write(&self, c: Commit<'_>, history: &[crate::account_history::Entry], durability: redb::Durability, indexing: bool, metadata: Option<(&str, &[u8])>, search: Option<(&crate::search::SearchDelta, &crate::search::SearchIndex, B256)>) -> Result<(), StoreError> {
         let mut tx = self.write_tx()?;
         tx.set_durability(durability).map_err(dberr)?;
+        if let Some((search, index, sources)) = search {
+            self.write_search(&tx, c.height, c.digest, &c.summary.parent, search, index, sources)?;
+        }
         {
             let mut state = tx.open_table(STATE).map_err(dberr)?;
             for (k, v) in &c.diff.writes {
@@ -1276,6 +1414,126 @@ impl Store {
         tx.commit().map_err(dberr)
     }
 
+    fn write_search(&self, tx: &redb::WriteTransaction, height: u64, digest: [u8; 32], parent: &str, delta: &crate::search::SearchDelta, index: &crate::search::SearchIndex, sources: B256) -> Result<(), StoreError> {
+        let incremental = {
+            let meta = tx.open_table(META).map_err(dberr)?;
+            let matches = meta.get(SEARCH_HEADER).map_err(dberr)?.and_then(|header| {
+                postcard::from_bytes::<(u32, u64, [u8; 32], B256, crate::search::SearchCheckpoint)>(header.value()).ok()
+            }).is_some_and(|(version, previous_height, previous_digest, previous_sources, checkpoint)| {
+                let parent_matches = hex::decode(parent.trim_start_matches("0x")).ok().is_some_and(|bytes| bytes.as_slice() == previous_digest);
+                version == 1 && previous_sources == sources && checkpoint == delta.before
+                    && ((previous_height.checked_add(1) == Some(height) && parent_matches)
+                        || (height == 0 && previous_height == 0 && previous_digest == digest))
+            });
+            matches
+        };
+        if !incremental {
+            // Snapshot jumps and cache corruption cannot leave pre-gap rows
+            // under a fresh header. Replace them with the actual live index.
+            Self::write_full_search(tx, index)?;
+            let header = postcard::to_allocvec(&(1u32, height, digest, sources, &delta.after)).map_err(|e| StoreError::Db(e.to_string()))?;
+            tx.open_table(META).map_err(dberr)?.insert(SEARCH_HEADER, header.as_slice()).map_err(dberr)?;
+            return Ok(());
+        }
+        let mut records = tx.open_table(SEARCH_RECORDS).map_err(dberr)?;
+        for change in &delta.records {
+            if let Some(record) = &change.after {
+                let bytes = postcard::to_allocvec(record).map_err(|e| StoreError::Db(e.to_string()))?;
+                records.insert(change.id.as_str(), bytes.as_slice()).map_err(dberr)?;
+            } else { records.remove(change.id.as_str()).map_err(dberr)?; }
+        }
+        let mut pending = tx.open_table(SEARCH_PENDING).map_err(dberr)?;
+        for change in &delta.pending {
+            if let Some(value) = &change.after {
+                let bytes = postcard::to_allocvec(value).map_err(|e| StoreError::Db(e.to_string()))?;
+                pending.insert(change.id.as_str(), bytes.as_slice()).map_err(dberr)?;
+            } else { pending.remove(change.id.as_str()).map_err(dberr)?; }
+        }
+        let mut usage = tx.open_table(SEARCH_USAGE).map_err(dberr)?;
+        for change in &delta.usage {
+            let mut key = [0u8; 40];
+            key[..20].copy_from_slice(change.contract.as_slice());
+            key[20..].copy_from_slice(change.caller.as_slice());
+            if let Some(at) = change.after { usage.insert(key.as_slice(), at).map_err(dberr)?; }
+            else { usage.remove(key.as_slice()).map_err(dberr)?; }
+        }
+        let header = postcard::to_allocvec(&(1u32, height, digest, sources, &delta.after)).map_err(|e| StoreError::Db(e.to_string()))?;
+        tx.open_table(META).map_err(dberr)?.insert(SEARCH_HEADER, header.as_slice()).map_err(dberr)?;
+        Ok(())
+    }
+
+    /// A compact derived checkpoint tied to the durable head. An absent,
+    /// outdated or undecodable cache is rebuilt from retained chain facts.
+    pub fn search_index(&self, height: u64, digest: [u8; 32], sources: B256) -> Result<Option<crate::search::SearchIndex>, StoreError> {
+        let tx = self.read_tx()?;
+        let meta = tx.open_table(META).map_err(dberr)?;
+        let Some(header) = meta.get(SEARCH_HEADER).map_err(dberr)? else { return Ok(None) };
+        let Ok((version, indexed_height, indexed_digest, indexed_sources, checkpoint)) = postcard::from_bytes::<(u32, u64, [u8; 32], B256, crate::search::SearchCheckpoint)>(header.value()) else { return Ok(None) };
+        if version != 1 || indexed_height != height || indexed_digest != digest || indexed_sources != sources { return Ok(None); }
+        let records = tx.open_table(SEARCH_RECORDS).map_err(dberr)?;
+        let usage = tx.open_table(SEARCH_USAGE).map_err(dberr)?;
+        let pending = tx.open_table(SEARCH_PENDING).map_err(dberr)?;
+        if records.len().map_err(dberr)? > 100_000 || pending.len().map_err(dberr)? > 100_000 || usage.len().map_err(dberr)? > 1_000_000 { return Ok(None); }
+        let mut record_rows = Vec::with_capacity(records.len().map_err(dberr)? as usize);
+        for row in records.iter().map_err(dberr)? {
+            let (key, value) = row.map_err(dberr)?;
+            if value.value().len() > 16_384 { return Ok(None); }
+            let Ok(record) = postcard::from_bytes::<crate::search::SearchRecord>(value.value()) else { return Ok(None) };
+            if record.id != key.value() { return Ok(None); }
+            record_rows.push(record);
+        }
+        let mut pending_rows = Vec::with_capacity(pending.len().map_err(dberr)? as usize);
+        for row in pending.iter().map_err(dberr)? {
+            let (key, value) = row.map_err(dberr)?;
+            if value.value().len() > 16_384 { return Ok(None); }
+            let Ok(value) = postcard::from_bytes::<crate::search::SearchPending>(value.value()) else { return Ok(None) };
+            pending_rows.push((key.value().to_owned(), value));
+        }
+        let mut usage_rows = Vec::with_capacity(usage.len().map_err(dberr)? as usize);
+        for row in usage.iter().map_err(dberr)? {
+            let (key, value) = row.map_err(dberr)?;
+            let key = key.value();
+            if key.len() != 40 { return Ok(None); }
+            usage_rows.push((aether_types::Address::from_slice(&key[..20]), aether_types::Address::from_slice(&key[20..]), value.value()));
+        }
+        Ok(Some(crate::search::SearchIndex::from_rows(record_rows, usage_rows, pending_rows, checkpoint)))
+    }
+
+    fn write_full_search(tx: &redb::WriteTransaction, index: &crate::search::SearchIndex) -> Result<(), StoreError> {
+        tx.delete_table(SEARCH_RECORDS).map_err(dberr)?;
+        tx.delete_table(SEARCH_PENDING).map_err(dberr)?;
+        tx.delete_table(SEARCH_USAGE).map_err(dberr)?;
+        {
+            let mut records = tx.open_table(SEARCH_RECORDS).map_err(dberr)?;
+            for record in index.records() {
+                let value = postcard::to_allocvec(record).map_err(|e| StoreError::Db(e.to_string()))?;
+                records.insert(record.id.as_str(), value.as_slice()).map_err(dberr)?;
+            }
+            let mut pending = tx.open_table(SEARCH_PENDING).map_err(dberr)?;
+            for (id, value) in index.pending_rows() {
+                let value = postcard::to_allocvec(value).map_err(|e| StoreError::Db(e.to_string()))?;
+                pending.insert(id.as_str(), value.as_slice()).map_err(dberr)?;
+            }
+            let mut usage = tx.open_table(SEARCH_USAGE).map_err(dberr)?;
+            for (contract, caller, at) in index.usage_rows() {
+                let mut key = [0; 40];
+                key[..20].copy_from_slice(contract.as_slice());
+                key[20..].copy_from_slice(caller.as_slice());
+                usage.insert(key.as_slice(), at).map_err(dberr)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// One-time backfill, after reading retained finalized events in order.
+    pub fn put_search_index(&self, height: u64, digest: [u8; 32], index: &crate::search::SearchIndex, sources: B256) -> Result<(), StoreError> {
+        let tx = self.write_tx()?;
+        Self::write_full_search(&tx, index)?;
+        let header = postcard::to_allocvec(&(1u32, height, digest, sources, index.checkpoint())).map_err(|e| StoreError::Db(e.to_string()))?;
+        tx.open_table(META).map_err(dberr)?.insert(SEARCH_HEADER, header.as_slice()).map_err(dberr)?;
+        tx.commit().map_err(dberr)
+    }
+
     /// The head's integrity at start-up, cheaply (docs/design/24-self-healing.md
     /// layer 1): the checkpoint meta decodes and its block row parses as a
     /// summary. A file that fails this — garbled, truncated, half-written — is
@@ -1309,6 +1567,17 @@ impl Store {
 
     /// The last checkpoint, with its state rebuilt and its root checked.
     pub fn load(&self) -> Result<Option<Checkpoint>, StoreError> {
+        self.load_with_budget(None)
+    }
+
+    /// Restore state while materializing only recent history cache rows under
+    /// `budget`. Durable history stays in redb. The head summary is always
+    /// kept, even when its own size exceeds an unusually small budget.
+    pub fn load_with_cache_budget(&self, budget: u64) -> Result<Option<Checkpoint>, StoreError> {
+        self.load_with_budget(Some(budget))
+    }
+
+    fn load_with_budget(&self, budget: Option<u64>) -> Result<Option<Checkpoint>, StoreError> {
         let tx = self.read_tx()?;
         let meta = tx.open_table(META).map_err(dberr)?;
         let Some(height) = meta.get("height").map_err(dberr)? else { return Ok(None) };
@@ -1363,17 +1632,63 @@ impl Store {
         }
 
         let mut blocks = BTreeMap::new();
-        for row in tx.open_table(BLOCKS).map_err(dberr)?.iter().map_err(dberr)? {
-            let (h, v) = row.map_err(dberr)?;
-            let previous = h.value().checked_sub(1).and_then(|p| blocks.get(&p));
-            let s = decode_summary(v.value(), h.value(), previous).ok_or(StoreError::Corrupt("block summary"))?;
-            blocks.insert(h.value(), s);
+        let table = tx.open_table(BLOCKS).map_err(dberr)?;
+        let mut cache_bytes = 0u64;
+        if let Some(limit) = budget {
+            // Leave half the budget for recent receipts rather than filling
+            // it entirely with old summaries during a restart.
+            let summary_limit = limit / 2;
+            for row in table.range(..=height).map_err(dberr)?.rev() {
+                let (h, v) = row.map_err(dberr)?;
+                let previous = h.value().checked_sub(1)
+                    .map(|p| table.get(p).map_err(dberr))
+                    .transpose()?
+                    .flatten()
+                    .and_then(|row| summary_links(row.value()));
+                let s = decode_summary_links(v.value(), h.value(), previous.as_ref())
+                    .ok_or(StoreError::Corrupt("block summary"))?;
+                let bytes = crate::chain::summary_bytes(&s);
+                if !blocks.is_empty() && cache_bytes.saturating_add(bytes) > summary_limit {
+                    break;
+                }
+                cache_bytes = cache_bytes.saturating_add(bytes);
+                blocks.insert(h.value(), s);
+            }
+        } else {
+            for row in table.iter().map_err(dberr)? {
+                let (h, v) = row.map_err(dberr)?;
+                let previous = h.value().checked_sub(1).and_then(|p| blocks.get(&p));
+                let s = decode_summary(v.value(), h.value(), previous).ok_or(StoreError::Corrupt("block summary"))?;
+                blocks.insert(h.value(), s);
+            }
         }
         let mut receipts = HashMap::new();
-        for row in tx.open_table(RECEIPTS).map_err(dberr)?.iter().map_err(dberr)? {
-            let (k, v) = row.map_err(dberr)?;
-            let k: [u8; 32] = k.value().try_into().map_err(|_| StoreError::Corrupt("receipt key"))?;
-            receipts.insert(B256::from(k), serde_json::from_slice(v.value()).map_err(|_| StoreError::Corrupt("receipt"))?);
+        let table = tx.open_table(RECEIPTS).map_err(dberr)?;
+        if let Some(limit) = budget {
+            // Point reads of recent transactions avoid decoding a wallet's
+            // entire receipt archive just to construct a bounded cache.
+            'recent: for block in blocks.values().rev() {
+                for hash in &block.txs {
+                    if cache_bytes >= limit {
+                        break 'recent;
+                    }
+                    let Some(value) = table.get(hash.as_slice()).map_err(dberr)? else { continue };
+                    let receipt: (u64, Receipt) = serde_json::from_slice(value.value())
+                        .map_err(|_| StoreError::Corrupt("receipt"))?;
+                    let bytes = crate::chain::receipt_bytes(&receipt.1);
+                    if receipt.0 == block.height && cache_bytes.saturating_add(bytes) <= limit {
+                        cache_bytes = cache_bytes.saturating_add(bytes);
+                        receipts.insert(*hash, receipt);
+                    }
+                }
+            }
+        } else {
+            for row in table.iter().map_err(dberr)? {
+                let (k, v) = row.map_err(dberr)?;
+                let k: [u8; 32] = k.value().try_into().map_err(|_| StoreError::Corrupt("receipt key"))?;
+                receipts.insert(B256::from(k), serde_json::from_slice(v.value())
+                    .map_err(|_| StoreError::Corrupt("receipt"))?);
+            }
         }
         drop(tx);
         let pruned_below = self.pruned_below()?;

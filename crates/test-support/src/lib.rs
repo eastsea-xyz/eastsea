@@ -31,7 +31,8 @@ pub struct Port {
 }
 
 impl Port {
-    fn reserve_at(port: u16) -> io::Result<Self> {
+    /// Lease a specific port, including a listener derived from another port.
+    pub fn reserve_at(port: u16) -> io::Result<Self> {
         let reservation = UdpSocket::bind(("127.0.0.1", port))?;
         // Keep the UDP reservation while probing TCP. A cooperating test
         // cannot take this number in the gap before its node binds.

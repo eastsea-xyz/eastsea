@@ -23,9 +23,10 @@ use crate::block::Block;
 use crate::chain::Chain;
 use aether_light::{from_hex, verify_finalized_chain, ValidatorSet, MAX_BLOCK_BYTES};
 use commonware_codec::Decode as _;
+use commonware_cryptography::Digestible as _;
 use futures::{StreamExt as _, TryStreamExt as _};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -304,9 +305,201 @@ pub enum Upstream {
     Http(Vec<String>),
     /// The client, and how many answers in a row gave nothing new.
     Iroh(aether_net::RpcClient, std::sync::atomic::AtomicU32),
+    /// Normal followers cross-check the newest certified head independently
+    /// of the source used for historical replay or transaction forwarding.
+    Guarded(Box<Upstream>, Mutex<NetworkHealth>),
+}
+
+pub const DEFAULT_MIN_PEERS: usize = 3;
+const HEAD_RESPONSE: Duration = Duration::from_secs(1);
+const HEAD_MAX_AGE: Duration = Duration::from_secs(120);
+
+#[derive(Default)]
+pub struct NetworkHealth {
+    min_peers: usize,
+    peers: usize,
+    paths: usize,
+    relay_operators: usize,
+    head: Option<u64>,
+    confirmed: bool,
+    stale: bool,
+    checked: Option<std::time::Instant>,
+    proof: Option<Value>,
+    http_cursor: usize,
+    rotated: Option<std::time::Instant>,
+}
+
+/// An RPC URL path is not independent evidence: normalize to the server's
+/// authority, so /rpc and / on one listener never count as two witnesses.
+fn http_source(url: &str) -> Option<String> {
+    let u = reqwest::Url::parse(url).ok()?;
+    Some(format!("{}://{}:{}", u.scheme(), u.host_str()?, u.port_or_known_default()?))
+}
+
+struct HeadReply {
+    source: String,
+    path: aether_net::RpcPath,
+    claimed: u64,
+    value: Value,
+}
+
+
+type CertifiedHead = (String, Block, Value, aether_net::RpcPath);
+
+fn retain_verified_head(set: &ValidatorSet, reply: HeadReply, heads: &mut Vec<CertifiedHead>, peers: &mut HashSet<String>) {
+    let Ok(Some((block, proof))) = check(set, reply.claimed, reply.value) else { return };
+    peers.insert(reply.source.clone());
+    let height = block.height.get();
+    let best = heads.first().map(|(_, b, _, _)| b.height.get());
+    if best.is_none_or(|h| height >= h) {
+        if best.is_some_and(|h| height > h) { heads.clear(); }
+        // Retain conflicts, but one source/path need not keep duplicate proof
+        // buffers when corroboration confirms the same canonical block.
+        if !heads.iter().any(|(source, b, _, path)| source == &reply.source && path == &reply.path && b.digest() == block.digest()) {
+            heads.push((reply.source, block, proof, reply.path));
+        }
+    }
 }
 
 impl Upstream {
+    pub fn guarded(self, min_peers: usize) -> Result<Self, String> {
+        if !(2..=8).contains(&min_peers) { return Err("follower min peers must be 2..=8".into()) }
+        if let Self::Http(urls) = &self {
+            let distinct: HashSet<_> = urls.iter().filter_map(|u| http_source(u)).collect();
+            if distinct.len() > 8 { return Err("follower HTTP inventory is limited to eight distinct authorities".into()) }
+        }
+        Ok(Self::Guarded(Box::new(self), Mutex::new(NetworkHealth {min_peers, ..Default::default()})))
+    }
+
+    fn raw(&self) -> &Self {
+        match self { Self::Guarded(inner, _) => inner.raw(), other => other }
+    }
+
+    pub fn iroh_client(&self) -> Option<&aether_net::RpcClient> {
+        match self.raw() { Self::Iroh(c, _) => Some(c), _ => None }
+    }
+
+    /// Aggregate health only. No peer ids, addresses or relay inventory are
+    /// exposed to public read gateways. Agreement expires if probes stop.
+    pub fn resilience_status(&self) -> Value {
+        let Self::Guarded(_, health) = self else { return Value::Null };
+        let g = health.lock().expect("follower network health");
+        let live = g.checked.is_some_and(|t| t.elapsed() <= Duration::from_secs(30));
+        let confirmed = g.confirmed && live;
+        json!({"min_peers":g.min_peers, "peers":if live {g.peers} else {0},
+            "paths":if live {g.paths} else {0}, "relay_operators":if live {g.relay_operators} else {0},
+            "head":g.head, "head_confirmed":confirmed, "finality_stale":g.stale || !live,
+            "alert":!confirmed || g.peers < g.min_peers || g.paths < 2 || g.stale})
+    }
+
+    /// Status heights are hints. Fetch each source's own certificate once,
+    /// then corroborate the highest verified candidate in one parallel round.
+    /// A lower quorum never hides a newer certificate from another source.
+    async fn trusted_height(&self, set: &ValidatorSet, ours: u64) -> Result<u64, String> {
+        let Self::Guarded(_, health) = self else { return self.net_height(ours).await };
+        {
+            let mut g = health.lock().expect("follower network health");
+            g.confirmed = false;
+            g.proof = None;
+            g.checked = Some(std::time::Instant::now());
+            g.peers = 0;
+            g.paths = 0;
+            g.relay_operators = 0;
+            if g.rotated.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+                g.http_cursor = g.http_cursor.wrapping_add(1);
+                g.rotated = Some(std::time::Instant::now());
+            }
+        }
+        let mut peers = HashSet::new();
+        let mut paths = HashSet::new();
+        let mut operators = HashSet::new();
+        let mut heads: Vec<CertifiedHead> = Vec::new();
+        match self.raw() {
+            Self::Http(_) => {
+                let mut seen = HashSet::new();
+                let urls: Vec<String> = self.http_urls().into_iter().filter(|u| http_source(u).is_some_and(|k| seen.insert(k))).map(str::to_owned).collect();
+                // Own probe inputs so this future stays Send when the follower
+                // runs in a spawned task, without borrowing iterator items.
+                let replies: Vec<_> = futures::stream::iter(urls.clone().into_iter().map(|url| async move {
+                    let status = tokio::time::timeout(HEAD_RESPONSE, http_call(&url, "aether_status", &json!([]))).await.ok()?.ok()?;
+                    let claimed = status["height"].as_u64()?;
+                    drop(status);
+                    let value = tokio::time::timeout(HEAD_RESPONSE, http_call(&url, "aether_getFinalized", &json!([claimed]))).await.ok()?.ok()?;
+                    Some(HeadReply {source:http_source(&url)?, path:aether_net::RpcPath::Unknown, claimed, value})
+                })).buffer_unordered(8).filter_map(|v| async move {v}).collect().await;
+                for reply in replies { retain_verified_head(set, reply, &mut heads, &mut peers); }
+                let candidate = heads.first().map(|(_, b, _, _)| b.height.get());
+                if let Some(claimed) = candidate {
+                    let replies: Vec<_> = futures::stream::iter(urls.into_iter().map(|url| async move {
+                        let value = tokio::time::timeout(HEAD_RESPONSE, http_call(&url, "aether_getFinalized", &json!([claimed]))).await.ok()?.ok()?;
+                        Some(HeadReply {source:http_source(&url)?, path:aether_net::RpcPath::Unknown, claimed, value})
+                    })).buffer_unordered(8).filter_map(|v| async move {v}).collect().await;
+                    for reply in replies { retain_verified_head(set, reply, &mut heads, &mut peers); }
+                }
+            }
+            Self::Iroh(c, _) => {
+                let mut statuses = c.observe_all("aether_status", json!([])).await;
+                for source in &mut statuses {
+                    // Discard unrelated status payload before certificate I/O.
+                    source.value = json!({"height": source.value["height"].as_u64()});
+                }
+                let replies: Vec<_> = futures::stream::iter(statuses.into_iter().map(|source| async move {
+                    let claimed = source.value["height"].as_u64()?;
+                    let o = c.observe_source(&source, "aether_getFinalized", json!([claimed])).await?;
+                    Some(HeadReply {source:o.peer.to_string(), path:o.path, claimed, value:o.value})
+                })).buffer_unordered(16).filter_map(|v| async move {v}).collect().await;
+                for reply in replies { retain_verified_head(set, reply, &mut heads, &mut peers); }
+                if let Some(claimed) = heads.first().map(|(_, b, _, _)| b.height.get()) {
+                    for o in c.observe_all("aether_getFinalized", json!([claimed])).await {
+                        retain_verified_head(set, HeadReply {source:o.peer.to_string(), path:o.path, claimed, value:o.value}, &mut heads, &mut peers);
+                    }
+                }
+            }
+            Self::Guarded(_, _) => unreachable!("raw upstream is never guarded"),
+        }
+        // Only paths carrying the candidate head count toward its diversity.
+        // A direct source's older proof cannot decorate a relay-only quorum.
+        for (_, _, _, path) in &heads {
+            if path != &aether_net::RpcPath::Unknown { paths.insert(path.clone()); }
+            if let aether_net::RpcPath::Relay(operator) = path {
+                if operator != "unknown" { operators.insert(operator.clone()); }
+            }
+        }
+        let mut g = health.lock().expect("follower network health");
+        g.peers = peers.len();
+        g.paths = paths.len();
+        g.relay_operators = operators.len();
+        g.checked = Some(std::time::Instant::now());
+        let Some((_, block, proof, _)) = heads.first() else {
+            g.stale = true;
+            return Err("no corroborated certified head: no source supplied a valid certificate".into());
+        };
+        let highest = block.height.get();
+        g.head = Some(highest);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+        g.stale = now.saturating_sub(block.timestamp as u128) > HEAD_MAX_AGE.as_millis();
+        let witnesses: HashSet<_> = heads.iter().map(|(source, _, _, _)| source).collect();
+        if highest < ours || witnesses.len() < 2 || heads.iter().any(|(_, b, _, _)| b.digest() != block.digest()) {
+            return Err(format!("no corroborated certified head: height {highest} has {} distinct sources", witnesses.len()));
+        }
+        g.confirmed = true;
+        g.proof = Some(proof.clone());
+        let degraded = g.peers < g.min_peers || g.paths < 2 || g.stale;
+        if degraded {
+            tracing::debug!(peers=g.peers, paths=g.paths, stale=g.stale,
+                "follower network diversity is degraded; see follower_network.alert");
+        }
+        crate::chain::tick();
+        Ok(highest)
+    }
+
+    fn http_urls(&self) -> Vec<&str> {
+        let Self::Http(urls) = self.raw() else { return Vec::new() };
+        if urls.is_empty() { return Vec::new() }
+        let start = match self { Self::Guarded(_, health) => health.lock().expect("follower network health").http_cursor % urls.len(), _ => 0 };
+        (0..urls.len()).map(|i| urls[(start+i)%urls.len()].as_str()).collect()
+    }
+
     /// Ask each source in turn until `accept` takes an answer. Every answer
     /// that came back — including "nothing new at the tip" — is a step of
     /// work (red team #2): a watcher comparing `activity` across polls can
@@ -320,7 +513,8 @@ impl Upstream {
     }
 
     async fn ask_upstream<T>(&self, method: &str, params: Value, accept: &(dyn Fn(Value) -> Result<Option<T>, String> + Send + Sync)) -> Result<Option<T>, String> {
-        match self {
+        match self.raw() {
+            Upstream::Guarded(_, _) => unreachable!("raw transport"),
             Upstream::Iroh(c, misses) => {
                 use std::sync::atomic::Ordering::Relaxed;
                 let answer = c.call(method, params).await.map_err(|e| e.to_string()).and_then(accept);
@@ -349,9 +543,9 @@ impl Upstream {
                 }
                 answer
             }
-            Upstream::Http(urls) => {
+            Upstream::Http(_) => {
                 let mut last = Err(String::from("no upstream"));
-                for url in urls {
+                for url in self.http_urls() {
                     match http_call(url, method, &params).await.and_then(accept) {
                         Ok(Some(v)) => return Ok(Some(v)),
                         other => last = other,
@@ -367,6 +561,7 @@ impl Upstream {
         match self {
             Upstream::Http(urls) => urls.len(),
             Upstream::Iroh(c, _) => c.len(),
+            Upstream::Guarded(inner, _) => inner.sources(),
         }
     }
 
@@ -377,6 +572,7 @@ impl Upstream {
         match self {
             Upstream::Http(_) => 64,
             Upstream::Iroh(..) => crate::spread::PER_SOURCE,
+            Upstream::Guarded(inner, _) => inner.per_source(),
         }
     }
 
@@ -385,6 +581,7 @@ impl Upstream {
         match self {
             Upstream::Http(_) => 0,
             Upstream::Iroh(c, _) => c.preferred(),
+            Upstream::Guarded(inner, _) => inner.preferred(),
         }
     }
 
@@ -393,6 +590,7 @@ impl Upstream {
         match self {
             Upstream::Http(urls) => urls.get(i).cloned().unwrap_or_default(),
             Upstream::Iroh(c, _) => c.node_key(i).unwrap_or_default(),
+            Upstream::Guarded(inner, _) => inner.source_key(i),
         }
     }
 
@@ -401,12 +599,13 @@ impl Upstream {
     /// rotates. Catch-up spreads its requests with this (`spread`), and a
     /// snapshot download pins every chunk to the source of its manifest.
     pub async fn call_at(&self, i: usize, method: &str, params: Value) -> Result<Value, String> {
-        let answer = match self {
+        let answer = match self.raw() {
             Upstream::Http(urls) => match urls.get(i) {
                 Some(url) => http_call(url, method, &params).await,
                 None => Err(format!("no source {i}")),
             },
             Upstream::Iroh(c, _) => c.call_at(i, method, params).await.map_err(|e| e.to_string()),
+            Upstream::Guarded(..) => unreachable!("raw upstream unwraps the health guard"),
         };
         if answer.is_ok() {
             crate::chain::tick();
@@ -423,33 +622,33 @@ impl Upstream {
         self.ask(method, params, |v| Ok(Some(v))).await.map(|v| v.unwrap_or(Value::Null))
     }
 
-    /// The network's finalized height, corroborated (pre-audit 7 PA7-06):
-    /// the first answer AHEAD of `ours` is evidence enough and wins outright,
-    /// but an answer claiming we are at the tip is an unsigned claim — a
-    /// source stuck at (or lying about) a low tip must not hide an honest
-    /// ahead-of-us alternative behind "first answer wins". So on a
-    /// not-ahead answer every remaining HTTP source is asked too and the
-    /// highest claim wins. The iroh client corroborates across its own peer
-    /// set the same way (PA7B-06), moving to the peer with the best claim.
+    /// Unsigned height hints are compared across every configured source.
+    /// Guarded followers return only their recently corroborated certificate
+    /// height, including for era/snapshot anchor selection.
     pub async fn net_height(&self, ours: u64) -> Result<u64, String> {
+        if let Self::Guarded(_, health) = self {
+            let g = health.lock().expect("follower network health");
+            if g.confirmed && g.checked.is_some_and(|t| t.elapsed() <= Duration::from_secs(30)) {
+                return g.head.ok_or_else(|| "missing corroborated head".into());
+            }
+            return Err("no corroborated certified head".into());
+        }
+        self.net_height_with_release(ours, None).await
+    }
+
+    async fn net_height_with_release(&self, ours: u64, chain: Option<&Chain>) -> Result<u64, String> {
         let ask_one = |v: Value| -> Result<u64, String> {
+            if let Some(chain) = chain { chain.discover_release_hint(&v["release"]); }
             v["height"].as_u64().ok_or_else(|| "no upstream height".to_string())
         };
-        match self {
+        match self.raw() {
+            Upstream::Guarded(_, _) => unreachable!("raw transport"),
             Upstream::Iroh(c, _) => {
                 let v = c.call("aether_status", json!([])).await.map_err(|e| e.to_string())?;
                 crate::chain::tick();
                 let h = ask_one(v)?;
-                if h > ours {
-                    return Ok(h);
-                }
-                // Not ahead: this peer's claim is unsigned — a peer stuck at
-                // (or lying about) a low tip must not hide an honest
-                // ahead-of-us one behind "first answer wins" (PA7-06 gave
-                // HTTP sources this; the default follower transport gets it
-                // too, PA7B-06). Ask every OTHER peer directly, keep the
-                // highest claim, and move to the peer that made it so the
-                // next reads start there.
+                // An ahead claim can still be a stale replay. Compare every
+                // other responsive peer before choosing the unsigned hint.
                 let mut best = h;
                 let mut best_at: Option<usize> = None;
                 for (i, v) in c.ask_others("aether_status", json!([])).await {
@@ -476,11 +675,6 @@ impl Upstream {
                         Ok(v) => match ask_one(v) {
                             Ok(h) => {
                                 crate::chain::tick();
-                                // Ahead of us and of every claim so far: stop
-                                // asking, this is the corroborated answer.
-                                if h > ours && best.is_none_or(|b| h > b) {
-                                    return Ok(h);
-                                }
                                 best = Some(best.map_or(h, |b| b.max(h)));
                             }
                             Err(e) => last_err = e,
@@ -504,9 +698,15 @@ fn http() -> &'static reqwest::Client {
 
 async fn http_call(url: &str, method: &str, params: &Value) -> Result<Value, String> {
     let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-    let mut r = http().post(url).json(&body).timeout(Duration::from_secs(10)).send().await.map_err(|e| e.to_string())?;
+    let mut r = http().post(url).header(reqwest::header::ACCEPT_ENCODING, "zstd, identity;q=0.5")
+        .json(&body).timeout(Duration::from_secs(10)).send().await.map_err(|e| e.to_string())?;
     if r.content_length().is_some_and(|n| n as usize > MAX_RESPONSE) {
         return Err("response too large".into());
+    }
+    let encoding = r.headers().get(reqwest::header::CONTENT_ENCODING)
+        .map(|v| v.to_str().unwrap_or("").to_owned()).unwrap_or_default();
+    if !encoding.is_empty() && encoding != "identity" && encoding != "zstd" {
+        return Err("unsupported upstream response encoding".into());
     }
     let mut buf = Vec::new();
     while let Some(chunk) = r.chunk().await.map_err(|e| e.to_string())? {
@@ -514,6 +714,21 @@ async fn http_call(url: &str, method: &str, params: &Value) -> Result<Value, Str
             return Err("response too large".into());
         }
         buf.extend_from_slice(&chunk);
+    }
+    if encoding == "zstd" {
+        static DECODES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+        let permit = DECODES.acquire().await.map_err(|e| e.to_string())?;
+        buf = tokio::task::spawn_blocking(move || {
+            // The permit outlives cancellation of the async caller.
+            let _held = permit;
+            use std::io::Read as _;
+            let mut decoder = zstd::stream::read::Decoder::new(buf.as_slice()).map_err(|e| e.to_string())?;
+            decoder.window_log_max(20).map_err(|e| e.to_string())?;
+            let mut decoded = Vec::new();
+            decoder.take(MAX_RESPONSE as u64 + 1).read_to_end(&mut decoded).map_err(|e| e.to_string())?;
+            if decoded.len() > MAX_RESPONSE { return Err("decoded response too large".to_string()) }
+            Ok(decoded)
+        }).await.map_err(|e| e.to_string())??;
     }
     let v: Value = serde_json::from_slice(&buf).map_err(|e| e.to_string())?;
     match v.get("error") {
@@ -705,6 +920,7 @@ async fn download(upstream: &Upstream, dir: &std::path::Path, above: Option<u64>
 /// after it, check both, and write the snapshot as `store`'s checkpoint.
 /// Returns the snapshot height.
 pub async fn checkpoint(upstream: &Upstream, set: &ValidatorSet, cfg: &crate::chain::ChainConfig, store: &crate::store::Store) -> Result<u64, String> {
+    upstream.trusted_height(set, 0).await?;
     let dir = store.path().parent().unwrap_or_else(|| std::path::Path::new("."));
     let snap = download(upstream, dir, None).await?;
     let h = snap.summary.height;
@@ -841,6 +1057,10 @@ pub fn reset_store(data: &std::path::Path, e: &crate::store::StoreError) -> Resu
 /// be a little behind the tip).
 async fn wait_certified(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Result<Block, String> {
     for _ in 0..60 {
+        if matches!(upstream, Upstream::Guarded(_, _)) && upstream.trusted_height(set, h.saturating_sub(1)).await.is_err() {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            continue;
+        }
         if let Some((block, _)) = fetch(upstream, set, h).await? {
             return Ok(block);
         }
@@ -1237,7 +1457,13 @@ async fn advance(
         // The height this round fetches toward is corroborated across
         // sources (PA7-06): a single false-low-tip answer used to cap the
         // fetch at our own height, so a round "succeeded" fetching nothing.
-        let hint = upstream.net_height(ours).await?;
+        let hint = upstream.trusted_height(set, ours).await?;
+        // Release bytes remain discovery; this probe cannot replace the
+        // corroborated certificate height used for fetching and backfill.
+        let watches_releases = chain.lock().release_watcher.pin.is_some();
+        if watches_releases {
+            let _ = upstream.net_height_with_release(ours, Some(chain)).await;
+        }
         // The claimed height is a fetch hint, not a fact (audit 7 A7-4):
         // what this round OBSERVES (and jumps toward) is the trusted
         // reading, while the pipeline below still fetches toward the
@@ -1422,7 +1648,8 @@ async fn recover(chain: &Chain) {
         Err(e) => tracing::error!(%e, "the store recovery task"),
     }
     chain.set_relaxed(false);
-    match store.load() {
+    let loaded = if chain.cfg().history_v2 { store.load() } else { store.load_with_cache_budget(crate::chain::legacy_cache_budget()) };
+    match loaded {
         Ok(Some(cp)) => rollback(chain, cp),
         // A store that holds nothing, or does not verify, is corruption:
         // exiting hands it to the startup integrity check, which moves the
@@ -1856,6 +2083,15 @@ pub async fn catch_up_era(chain: &Chain, upstream: &Upstream, set: &ValidatorSet
 /// Block `h` and its certificate, verified; `None` if no source has it yet.
 /// A source that answers with nothing or with a bad certificate is skipped.
 pub async fn fetch(upstream: &Upstream, set: &ValidatorSet, h: u64) -> Result<Option<(Block, Value)>, String> {
+    if let Upstream::Guarded(_, health) = upstream {
+        let g = health.lock().expect("follower network health");
+        if !g.confirmed || g.head.is_none_or(|head| h > head) {
+            return Err("no corroborated certified head for this block".into());
+        }
+        if g.head == Some(h) {
+            return check(set, h, g.proof.clone().ok_or("missing corroborated certificate")?);
+        }
+    }
     upstream.ask("aether_getFinalized", json!([h]), |v| check(set, h, v)).await
 }
 
@@ -2030,6 +2266,34 @@ mod tests {
         }).await.expect("a smaller snapshot on another peer still fits");
         assert_eq!(snap.summary.height, 10);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn guarded_head_checks_can_run_in_a_spawned_task() {
+        let upstream = Upstream::Http(Vec::new()).guarded(2).unwrap();
+        let set = ValidatorSet::devnet(4);
+        let result = tokio::spawn(async move { upstream.trusted_height(&set, 0).await }).await.unwrap();
+        assert_eq!(result, Err("no corroborated certified head: no source supplied a valid certificate".into()));
+    }
+
+    #[tokio::test]
+    async fn rel24_an_ahead_but_stale_source_cannot_hide_the_newer_head() {
+        async fn source(height: u64) -> (String, tokio::task::JoinHandle<()>) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let app = axum::Router::new().route("/", axum::routing::post(move || async move {
+                axum::Json(json!({"jsonrpc": "2.0", "id": 1, "result": {"height": height}}))
+            }));
+            let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (url, task)
+        }
+        let (stale, a) = source(100).await;
+        let (fresh, b) = source(200).await;
+        let up = Upstream::Http(vec![stale.clone(), fresh.clone()]);
+        let result = up.net_height(1).await;
+        a.abort();
+        b.abort();
+        assert_eq!(result, Ok(200), "even an ahead answer must be compared with the other sources");
     }
 
     #[test]

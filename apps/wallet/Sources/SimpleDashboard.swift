@@ -1,17 +1,17 @@
 import Charts
 import SwiftUI
 
-/// Everyday wallet, modeled on Phantom (centered balance, round actions, token
-/// list) and IPFS Desktop (sidebar, "connected" status page with stat tiles and
-/// traffic chart). macOS: sidebar; iOS: bottom tabs. Proofs, roots and raw logs
-/// live in Developer mode.
+/// Everyday wallet in the EastSea design system. macOS has a sidebar; iOS has
+/// bottom tabs. Proofs, roots and raw logs live in Developer mode.
 struct SimpleDashboard: View {
     @EnvironmentObject var model: WalletModel
     /// The Explore tab's browser, owned here so it survives page switches.
-    @StateObject private var browser = BrowserController()
+    @StateObject private var browserSession = BrowserSession()
+    private var browser: BrowserController { browserSession.controller }
     @State private var page: Page? = .home
     @State private var sheet: Sheet?
     @AppStorage("acceptedTerms") private var acceptedTerms = 0
+    @AppStorage("developerMode") private var developerMode = false
     #if os(macOS)
     @EnvironmentObject var node: NodeController
     /// Asked once whether this Mac should become a voting node.
@@ -59,9 +59,17 @@ struct SimpleDashboard: View {
     /// The window and its sheets.
     private var base: some View {
         shell
-            .tint(.aether)
+            .eastSeaPage()
             .environmentObject(browser)
-            .onAppear { browser.attach(model: model) }
+            .environmentObject(browserSession)
+            .onAppear {
+                browserSession.attach(model: model)
+                if let request = model.browserLinkRequest {
+                    page = .explore
+                    browser.open(request.raw)
+                    model.browserLinkRequest = nil
+                }
+            }
             .sheet(item: $sheet) { s in sheetContent(s) }
             #if DEBUG
             .onAppear { applyPreview() }
@@ -71,6 +79,10 @@ struct SimpleDashboard: View {
     /// Requests from links, pages and the node open the right sheet or page
     /// (split from `body` so the type checker stays fast).
     private func routing<V: View>(_ v: V) -> some View {
+        nodeRouting(browserRouting(transactionRouting(v)))
+    }
+
+    private func transactionRouting<V: View>(_ v: V) -> some View {
         v
             .onChange(of: sheet) { _, s in model.sendSheetOpen = Self.isSigningSheet(s) }
             .onChange(of: model.callRequest) { _, r in if r != nil { sheet = .call } }
@@ -80,10 +92,34 @@ struct SimpleDashboard: View {
             // "Send again at the current fee": the normal send sheet, filled in (bug #5).
             .onChange(of: model.resendRequest) { _, r in if r != nil { sheet = .send } }
             .onChange(of: model.agentTransactionHash) { _, hash in if hash != nil { page = .security } }
+    }
+
+    private func browserRouting<V: View>(_ v: V) -> some View {
+        v
+            .onChange(of: model.browserLinkRequest) { _, request in
+                if let request {
+                    page = .explore
+                    browser.open(request.raw)
+                    model.browserLinkRequest = nil
+                }
+            }
+            .onChange(of: model.nodeRpcPort) { _, _ in browserSession.environmentDidChange() }
+            .onChange(of: model.networkChainId) { _, _ in browserSession.environmentDidChange() }
+            .onChange(of: model.address) { _, _ in browserSession.environmentDidChange() }
+            .onChange(of: model.exploreLocked) { _, _ in browserSession.environmentDidChange() }
+            .onChange(of: developerMode) { _, _ in browserSession.environmentDidChange() }
+    }
+
+    private func nodeRouting<V: View>(_ v: V) -> some View {
+        v
             #if os(macOS)
+            .onAppear { openRequestedNetwork() }
+            .onChange(of: sheet) { _, s in if s == nil { inviteIfReady() } }
+            .onChange(of: model.networkRequested) { _, _ in openRequestedNetwork() }
             // Once the node has caught up and this Mac is not registered, ask once.
             .onChange(of: node.voting) { _, _ in inviteIfReady() }
             .onChange(of: node.state) { _, _ in inviteIfReady() }
+            .onChange(of: node.needsCountryNotice) { _, needed in if !needed { inviteIfReady() } }
             #endif
     }
 
@@ -96,8 +132,10 @@ struct SimpleDashboard: View {
         VStack(spacing: 0) {
             if model.developmentNetwork {
                 Text("Dev network · 127.0.0.1")
-                    .font(.caption.bold()).frame(maxWidth: .infinity)
-                    .padding(.vertical, 5).background(.orange).foregroundStyle(.black)
+                    .font(.aeCaption.bold()).frame(maxWidth: .infinity)
+                    .padding(.vertical, DesignTokens.Space.s2)
+                    .background(DesignTokens.Palette.warn.color)
+                    .foregroundStyle(DesignTokens.Palette.bg.color)
             }
             switch s {
             case .send: SendSheet()
@@ -136,8 +174,15 @@ struct SimpleDashboard: View {
     #endif
 
     #if os(macOS)
+    private func openRequestedNetwork() {
+        guard model.networkRequested else { return }
+        page = .network
+        model.networkRequested = false
+    }
+
     private func inviteIfReady() {
-        guard !inviteAnswered, acceptedTerms >= Terms.version, sheet == nil, node.state == .running,
+        guard !inviteAnswered, acceptedTerms >= Terms.version, !node.needsCountryNotice,
+              sheet == nil, node.state == .running,
               node.candidate != nil, node.voting?.registered == false, model.registration == nil else { return }
         sheet = .votingInvite
     }
@@ -145,11 +190,27 @@ struct SimpleDashboard: View {
     private var shell: some View {
         NavigationSplitView(columnVisibility: $columns) {
             List(Page.allCases, selection: $page) { p in
-                Label(p.title, systemImage: p.icon).tag(p)
+                Label(p.title, systemImage: p.icon)
+                    .font(.aeBody)
+                    .padding(.vertical, DesignTokens.Space.s1)
+                    .tag(p)
             }
-            .navigationSplitViewColumnWidth(min: 170, ideal: 190)
-            .safeAreaInset(edge: .top) { AccountSwitcherButton(store: model.accountStore, compact: true).padding(12) }
-            .safeAreaInset(edge: .bottom) { SidebarStatus().padding(12) }
+            .scrollContentBackground(.hidden)
+            .background(DesignTokens.Palette.surfaceSunken.color)
+            .navigationSplitViewColumnWidth(min: 190, ideal: 224)
+            .safeAreaInset(edge: .top) {
+                HStack(spacing: DesignTokens.Space.s2) {
+                    EastSeaDawnMark().frame(width: 28, height: 28)
+                    AccountSwitcherButton(store: model.accountStore, compact: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(DesignTokens.Space.s3)
+                .background(DesignTokens.Palette.surfaceSunken.color)
+            }
+            .safeAreaInset(edge: .bottom) {
+                SidebarStatus().padding(DesignTokens.Space.s3)
+                    .background(DesignTokens.Palette.surfaceSunken.color)
+            }
             .toolbar(removing: compact ? .sidebarToggle : nil)
         } detail: {
             Group {
@@ -162,14 +223,15 @@ struct SimpleDashboard: View {
                         // Same gutter left and right, content kept to a readable width.
                         pageView(page ?? .home)
                             .frame(maxWidth: 760)
-                            .padding(.horizontal, compact ? 16 : 24)
-                            .padding(.vertical, 24)
+                            .padding(.horizontal, compact ? DesignTokens.Space.s4 : DesignTokens.Space.s8)
+                            .padding(.vertical, DesignTokens.Space.s6)
                             .frame(maxWidth: .infinity)
                     }
                     // The scroller never sits on top of a card.
                     .scrollIndicators(.hidden)
                 }
             }
+            .background(DesignTokens.Palette.bg.color)
             .measuringNarrowLayout()
             .navigationTitle(page?.title ?? SimpleDashboard.Page.home.title)
             // The way to every page whenever the sidebar is not on screen:
@@ -211,7 +273,7 @@ struct SimpleDashboard: View {
                         if p == .explore {
                             pageView(p).frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
-                            ScrollView { pageView(p).padding(16) }
+                            ScrollView { pageView(p).padding(DesignTokens.Space.s4) }
                         }
                     }
                     .measuringNarrowLayout()
@@ -232,7 +294,7 @@ struct SimpleDashboard: View {
     @ViewBuilder private func pageView(_ p: Page) -> some View {
         switch p {
         case .home: HomePage(sheet: $sheet, showActivity: { page = .activity }, showNetwork: { page = .network })
-        case .explore: ExplorePage(goHome: { page = .home })
+        case .explore: ExplorePage()
         case .activity: ActivityPage()
         case .network: NetworkPage()
         case .security: SecurityPage()
@@ -252,11 +314,6 @@ extension FocusedValues {
     }
 }
 
-extension Color {
-    /// Aether accent: a violet in the family of Phantom's, readable in light and dark.
-    static let aether = Color(red: 0.49, green: 0.40, blue: 0.95)
-}
-
 // MARK: - Pages
 
 struct HomePage: View {
@@ -266,7 +323,14 @@ struct HomePage: View {
     let showNetwork: () -> Void
     @Environment(\.narrowLayout) private var narrow
 
-    private var balance: Double { model.account.flatMap { Double(Wei.format($0.balanceWei)) } ?? 0 }
+    private var balance: Decimal {
+        model.account.flatMap { Decimal(string: Wei.exact($0.balanceWei), locale: Locale(identifier: "en_US_POSIX")) } ?? 0
+    }
+
+    /// The spoken balance keeps every wei, independent of animated samples.
+    private var accessibleBalance: String {
+        "\(model.account.map { Wei.exact($0.balanceWei) } ?? "0") \(Brand.networkCoinTicker)"
+    }
 
     /// The balance chart earns its place only once the balance has actually changed.
     private var hasHistory: Bool { Set(model.history.map(\.aeth)).count >= 2 }
@@ -275,7 +339,7 @@ struct HomePage: View {
     /// a card, and nothing measures its own geometry (the page-wide
     /// `narrowLayout` environment switches layouts instead).
     var body: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: DesignTokens.Space.s6) {
             IncomingRecoveryAlert()
             #if os(macOS)
             // One sentence and one button when this Mac's node needs the
@@ -285,15 +349,22 @@ struct HomePage: View {
             ForEach(model.scheduledUpgrades) { upgrade in
                 UpgradeNoticeCard(upgrade: upgrade)
             }
-            VStack(spacing: 8) {
-                accountButton
-                balanceText
-                VerifiedBadge()
+            accountButton.frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+                HStack(alignment: .center, spacing: DesignTokens.Space.s3) {
+                    AccountIcon(address: model.address, size: narrow ? 32 : 64)
+                    balanceText.frame(maxWidth: .infinity, alignment: .leading)
+                    EastSeaDawnMark().frame(width: narrow ? 56 : 72, height: narrow ? 56 : 72)
+                }
+                VerifiedBadge(onPlate: true)
             }
-            .padding(.top, 8)
-            HStack(spacing: narrow ? 20 : 28) {
+            .padding(narrow ? DesignTokens.Space.s5 : DesignTokens.Space.s6)
+            .frame(maxWidth: .infinity, minHeight: narrow ? 186 : 214, alignment: .leading)
+            .foregroundStyle(DesignTokens.Palette.plateInk.color)
+            .eastSeaNavyPlate()
+            HStack(spacing: DesignTokens.Space.s3) {
                 RoundAction(title: "Receive", icon: "qrcode") { sheet = .receive }.disabled(model.address.isEmpty)
-                RoundAction(title: "Send", icon: "paperplane.fill") { model.sendToken = nil; sheet = .send }.disabled(model.busy || model.account == nil)
+                RoundAction(title: "Send", icon: "touchid", primary: true) { model.sendToken = nil; sheet = .send }.disabled(model.busy || model.account == nil)
                 RoundAction(title: "Assets", icon: "square.stack.3d.up.fill") { sheet = .assets }.disabled(model.address.isEmpty)
             }
             #if os(macOS)
@@ -315,30 +386,34 @@ struct HomePage: View {
     @ViewBuilder private var balanceText: some View {
         if model.account == nil, model.chainPausedSince != nil {
             // Paused before anything could be verified: nothing to show yet.
-            Text("– \(Brand.networkCoinTicker)").font(.display).foregroundStyle(.secondary)
+            Text("– \(Brand.networkCoinTicker)").font(.display).foregroundStyle(DesignTokens.Palette.plateSoft.color)
         } else if model.account == nil {
-            // Loading: a soft shimmer where the balance will appear.
-            ShimmerBar().frame(maxWidth: 220).frame(height: 52)
+            // An opaque resting placeholder keeps an unverified amount absent.
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
+                .fill(DesignTokens.Palette.plateSoft.color.opacity(0.18))
+                .frame(maxWidth: 220).frame(height: 52)
+                .accessibilityHidden(true)
         } else {
-            Text("\(Amount.text(balance)) \(Brand.networkCoinTicker)")
+            BalanceCountUp(amount: balance, accessibilityText: accessibleBalance) {
+                "\(Amount.text($0)) \(Brand.networkCoinTicker)"
+            }
+                .id(model.accountStore.activeAccount?.id)
                 .font(.display)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.4)
-                .contentTransition(.numericText())
         }
     }
 
-    /// Directly on the page (Phantom-style), not boxed in another card: Home
-    /// already has the balance card above it.
+    /// The section header stays on the page; rows share one quiet surface.
     private var recentActivity: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
             HStack {
                 Text("Recent activity").font(.aeHeadline)
                 Spacer()
                 if !model.activity.isEmpty { Button("See all", action: showActivity).buttonStyle(.borderless) }
             }
-            ActivityList(limit: 3)
+            Card { ActivityList(limit: 3) }
         }
     }
 }
@@ -359,15 +434,15 @@ private struct NodeRewardsLine: View {
     var body: some View {
         if let total = rewardTotal {
             Button(action: showActivity) {
-                HStack(spacing: 8) {
-                    Circle().fill(Color.aether).frame(width: 8, height: 8)
+                HStack(spacing: DesignTokens.Space.s2) {
+                    Circle().fill(DesignTokens.Palette.gold.color).frame(width: 8, height: 8)
                     Text("Node rewards · +\(Amount.text(total)) \(Brand.networkCoinTicker)")
                     Spacer(minLength: 4)
-                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                    Image(systemName: "chevron.right").foregroundStyle(DesignTokens.Palette.textSubtle.color)
                 }
-                .font(.aeBody).foregroundStyle(.secondary)
-                .padding(.horizontal, 16).padding(.vertical, 12)
-                .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                .padding(.horizontal, DesignTokens.Space.s4).padding(.vertical, DesignTokens.Space.s3)
+                .background(DesignTokens.Palette.surface.color, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -379,11 +454,11 @@ private struct NodeRewardsLine: View {
 struct ActivityPage: View {
     @EnvironmentObject var model: WalletModel
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: DesignTokens.Space.s3) {
             LinkedWalletsCard()
             BalanceBreakdownCard()
             Card {
-                VStack(spacing: 12) {
+                VStack(spacing: DesignTokens.Space.s3) {
                     if let failure = model.historyFailure {
                         Label {
                             Text(failure.notice)
@@ -391,7 +466,7 @@ struct ActivityPage: View {
                             Image(systemName: "exclamationmark.triangle.fill")
                         }
                         .font(.aeFootnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.Palette.textMuted.color)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     ActivityList(limit: Int.max)
@@ -400,7 +475,7 @@ struct ActivityPage: View {
                     }
                     if let first = model.activityHistoryStart, first > 0 {
                         Text("This node's retained history starts at block #\(String(first)).")
-                            .font(.aeFootnote).foregroundStyle(.secondary)
+                            .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     }
                 }
             }
@@ -416,10 +491,10 @@ struct LinkedWalletsCard: View {
 
     var body: some View {
         Card {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
                 Text("Linked wallets").font(.aeHeadline)
                 Text("Add another address to see one combined history. This is view only; signing keys stay in their own wallets.")
-                    .font(.aeFootnote).foregroundStyle(.secondary)
+                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 ForEach(model.linkedWallets, id: \.self) { address in
                     HStack {
                         Text(address).font(.aeFootnote.monospaced()).lineLimit(1).truncationMode(.middle)
@@ -429,14 +504,14 @@ struct LinkedWalletsCard: View {
                 }
                 HStack {
                     TextField("0x… address", text: $input)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(EastSeaTextFieldStyle())
                     Button("Add") {
                         invalid = !model.addLinkedWallet(input)
                         if !invalid { input = "" }
                     }
                 }
                 if invalid { Text("Enter a new, valid 0x address (up to 8 linked wallets).")
-                    .font(.aeFootnote).foregroundStyle(.red) }
+                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.danger.color) }
             }
         }
     }
@@ -455,7 +530,7 @@ private struct BalanceBreakdownCard: View {
             let lines = BalanceBreakdownText.lines(b)
             if !lines.isEmpty {
                 Card {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
                         HStack(alignment: .firstTextBaseline) {
                             Text("Where your balance comes from").font(.aeHeadline)
                             Spacer(minLength: 8)
@@ -471,15 +546,15 @@ private struct BalanceBreakdownCard: View {
                                 Spacer(minLength: 8)
                                 Text("\(line.negative ? "−" : "+")\(ChainActivity.units(line.wei)) \(Brand.networkCoinTicker)")
                                     .font(.aeBody.monospacedDigit())
-                                    .foregroundStyle(line.negative ? Color.secondary : Color.green)
+                                    .foregroundStyle(line.negative ? DesignTokens.Palette.textMuted.color : DesignTokens.Palette.success.color)
                             }
                         }
                         if let note = BalanceBreakdownText.notYetItemized(b) {
                             Label(note, systemImage: "exclamationmark.circle")
-                                .font(.aeFootnote).foregroundStyle(.secondary)
+                                .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                         } else {
                             Label("Adds up to your verified balance", systemImage: "checkmark.seal.fill")
-                                .font(.aeFootnote).foregroundStyle(.secondary)
+                                .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                         }
                     }
                 }
@@ -510,41 +585,41 @@ private struct RewardDaysCard: View {
         let days = RewardDays.group(model.rewardHistoryRows)
         if !days.isEmpty {
             Card {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
                     Text("Rewards by day").font(.aeHeadline)
                     Text("What the chain paid, grouped by its own block times. Expand a day for every reward in it.")
-                        .font(.aeFootnote).foregroundStyle(.secondary)
+                        .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                         .fixedSize(horizontal: false, vertical: true)
                     ForEach(days.prefix(14)) { day in
                         DisclosureGroup {
-                            VStack(spacing: 4) {
+                            VStack(spacing: DesignTokens.Space.s1) {
                                 ForEach(day.rows, id: \.txHash) { row in
                                     HStack {
                                         Text("block #\(String(row.height))").font(.aeFootnote.monospacedDigit())
                                         if let time = Timestamp.date(fromMs: row.timestampMs) {
                                             Text(time.formatted(date: .omitted, time: .shortened))
-                                                .font(.aeFootnote).foregroundStyle(.secondary)
+                                                .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                                         }
                                         Spacer(minLength: 8)
                                         Text("+\(ChainActivity.units(row.valueWei))")
-                                            .font(.aeFootnote.monospacedDigit()).foregroundStyle(.green)
+                                            .font(.aeFootnote.monospacedDigit()).foregroundStyle(DesignTokens.Palette.success.color)
                                     }
                                 }
                             }
-                            .padding(.vertical, 4)
+                            .padding(.vertical, DesignTokens.Space.s1)
                         } label: {
                             HStack {
                                 Text(day.day.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? String(localized: "Time unknown"))
                                     .font(.aeBody.weight(.medium))
                                 Spacer(minLength: 8)
                                 Text("\(day.count) rewards · +\(ChainActivity.units(day.totalWei)) \(Brand.networkCoinTicker)")
-                                    .font(.aeFootnote.monospacedDigit()).foregroundStyle(.secondary)
+                                    .font(.aeFootnote.monospacedDigit()).foregroundStyle(DesignTokens.Palette.textMuted.color)
                             }
                         }
                     }
                     if days.count > 14 {
                         Text("Showing the newest 14 days — load older activity for the rest.")
-                            .font(.aeFootnote).foregroundStyle(.secondary)
+                            .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     }
                 }
             }
@@ -586,28 +661,39 @@ struct NetworkPage: View {
     }
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: DesignTokens.Space.s4) {
+            #if os(macOS)
+            LiveGlobeView()
+            #endif
             ForEach(model.scheduledUpgrades) { upgrade in
                 UpgradeNoticeCard(upgrade: upgrade)
             }
             Card {
-                HStack(spacing: 16) {
+                HStack(spacing: DesignTokens.Space.s4) {
                     Image(systemName: model.status == nil ? "antenna.radiowaves.left.and.right.slash" : model.chainPausedSince != nil ? "pause.circle.fill" : "checkmark.circle.fill")
-                        .font(.system(size: narrow ? 30 : 40)).foregroundStyle(model.status == nil || model.chainPausedSince != nil ? Color.warn : Color.aether)
-                    VStack(alignment: .leading, spacing: 4) {
+                        .font(.system(size: narrow ? DesignTokens.Space.s6 : DesignTokens.Space.s8))
+                        .foregroundStyle(model.status == nil || model.chainPausedSince != nil ? Color.warn : DesignTokens.Palette.success.color)
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                         Text(statusTitle)
                             .font(.aeTitle)
                         Text("Found the Macs that sign blocks. Your balance is checked on this device against their signature.")
-                            .font(.aeBody).foregroundStyle(.secondary)
+                            .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     }
                 }
             }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: narrow ? 130 : 150), spacing: 12)], spacing: 12) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: narrow ? 130 : 150), spacing: DesignTokens.Space.s3)], spacing: DesignTokens.Space.s3) {
                 Tile(value: model.status.map { "#\(String($0.height))" } ?? "—", label: "Latest block", icon: "cube")
                 Tile(value: "\(model.validators)", label: "Signing keys", icon: "person.3.fill")
                 Tile(value: blockTime, label: "Block time", icon: "timer")
                 Tile(value: model.status.map { Amount.fee($0.transferFeeWei) } ?? "—", label: "Transfer fee (max)", icon: "flame")
                 Tile(value: model.status.map { "\($0.mempool)" } ?? "—", label: "Waiting transactions", icon: "tray.full")
+            }
+            if let presence = model.livePresence {
+                Label(presence.line, systemImage: "network")
+                    .font(.aeCaption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help("Unverified cohort observations, not a count of distinct Macs. Broad regions use a local country choice or relays; small groups are folded together.")
             }
             NetworkCard()
             #if os(macOS)
@@ -628,10 +714,10 @@ private struct UpgradeNoticeCard: View {
 
     var body: some View {
         Card {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
                 Image(systemName: upgrade.emergency ? "exclamationmark.triangle.fill" : "arrow.up.circle.fill")
-                    .font(.title2)
-                VStack(alignment: .leading, spacing: 6) {
+                    .font(.aeTitle)
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
                     if upgrade.emergency {
                         Text("EMERGENCY NETWORK UPGRADE").font(.aeHeadline.bold())
                     }
@@ -646,7 +732,7 @@ private struct UpgradeNoticeCard: View {
                 }
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(upgrade.emergency ? Color.red : Color.primary)
+            .foregroundStyle(upgrade.emergency ? DesignTokens.Palette.danger.color : DesignTokens.Palette.text.color)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -662,10 +748,10 @@ private struct DeveloperModeCard: View {
 
     var body: some View {
         Card {
-            Toggle(isOn: $developerMode.animation(.easeInOut(duration: 0.2))) {
+            Toggle(isOn: $developerMode) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Developer mode").font(.aeHeadline)
-                    Text("Proofs, state roots, raw logs and blocks.").font(.aeFootnote).foregroundStyle(.secondary)
+                    Text("Proofs, state roots, raw logs and blocks.").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 }
             }
             if developerMode {
@@ -677,6 +763,7 @@ private struct DeveloperModeCard: View {
                     .disabled(!useDevelopmentNetwork)
             }
         }
+        .eastSeaPresentation(.panel, value: developerMode)
         .onChange(of: useDevelopmentNetwork) { _, dev in model.selectNetwork(development: dev, port: UInt16(developmentNetworkPort)) }
         .onChange(of: developmentNetworkPort) { _, port in
             if useDevelopmentNetwork { model.selectNetwork(development: true, port: UInt16(port)) }
@@ -695,24 +782,24 @@ private struct IncomingRecoveryAlert: View {
 
     var body: some View {
         if let r = model.incomingRecovery {
-            AdaptiveStack(spacing: 12) {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "exclamationmark.shield.fill").font(.title).foregroundStyle(Color.warn)
-                    VStack(alignment: .leading, spacing: 4) {
+            AdaptiveStack(spacing: DesignTokens.Space.s3) {
+                HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
+                    Image(systemName: "exclamationmark.shield.fill").font(.aeTitle).foregroundStyle(Color.warn)
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                         Text("Your recovery devices started moving your funds").font(.aeHeadline)
                         Text("If this was not you, cancel it. It can run after \(Date(timeIntervalSince1970: TimeInterval(r.readyAt)).formatted(date: .abbreviated, time: .shortened)).")
-                            .font(.aeBody).foregroundStyle(.secondary)
+                            .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                VStack(alignment: narrow ? .leading : .trailing, spacing: 6) {
-                    Button("Cancel it") { model.cancelIncomingRecovery() }.buttonStyle(.borderedProminent).tint(Color.warn).disabled(model.busy)
+                VStack(alignment: narrow ? .leading : .trailing, spacing: DesignTokens.Space.s2) {
+                    Button("Cancel it") { model.cancelIncomingRecovery() }.buttonStyle(EastSeaPrimaryButtonStyle()).tint(Color.warn).disabled(model.busy)
                     // A recovery you did not start means a recovery key is in other hands.
                     Button("Cancel and remove all recovery keys") { model.removeRecoveryKeys() }.font(.aeFootnote).disabled(model.busy)
                 }
                 .padding(.leading, narrow ? 40 : 0)
             }
-            .padding(16)
+            .padding(DesignTokens.Space.s4)
             .background(Color.warn.opacity(0.12), in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
         }
     }
@@ -720,41 +807,41 @@ private struct IncomingRecoveryAlert: View {
 
 struct SecurityPage: View {
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: DesignTokens.Space.s4) {
             IncomingRecoveryAlert()
             Card {
-                HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: "lock.shield.fill").font(.system(size: 34)).foregroundStyle(Color.aether)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Protected by this device").font(.aeHeadline)
-                        Text("Your key was created inside the Secure Enclave and can never be copied out. Every payment asks for Touch ID or your password. If you lose every device and have no recovery set up, nobody can restore the funds.")
-                            .font(.aeBody).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
+                        Label("Protected by this device", systemImage: "lock.shield.fill").font(.aeHeadline)
+                        DisclosureGroup("Details") {
+                            Text("Your key was created inside the Secure Enclave and can never be copied out. Every payment asks for Touch ID or your password. If you lose every device and have no recovery set up, nobody can restore the funds.")
+                                .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.aeFootnote)
                         // F-05: recovery never revokes a stolen original key.
                         Text(KeyExposureNotice.keyCustody.text).font(.aeFootnote).foregroundStyle(Color.warn)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                }
-            }
-            Card {
-                HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: "checkmark.shield").font(.system(size: 34)).foregroundStyle(Color.aether)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Checks before you send").font(.aeHeadline)
-                        Text("Before a transfer is signed, \(Brand.name) compares the recipient with addresses you sent to before (a look-alike asks you to confirm the whole address), notes first-time sends, and tries the transfer on the node so a token that refuses transfers is caught first. These checks read public chain data and settings on this device. Nothing new is written on chain.")
-                            .font(.aeBody).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                    Divider().overlay(DesignTokens.Palette.line.color)
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
+                        Label("Checks before you send", systemImage: "checkmark.shield").font(.aeHeadline)
+                        DisclosureGroup("Details") {
+                            Text("Before a transfer is signed, \(Brand.name) compares the recipient with addresses you sent to before (a look-alike asks you to confirm the whole address), notes first-time sends, and tries the transfer on the node so a token that refuses transfers is caught first. These checks read public chain data and settings on this device. Nothing new is written on chain.")
+                                .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.aeFootnote)
                     }
-                }
-            }
-            Card {
-                HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: "eye").font(.system(size: 34)).foregroundStyle(Color.aether)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Who sees your addresses").font(.aeHeadline)
-                        Text("Balance reads are answered by other Macs running \(Brand.name) nodes, and those nodes see the addresses this wallet looks up. On a Mac with its own node switched on (Network page), reads stay on this Mac. Either way every balance is verified here, so a serving node can be slow or stale, never wrong.")
-                            .font(.aeBody).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                    Divider().overlay(DesignTokens.Palette.line.color)
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
+                        Label("Who sees your addresses", systemImage: "eye").font(.aeHeadline)
+                        DisclosureGroup("Details") {
+                            Text("Balance reads are answered by other Macs running \(Brand.name) nodes, and those nodes see the addresses this wallet looks up. On a Mac with its own node switched on (Network page), reads stay on this Mac. Either way every balance is verified here, so a serving node can be slow or stale, never wrong.")
+                                .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.aeFootnote)
                     }
                 }
             }
@@ -763,6 +850,7 @@ struct SecurityPage: View {
             Card { AgentWalletPanel() }
             #endif
             ConnectedSitesSection()
+            AccountMigrationPanel()
             Card { RecoveryPanel() }
         }
     }
@@ -774,28 +862,28 @@ private struct PaperKeyPanel: View {
     @Environment(\.narrowLayout) private var narrow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
             Text("Recovery words").font(.aeHeadline)
             Text("Your key never leaves this device, so there is no seed phrase to back up. Instead, write down 24 recovery words: if you lose every device, they move your funds to a new Mac after a 48-hour safety delay. If someone else finds them, they can only start that delay, and any of your devices can cancel it.")
-                .font(.aeBody).foregroundStyle(.secondary)
+                .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 .fixedSize(horizontal: false, vertical: true)
             if let words = model.paperWords {
                 let list = words.split(separator: " ").map(String.init)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: narrow ? 2 : 4), alignment: .leading, spacing: 6) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: narrow ? 2 : 4), alignment: .leading, spacing: DesignTokens.Space.s2) {
                     ForEach(Array(list.enumerated()), id: \.offset) { i, w in
                         Text("\(i + 1). \(w)").font(.aeBody.monospaced()).lineLimit(1).minimumScaleFactor(0.7)
                     }
                 }
-                .padding(12)
-                .background(.background.tertiary, in: RoundedRectangle(cornerRadius: Radius.inner))
+                .padding(DesignTokens.Space.s3)
+                .background(DesignTokens.Palette.surfaceSunken.color, in: RoundedRectangle(cornerRadius: Radius.inner))
                 Text("Write them on paper, in order. Do not photograph or store them on this device.").font(.aeFootnote).foregroundStyle(Color.warn)
                 ViewThatFits(in: .horizontal) {
                     HStack {
-                        Button("I wrote them down: register") { model.registerPaperKey() }.buttonStyle(.borderedProminent).disabled(model.busy)
+                        Button("I wrote them down: register") { model.registerPaperKey() }.buttonStyle(EastSeaPrimaryButtonStyle()).disabled(model.busy)
                         Button("Cancel") { model.paperWords = nil }
                     }
                     VStack(alignment: .leading) {
-                        Button("I wrote them down: register") { model.registerPaperKey() }.buttonStyle(.borderedProminent).disabled(model.busy)
+                        Button("I wrote them down: register") { model.registerPaperKey() }.buttonStyle(EastSeaPrimaryButtonStyle()).disabled(model.busy)
                         Button("Cancel") { model.paperWords = nil }
                     }
                 }
@@ -823,13 +911,13 @@ private struct NodeCard: View {
 
     var body: some View {
         Card {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: "server.rack").font(.system(size: 30)).foregroundStyle(Color.aether)
-                    VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+                HStack(alignment: .top, spacing: DesignTokens.Space.s4) {
+                    Image(systemName: "server.rack").font(.aeTitle).foregroundStyle(Color.aether)
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                         Text("Run a node on this Mac").font(.aeHeadline)
                         Text("Your Mac checks every block itself and your wallet asks it instead of the network. It stops when you quit \(Brand.name).")
-                            .font(.aeBody).foregroundStyle(.secondary)
+                            .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     }
                     Spacer()
                     Toggle("", isOn: $node.enabled).toggleStyle(.switch).labelsHidden()
@@ -859,18 +947,18 @@ private struct UpdateCard: View {
 
     var body: some View {
         Card {
-            HStack(alignment: .center, spacing: 14) {
-                Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 26)).foregroundStyle(Color.aether)
-                VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: DesignTokens.Space.s4) {
+                Image(systemName: "arrow.triangle.2.circlepath").font(.aeTitle).foregroundStyle(Color.aether)
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                     Text("\(Brand.name) \(updates.version)").font(.aeHeadline)
                     // Re-read every half minute so "checked 1 hour ago" stays true.
                     TimelineView(.periodic(from: .now, by: 30)) { context in
-                        Text(checked(at: context.date)).font(.aeBody).foregroundStyle(.secondary)
+                        Text(checked(at: context.date)).font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     }
                     // A failed update, or the health check after one: one honest
                     // sentence with what happens next (red team #11).
                     if let notice = updates.installNotice {
-                        Text(notice).font(.aeBody).foregroundStyle(.secondary)
+                        Text(notice).font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -896,19 +984,24 @@ private struct VotingNodeRow: View {
     let candidate: NodeController.Candidate
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: icon).font(.system(size: 26)).foregroundStyle(Color.aether)
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .top, spacing: DesignTokens.Space.s4) {
+            Image(systemName: icon).font(.aeTitle).foregroundStyle(Color.aether)
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
                 Text(title).font(.aeHeadline)
-                Text(detail).font(.aeBody).foregroundStyle(.secondary)
+                Text(detail).font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 if node.state == .running, node.voting?.registered == true, node.voting?.voting == false,
                    let line = CandidateEligibilityText.line(node.candidateEligibility, locale: AppLanguage.locale, bundle: AppLanguage.bundle(for: AppLanguage.identifier)) {
-                    Text(line).font(.aeFootnote).foregroundStyle(.secondary)
+                    Text(line).font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 switch model.registration {
                 case .working?:
-                    HStack(spacing: 7) { OrbitSpinner().frame(width: 14, height: 14); Text("Registering… confirm with Touch ID.") }.font(.aeBody)
+                    HStack(spacing: DesignTokens.Space.s2) {
+                        Circle().trim(from: 0.12, to: 0.88)
+                            .stroke(Color.warn, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                            .frame(width: 14, height: 14).accessibilityHidden(true)
+                        Text("Registering… confirm with Touch ID.")
+                    }.font(.aeBody)
                 case .failed(let why)?:
                     Label(why, systemImage: "exclamationmark.triangle.fill").font(.aeBody).foregroundStyle(Color.warn)
                         .fixedSize(horizontal: false, vertical: true)
@@ -916,7 +1009,7 @@ private struct VotingNodeRow: View {
                     EmptyView()
                 }
                 DisclosureGroup(Terms.isTestnet ? String(localized: "Planned mainnet rules") : String(localized: "Network reward rules")) {
-                    Text(VotingRules.mainnetRewardsRule + " " + VotingRules.founderReserveRule).font(.aeFootnote).foregroundStyle(.secondary)
+                    Text(VotingRules.mainnetRewardsRule + " " + VotingRules.founderReserveRule).font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .font(.aeFootnote)
@@ -924,7 +1017,7 @@ private struct VotingNodeRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             if node.voting?.registered == false, model.registration != .working {
                 Button(model.registration == nil ? String(localized: "Join") : String(localized: "Try again")) { model.registerNode(candidate, node: node) }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(EastSeaPrimaryButtonStyle())
                     .disabled(model.busy)
                     .help("Registers this Mac with Apple DeviceCheck (one Mac, one voting node) and signs with Touch ID.")
             }
@@ -962,7 +1055,7 @@ private struct VotingNodeRow: View {
 }
 #endif
 
-// MARK: - Sidebar status (IPFS Desktop style)
+// MARK: - Sidebar status
 
 private struct SidebarStatus: View {
     @EnvironmentObject var model: WalletModel
@@ -971,12 +1064,13 @@ private struct SidebarStatus: View {
     #endif
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
             #if os(macOS)
+            Divider().overlay(DesignTokens.Palette.line.color)
             Toggle(isOn: $node.enabled) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Node on this Mac").font(.aeCaption.weight(.semibold))
-                    Text(nodeLine).font(.aeCaption).foregroundStyle(node.stopReason?.isIncident == true ? Color.warn : Color.secondary)
+                    Text(nodeLine).font(.aeCaption).foregroundStyle(node.stopReason?.isIncident == true ? Color.warn : DesignTokens.Palette.textMuted.color)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -996,11 +1090,14 @@ private struct SidebarStatus: View {
             }
             EarningsSidebarBadge()
             #endif
-            HStack(spacing: 8) {
-                Circle().fill(model.status == nil || model.chainPausedSince != nil ? Color.warn : Color.aether).frame(width: 8, height: 8)
+            HStack(spacing: DesignTokens.Space.s2) {
+                Image(systemName: model.status == nil ? "circle.dotted" : model.chainPausedSince != nil ? "pause.circle.fill" : "checkmark.circle.fill")
+                    .font(.aeCaption)
+                    .foregroundStyle(model.status == nil || model.chainPausedSince != nil ? Color.warn : DesignTokens.Palette.success.color)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(model.status == nil ? String(localized: "Connecting") : model.chainPausedSince != nil ? String(localized: "Network paused") : String(localized: "Connected")).font(.aeCaption.weight(.semibold))
-                    Text(model.status.map { String(localized: "Block #\(String($0.height))") } ?? String(localized: "Looking for the network…")).font(.aeCaption).foregroundStyle(.secondary)
+                    Text(model.status.map { String(localized: "Block #\(String($0.height))") } ?? String(localized: "Looking for the network…")).font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 }
                 Spacer()
             }
@@ -1033,9 +1130,17 @@ struct Card<Content: View>: View {
 
     var body: some View {
         content
+            .font(.aeBody)
+            .foregroundStyle(DesignTokens.Palette.text.color)
+            .buttonStyle(EastSeaQuietButtonStyle())
             .padding(narrow ? CardPadding.narrow : CardPadding.wide)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .background(DesignTokens.Palette.surface.color, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                    .strokeBorder(DesignTokens.Palette.line.color, lineWidth: 0.5)
+                    .allowsHitTesting(false)
+            }
     }
 }
 
@@ -1080,9 +1185,9 @@ private struct BalanceCard: View {
 
     var body: some View {
         Card {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
                 if narrow {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
                         change
                         rangePicker
                     }
@@ -1117,12 +1222,12 @@ private struct BalanceCard: View {
             Label(range == .all ? String(localized: "\(amount) in total") : String(localized: "\(amount) in the last \(range.label)"),
                   systemImage: d > 0 ? "arrow.up.right" : "arrow.down.right")
                 .font(.aeBody.weight(.medium))
-                .foregroundStyle(d > 0 ? Color.green : Color.secondary)
+                .foregroundStyle(d > 0 ? DesignTokens.Palette.success.color : DesignTokens.Palette.textMuted.color)
         } else if points.count > 1 {
             Text(range == .all ? String(localized: "No change in total") : String(localized: "No change in the last \(range.label)"))
-                .font(.aeBody).foregroundStyle(.secondary)
+                .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
         } else {
-            Text("Your balance history appears here as it changes.").font(.aeBody).foregroundStyle(.secondary)
+            Text("Your balance history appears here as it changes.").font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
         }
     }
 
@@ -1146,8 +1251,8 @@ private struct BalanceCard: View {
                 }
             }
         } else {
-            RoundedRectangle(cornerRadius: Radius.inner).fill(.quaternary.opacity(0.5))
-                .overlay(Image(systemName: "chart.xyaxis.line").font(.largeTitle).foregroundStyle(.tertiary))
+            RoundedRectangle(cornerRadius: Radius.inner).fill(DesignTokens.Palette.surfaceSunken.color)
+                .overlay(Image(systemName: "chart.xyaxis.line").font(.aeTitle).foregroundStyle(DesignTokens.Palette.textSubtle.color))
         }
     }
 
@@ -1162,6 +1267,7 @@ private struct BalanceCard: View {
 
 private struct VerifiedBadge: View {
     @EnvironmentObject var model: WalletModel
+    var onPlate = false
     #if os(macOS)
     @EnvironmentObject var health: HealthMonitor
     #endif
@@ -1186,39 +1292,46 @@ private struct VerifiedBadge: View {
         #endif
     }
 
+    private var muted: Color { onPlate ? DesignTokens.Palette.plateSoft.color : DesignTokens.Palette.textMuted.color }
+    private var warning: Color { onPlate ? DesignTokens.Palette.plateWarn.color : DesignTokens.Palette.warn.color }
+    private var verified: Color { onPlate ? DesignTokens.Palette.plateSuccess.color : DesignTokens.Palette.success.color }
+
     var body: some View {
         if let keyError = model.keyError {
             Label(keyError, systemImage: "lock.fill")
-                .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
-                .padding(.horizontal, 10).padding(.vertical, 4)
+                .font(.aeCaption.weight(.semibold)).foregroundStyle(warning)
+                .padding(.horizontal, 10).padding(.vertical, DesignTokens.Space.s1)
                 .help("The wallet key lives in this device's Secure Enclave, which only creates keys while the device is unlocked. \(Brand.name) retries by itself.")
         } else if let since = model.chainPausedSince {
-            NetworkPausedBadge(since: since)
+            NetworkPausedBadge(since: since, onPlate: onPlate)
         } else if halfDead {
             Label(pausedBadgeTitle, systemImage: "externaldrive.fill.badge.exclamationmark")
-                .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Color.warn.opacity(0.14), in: Capsule())
+                .font(.aeCaption.weight(.semibold)).foregroundStyle(warning)
+                .padding(.horizontal, 10).padding(.vertical, DesignTokens.Space.s1)
+                .background(warning.opacity(0.14), in: Capsule())
         } else if model.account != nil && model.verifyError == nil {
             Label("Verified", systemImage: "checkmark.shield.fill")
-                .font(.aeCaption.weight(.semibold)).foregroundStyle(.secondary)
-                .padding(.horizontal, 10).padding(.vertical, 4)
+                .font(.aeCaption.weight(.semibold)).foregroundStyle(verified)
+                .padding(.horizontal, 10).padding(.vertical, DesignTokens.Space.s1)
                 .help("This device checked the balance itself against the validators' signature, using the committee key shipped with the app instead of a server's word.")
         } else if model.networkOutdated {
             Label("This app is out of date · updating", systemImage: "arrow.down.circle.fill")
-                .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.warn)
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Color.warn.opacity(0.14), in: Capsule())
+                .font(.aeCaption.weight(.semibold)).foregroundStyle(warning)
+                .padding(.horizontal, 10).padding(.vertical, DesignTokens.Space.s1)
+                .background(warning.opacity(0.14), in: Capsule())
                 .help("The network moved to a new version. The update is being fetched; it applies on the next launch.")
         } else {
             let slow = model.verifyFailingSince.map { Date().timeIntervalSince($0) > 20 } ?? false
-            HStack(spacing: 7) {
-                OrbitSpinner().frame(width: 13, height: 13)
+            HStack(spacing: DesignTokens.Space.s2) {
+                Circle().trim(from: 0.12, to: 0.88)
+                    .stroke(warning, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                    .frame(width: 13, height: 13)
+                    .accessibilityHidden(true)
                 Text(model.status == nil ? String(localized: "Connecting") : slow ? String(localized: "Still verifying") : String(localized: "Verifying"))
             }
-            .font(.aeCaption.weight(.semibold)).foregroundStyle(Color.aether)
+            .font(.aeCaption.weight(.semibold)).foregroundStyle(muted)
             .padding(.horizontal, 11).padding(.vertical, 5)
-            .background(Color.aether.opacity(0.10), in: Capsule())
+            .background(muted.opacity(0.10), in: Capsule())
             .help(model.verifyError ?? String(localized: "Checking the balance against the validators' signature on this device."))
         }
     }
@@ -1233,14 +1346,14 @@ private struct NetworkCard: View {
 
     var body: some View {
         Card {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s3) {
                 Text("Activity on the network").font(.aeHeadline)
                 if !blocks.isEmpty {
-                    Text("Transactions in the last \(blocks.count) blocks").font(.aeFootnote).foregroundStyle(.secondary)
+                    Text("Transactions in the last \(blocks.count) blocks").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     Chart(blocks, id: \.height) { b in
                         // Empty blocks show as a short stub so the rhythm of blocks stays visible.
                         BarMark(x: .value("Block", String(b.height)), y: .value("Txs", b.txs > 0 ? Double(b.txs) : Double(max(busiest, 1)) * 0.04))
-                            .foregroundStyle(b.txs > 0 ? Color.aether : Color.secondary.opacity(0.35))
+                            .foregroundStyle(b.txs > 0 ? Color.aether : DesignTokens.Palette.textMuted.color.opacity(0.35))
                             .cornerRadius(2)
                     }
                     .chartXAxis(.hidden)
@@ -1248,7 +1361,7 @@ private struct NetworkCard: View {
                     .chartYAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
                     .frame(height: 140)
                     if busiest == 0 {
-                        Text("Quiet: no transactions right now.").font(.aeCaption).foregroundStyle(.secondary)
+                        Text("Quiet: no transactions right now.").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     }
                 }
             }
@@ -1278,36 +1391,36 @@ private struct ActivityRow: View {
             TokenIcon(chainId: model.status?.chainId ?? 0, address: token,
                       symbol: model.tokenCatalog.tokens[token]?.symbol ?? "?")
         } else if item.kind == .security {
-            Image(systemName: "lock.shield.fill").font(.title2).foregroundStyle(.secondary)
+            Image(systemName: "lock.shield.fill").font(.aeTitle).foregroundStyle(DesignTokens.Palette.textMuted.color)
         } else {
             // The native coin moved: its doubloon, with the direction kept as
             // a small arrow (colour plus shape, not colour alone).
             TokenIcon(chainId: model.status?.chainId ?? 0, address: nil, symbol: Brand.networkCoinTicker)
                 .overlay(alignment: .bottomTrailing) {
                     Image(systemName: item.kind == .received ? "arrow.down.left.circle.fill" : "arrow.up.right.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(item.kind == .received ? Color.green : Color.secondary)
-                        .background(Circle().fill(.background).padding(1))
+                        .font(.system(size: DesignTokens.TypeScale.caption.size))
+                        .foregroundStyle(item.kind == .received ? DesignTokens.Palette.success.color : DesignTokens.Palette.textMuted.color)
+                        .background(Circle().fill(DesignTokens.Palette.surface.color).padding(1))
                 }
         }
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DesignTokens.Space.s3) {
             leading
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title).font(.aeBody.weight(.medium)).lineLimit(2)
                 if item.timeKnown {
-                    Text(item.date, format: .relative(presentation: .named)).font(.aeFootnote).foregroundStyle(.secondary)
+                    Text(item.date, format: .relative(presentation: .named)).font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 }
                 if let source = item.source {
                     Text("\(source) · \(ChainActivity.short(item.owner ?? ""))")
-                        .font(.aeFootnote).foregroundStyle(.secondary)
+                        .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 }
                 // Why it is waiting or why it did not go through (bug #5).
                 if let why = item.why, item.state != .done {
                     Text(why).font(.aeFootnote)
-                        .foregroundStyle(item.state == .failed ? Color.red : Color.warn)
+                        .foregroundStyle(item.state == .failed ? DesignTokens.Palette.danger.color : Color.warn)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if item.state == .notIncluded || item.state == .failed, item.resend != nil {
@@ -1321,12 +1434,12 @@ private struct ActivityRow: View {
             VStack(alignment: .trailing, spacing: 2) {
                 if let a = item.amount {
                     Text("\(a >= 0 ? "+" : "")\(Amount.text(a))").font(.aeBody.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(a > 0 ? .green : .primary)
+                        .foregroundStyle(a > 0 ? DesignTokens.Palette.success.color : DesignTokens.Palette.text.color)
                 }
                 switch item.state {
                 case .pending: Text("Confirming…").font(.aeFootnote).foregroundStyle(Color.warn)
-                case .done: Text("Done").font(.aeFootnote).foregroundStyle(.secondary)
-                case .failed: Text("Failed").font(.aeFootnote).foregroundStyle(.red)
+                case .done: Text("Done").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                case .failed: Text("Failed").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.danger.color)
                 // A node dropped it, or none has it: not on chain yet, not a failure.
                 case .notIncluded: Text("Not on chain yet").font(.aeFootnote).foregroundStyle(Color.warn)
                 }
@@ -1339,21 +1452,26 @@ private struct ActivityRow: View {
 private struct RoundAction: View {
     let title: LocalizedStringKey
     let icon: String
+    var primary = false
     let action: () -> Void
-    @Environment(\.isEnabled) private var enabled
 
+    @ViewBuilder
     var body: some View {
-        Button(action: action) {
-            VStack(spacing: 8) {
-                Image(systemName: icon).font(.aeTitle)
-                    .frame(width: 54, height: 54)
-                    .background(Color.aether.opacity(0.14), in: Circle())
-                    .foregroundStyle(Color.aether)
-                Text(title).font(.aeFootnote.weight(.medium)).foregroundStyle(.primary)
-            }
-            .opacity(enabled ? 1 : 0.4)
+        if primary {
+            control.buttonStyle(EastSeaPrimaryButtonStyle())
+        } else {
+            control.buttonStyle(EastSeaQuietButtonStyle())
         }
-        .buttonStyle(.plain)
+    }
+
+    private var control: some View {
+        Button(action: action) {
+            HStack(spacing: DesignTokens.Space.s2) {
+                Image(systemName: icon).font(.aeHeadline)
+                Text(title).font(.aeBody.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+        }
     }
 }
 
@@ -1364,14 +1482,14 @@ struct TokenRow: View {
     let verified: Bool
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DesignTokens.Space.s3) {
             // The native coin's own doubloon; the row is always the coin row.
             TokenIcon(chainId: Brand.networkChainId, address: nil, symbol: symbol, size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).font(.aeBody.weight(.semibold))
-                HStack(spacing: 4) {
-                    Text(symbol).font(.aeFootnote).foregroundStyle(.secondary)
-                    if verified { Label("Verified", systemImage: "checkmark.shield.fill").font(.aeCaption).foregroundStyle(.secondary) }
+                HStack(spacing: DesignTokens.Space.s1) {
+                    Text(symbol).font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                    if verified { Label("Verified", systemImage: "checkmark.shield.fill").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color) }
                 }
             }
             Spacer()
@@ -1386,14 +1504,19 @@ private struct Tile: View {
     let icon: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
             Image(systemName: icon).foregroundStyle(Color.aether)
             Text(value).font(.aeTitle.monospacedDigit()).lineLimit(1).minimumScaleFactor(0.6)
-            Text(label).font(.aeFootnote).foregroundStyle(.secondary)
+            Text(label).font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
         }
         .padding(CardPadding.narrow)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .background(DesignTokens.Palette.surface.color, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .strokeBorder(DesignTokens.Palette.line.color, lineWidth: 0.5)
+                .allowsHitTesting(false)
+        }
     }
 }
 
@@ -1404,12 +1527,14 @@ private struct ActivityList: View {
     var body: some View {
         let items = Array(model.activity.prefix(limit))
         if items.isEmpty {
-            Text("Nothing yet. Payments you send and receive show up here.").font(.aeBody).foregroundStyle(.secondary)
+            Text("Nothing yet. Payments you send and receive show up here.").font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
         } else {
-            LazyVStack(spacing: 10) {
+            LazyVStack(spacing: DesignTokens.Space.s3) {
                 ForEach(items) { item in
-                    ActivityRow(item: item)
-                    if item.id != items.last?.id { Divider() }
+                    ActivityRow(item: item).padding(.vertical, DesignTokens.Space.s1)
+                    if item.id != items.last?.id {
+                        DesignTokens.Palette.line.color.frame(height: 0.5).padding(.leading, 40)
+                    }
                 }
             }
         }
@@ -1419,6 +1544,7 @@ private struct ActivityList: View {
 // MARK: - Sheets
 
 struct SendSheet: View {
+    var stillApproved: () -> Bool = { true }
     @EnvironmentObject var model: WalletModel
     @Environment(\.dismiss) private var dismiss
     /// The send flow's checks (docs/research/token-spam-2026.md §6.3). Nothing
@@ -1483,7 +1609,11 @@ struct SendSheet: View {
                   let units = TokenAmount.parse(model.sendAmount, decimals: decimals),
                   units != "0", WeiMath.compare(units, t.balance) <= 0 else { return false }
         } else {
-            guard !recipient.isEmpty, (amount ?? 0) > 0, (amount ?? 0) + maxFee <= balance else { return false }
+            guard !recipients.isEmpty,
+                  let valueWei = Wei.from(aeth: model.paymentRequest?.amount ?? model.sendAmount), valueWei != "0",
+                  let balanceWei = model.account?.balanceWei, let feeWei = shownFeeWei else { return false }
+            let total = recipients.reduce("0") { sum, _ in WeiMath.add(sum, valueWei) }
+            guard WeiMath.compare(WeiMath.add(total, feeWei), balanceWei) <= 0 else { return false }
         }
         return true
     }
@@ -1496,6 +1626,7 @@ struct SendSheet: View {
                 form
             }
         }
+        .eastSeaPresentation(.sheet, value: intent != nil)
         // A resend applies to this sheet only (bug #5).
         .onDisappear { model.resend = nil }
     }
@@ -1510,8 +1641,15 @@ struct SendSheet: View {
     }
 
     private var form: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(title).font(.aeTitle)
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+            HStack {
+                Text(title).font(.aeTitle)
+                Spacer()
+                EastSeaDawnMark().frame(width: 32, height: 32)
+            }
+            Grid(alignment: .leading, horizontalSpacing: DesignTokens.Space.s4, verticalSpacing: DesignTokens.Space.s3) {
+                accountRow("Account", model.address)
+            }
             if let r = model.paymentRequest {
                 Label(r.memo.map { String(localized: "A page asked for this payment: \($0)") } ?? String(localized: "A page asked for this payment. Check the address and amount."), systemImage: "link")
                     .font(.aeBody).foregroundStyle(Color.warn)
@@ -1520,18 +1658,20 @@ struct SendSheet: View {
             }
             if let r = model.paymentRequest {
                 // A requested payment is shown as asked and cannot be edited here.
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("To").font(.aeFootnote).foregroundStyle(.secondary)
-                    Text(r.to).font(.aeBody.monospaced()).textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("Amount").font(.aeFootnote).foregroundStyle(.secondary).padding(.top, 6)
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
+                    Grid(alignment: .leading, horizontalSpacing: DesignTokens.Space.s4, verticalSpacing: DesignTokens.Space.s3) {
+                        ForEach(Array(recipients.enumerated()), id: \.offset) { _, address in
+                            accountRow("To", address)
+                        }
+                    }
+                    Text("Amount").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color).padding(.top, 6)
                     Text("\(r.amount) \(Brand.networkCoinTicker)").font(.aeTitle.monospacedDigit())
                 }
             } else {
                 assetPicker
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
                     HStack {
-                        Text("To").font(.aeFootnote).foregroundStyle(.secondary)
+                        Text("To").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                         Spacer()
                         if !model.contacts.isEmpty {
                             Menu("Contacts") {
@@ -1543,17 +1683,31 @@ struct SendSheet: View {
                         }
                     }
                     TextField(token == nil ? String(localized: "0x… (several: separate with commas)") : "0x…", text: $model.sendTo)
-                        .textFieldStyle(.roundedBorder).font(.aeBody.monospaced())
+                        .textFieldStyle(EastSeaTextFieldStyle()).font(.aeBody.monospaced())
+                    Grid(alignment: .leading, horizontalSpacing: DesignTokens.Space.s4, verticalSpacing: DesignTokens.Space.s3) {
+                        ForEach(Array(recipients.enumerated()), id: \.offset) { _, address in
+                            accountRow("To", address)
+                        }
+                    }
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(token == nil ? String(localized: "Amount (each)") : String(localized: "Amount")).font(.aeFootnote).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
+                    Text(token == nil ? String(localized: "Amount (each)") : String(localized: "Amount")).font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     HStack {
-                        TextField("0", text: $model.sendAmount).textFieldStyle(.roundedBorder).font(.aeTitle.monospacedDigit())
+                        TextField("0", text: $model.sendAmount)
+                            .textFieldStyle(.plain)
+                            .font(DesignTokens.TypeScale.amountMd.font).monospacedDigit()
+                            .padding(DesignTokens.Space.s3)
+                            .background(DesignTokens.Palette.surfaceSunken.color, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
+                                    .strokeBorder(DesignTokens.Palette.lineControl.color, lineWidth: 1)
+                                    .allowsHitTesting(false)
+                            }
                         // The icon always agrees with the picked asset (by
                         // address), so a look-alike symbol never shows doubloons.
                         TokenIcon(chainId: model.status?.chainId ?? 0, address: token?.token.address,
                                   symbol: token?.token.symbol ?? Brand.networkCoinTicker, size: 20)
-                        Text(token?.token.symbol ?? "\(Brand.networkCoinTicker)").foregroundStyle(.secondary)
+                        Text(token?.token.symbol ?? "\(Brand.networkCoinTicker)").foregroundStyle(DesignTokens.Palette.textMuted.color)
                         Button("Max") { fillMax() }.buttonStyle(.borderless)
                     }
                 }
@@ -1562,7 +1716,7 @@ struct SendSheet: View {
                 }
             }
             HStack {
-                Text("Available").foregroundStyle(.secondary)
+                Text("Available").foregroundStyle(DesignTokens.Palette.textMuted.color)
                 Spacer()
                 if let t = token, let d = denomination {
                     // Unverified units are never shown as a friendly amount: the
@@ -1572,14 +1726,14 @@ struct SendSheet: View {
                     } else {
                         Text("\(t.amount) \(t.token.symbol)").monospacedDigit()
                     }
-                    Text("· \(TokenLabel.short(t.token.address))").monospaced().foregroundStyle(.secondary)
+                    Text("· \(TokenLabel.short(t.token.address))").monospaced().foregroundStyle(DesignTokens.Palette.textMuted.color)
                 } else {
                     Text("\(Amount.text(balance)) \(Brand.networkCoinTicker)").monospacedDigit()
                 }
             }.font(.aeBody)
             if let s = model.status {
                 HStack {
-                    Text("Network fee").foregroundStyle(.secondary)
+                    Text("Network fee").foregroundStyle(DesignTokens.Palette.textMuted.color)
                     Spacer()
                     // The quote is a maximum while the recipient may be new
                     // (audit 6, A6-7): the possible account charge is in it.
@@ -1593,7 +1747,7 @@ struct SendSheet: View {
             if let r = resending {
                 Label("This resends the payment that did not go through (number \(r.nonce)) at the current fee. Both share that number, so only one of them can go through.",
                       systemImage: "arrow.clockwise")
-                    .font(.aeFootnote).foregroundStyle(.secondary)
+                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
             }
             denominationNote
             warnings
@@ -1613,14 +1767,16 @@ struct SendSheet: View {
                 Button { send() } label: {
                     Label(checking ? String(localized: "Checking…") : String(localized: "Send"), systemImage: "touchid").frame(minWidth: 100)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(EastSeaPrimaryButtonStyle())
                 .keyboardShortcut(.defaultAction)
                 .disabled(!valid || model.busy || checking || (risk.poisoningMatch != nil && !ackPoison))
             }
         }
-        .padding(24)
+        .padding(DesignTokens.Space.s6)
         .macMinSize(width: 420)
+        .buttonStyle(EastSeaQuietButtonStyle())
         .sheetScroll()
+        .eastSeaSheet()
         .onChange(of: recipient) { _, _ in ackPoison = false }
         .task(id: recipients) { quote = freshQuote() }
     }
@@ -1651,7 +1807,7 @@ struct SendSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
         } else if let d = denomination, d.nodeDisagrees {
             Label("The node reports different details than the list shipped with the wallet; the list decides the units.", systemImage: "info.circle.fill")
-                .font(.aeFootnote).foregroundStyle(.secondary)
+                .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -1663,7 +1819,8 @@ struct SendSheet: View {
             // What can actually leave: the balance minus the fee a plain
             // transfer burns (audit 6, A6-7) — the possible new-recipient
             // charge included, so a full send is never rejected for it.
-            model.sendAmount = Amount.text(max(0, balance - maxFee))
+            guard let balanceWei = model.account?.balanceWei, let feeWei = shownFeeWei else { return }
+            model.sendAmount = Wei.exact(WeiMath.subtract(balanceWei, feeWei))
         }
     }
 
@@ -1672,29 +1829,29 @@ struct SendSheet: View {
     /// classified by address only, so a mimic's symbol earns it nothing.
     private var assetPicker: some View {
         HStack {
-            Text("Asset").font(.aeFootnote).foregroundStyle(.secondary)
+            Text("Asset").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
             Spacer()
             Menu {
                 Button { model.sendToken = nil; model.sendAmount = "1" } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: DesignTokens.Space.s2) {
                         TokenIcon(chainId: model.status?.chainId ?? 0, address: nil, symbol: Brand.networkCoinTicker, size: 18)
                         Text("\(Brand.networkCoinTicker) · \(Brand.networkCoinName)")
                     }
                 }
                 ForEach(model.tokenSections.main) { t in
                     Button { model.sendToken = t; model.sendAmount = "" } label: {
-                        HStack(spacing: 6) {
+                        HStack(spacing: DesignTokens.Space.s2) {
                             TokenIcon(chainId: model.status?.chainId ?? 0, address: t.token.address, symbol: t.token.symbol, size: 18)
                             Text("\(TokenLabel.row(t.token)) · \(t.amount)")
                         }
                     }
                 }
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: DesignTokens.Space.s2) {
                     TokenIcon(chainId: model.status?.chainId ?? 0, address: token?.token.address,
                               symbol: token?.token.symbol ?? Brand.networkCoinTicker, size: 20)
                     Text(token.map { TokenLabel.row($0.token) } ?? "\(Brand.networkCoinTicker) · \(Brand.networkCoinName)").font(.aeBody.weight(.semibold))
-                    Image(systemName: "chevron.up.chevron.down").font(.aeCaption).foregroundStyle(.secondary)
+                    Image(systemName: "chevron.up.chevron.down").font(.aeCaption).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 }
             }
             .fixedSize()
@@ -1705,19 +1862,19 @@ struct SendSheet: View {
     /// first send to a new address is only a note.
     @ViewBuilder private var warnings: some View {
         if let match = risk.poisoningMatch {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
                 Label("This address only looks like one you sent to before", systemImage: "exclamationmark.triangle.fill")
                     .font(.aeBody.weight(.semibold)).foregroundStyle(Color.warn)
                 Text("It shares its first and last characters with \(TokenLabel.short(match)) — a different address. Scammers copy exactly those to catch a quick copy-paste. Compare the whole address, character by character, before sending.")
-                    .font(.aeFootnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color).fixedSize(horizontal: false, vertical: true)
                 Toggle("I compared the full address; this is where I want to send", isOn: $ackPoison)
                     .font(.aeFootnote)
             }
-            .padding(12)
+            .padding(DesignTokens.Space.s3)
             .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
         } else if risk.firstSend, !recipient.isEmpty, valid {
             Label("First time sending to this address. Double-check it with whoever gave it to you.", systemImage: "info.circle.fill")
-                .font(.aeFootnote).foregroundStyle(.secondary)
+                .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -1729,6 +1886,10 @@ struct SendSheet: View {
     /// parsed once, under the decimals this sheet showed it under — and the
     /// confirm card signs exactly that, never a re-read of the form.
     private func send() {
+        guard stillApproved() else {
+            refusal = String(localized: "This approval is no longer valid. Ask the site to try again.")
+            return
+        }
         guard valid, risk.poisoningMatch == nil || ackPoison else { return }
         refusal = nil
         let dry = recipients.count == 1
@@ -1754,6 +1915,10 @@ struct SendSheet: View {
         Task { @MainActor in
             let outcome = dry ? await WalletModel.dryRun(from: model.address, to: callTo, valueWei: value, data: data) : .unchecked
             checking = false
+            guard stillApproved() else {
+                refusal = String(localized: "This approval is no longer valid. Ask the site to try again.")
+                return
+            }
             if case .reverted(let why) = outcome {
                 model.note("Dry run refused: \(why)")
                 refusal = String(localized: "This transaction could not run. Nothing was sent.")
@@ -1784,31 +1949,39 @@ struct SendSheet: View {
         let now = TokenDenomination.of(chainId: model.status?.chainId ?? 0, address: frozen.token.address,
                                        claimed: model.tokens.first { $0.token.address == frozen.token.address }?.token)
         let symbol = now.symbol ?? String(localized: "units")
-        return VStack(alignment: .leading, spacing: 16) {
-            Text("Confirm the send").font(.aeTitle)
-            VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+            HStack {
+                Text("Confirm the send").font(.aeTitle)
+                Spacer()
+                EastSeaDawnMark().frame(width: 32, height: 32)
+            }
+            Grid(alignment: .leading, horizontalSpacing: DesignTokens.Space.s4, verticalSpacing: DesignTokens.Space.s3) {
                 row("You will send", String(localized: "\(SendIntent.grouped(frozen.baseUnits)) units"), mono: true)
                 row("Shown as", "\(TokenAmount.exact(frozen.baseUnits, decimals: frozen.token.decimals)) \(symbol)")
                 row("Decimals", frozen.token.trusted ? String(localized: "\(frozen.token.decimals) (from the wallet's list)") : String(localized: "\(frozen.token.decimals) (the token's own claim)"))
-                row("To", frozen.recipient, mono: true)
+                accountRow("Account", model.address)
+                accountRow("To", frozen.recipient)
                 row("Token", TokenLabel.row(TokenInfo(address: frozen.token.address, symbol: now.symbol ?? "?",
                                                       name: now.name ?? "", decimals: frozen.token.decimals, origin: nil)), mono: true)
             }
+            .padding(DesignTokens.Space.s4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(DesignTokens.Palette.surfaceSunken.color, in: RoundedRectangle(cornerRadius: Radius.inner))
             if now.nodeDisagrees {
                 Label("The node now reports different details than the shipped list. The list decides the units; nothing moved.", systemImage: "info.circle.fill")
-                    .font(.aeFootnote).foregroundStyle(.secondary)
+                    .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !frozen.token.trusted {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: DesignTokens.Space.s2) {
                     Label("This token is not on the wallet’s trusted list", systemImage: "exclamationmark.triangle.fill")
                         .font(.aeBody.weight(.semibold)).foregroundStyle(Color.warn)
                     Text("Its name, symbol and unit size are its own unverified claims, so the amount above may not mean what it seems. The signature sends exactly the unit count shown — check that count.")
-                        .font(.aeFootnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color).fixedSize(horizontal: false, vertical: true)
                     Toggle("I checked the exact count: \(SendIntent.grouped(frozen.baseUnits)) units is what I want to send", isOn: $ackUnits)
                         .font(.aeFootnote)
                 }
-                .padding(12)
+                .padding(DesignTokens.Space.s3)
                 .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
             }
             HStack {
@@ -1818,6 +1991,11 @@ struct SendSheet: View {
                 }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button {
+                    guard stillApproved() else {
+                        refusal = String(localized: "This approval is no longer valid. Ask the site to try again.")
+                        intent = nil
+                        return
+                    }
                     if let why = model.sendTokenTx(frozen.with(acknowledged: ackUnits)) {
                         // Refused at signing time (something moved): back to the
                         // form with the reason, so the send is confirmed afresh.
@@ -1830,22 +2008,38 @@ struct SendSheet: View {
                 } label: {
                     Label("Confirm", systemImage: "touchid").frame(minWidth: 100)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(EastSeaPrimaryButtonStyle())
                 .keyboardShortcut(.defaultAction)
                 .disabled(model.busy || (!frozen.token.trusted && !ackUnits))
             }
         }
-        .padding(24)
+        .padding(DesignTokens.Space.s6)
         .macMinSize(width: 420)
+        .buttonStyle(EastSeaQuietButtonStyle())
         .sheetScroll()
+        .eastSeaSheet()
     }
 
     private func row(_ k: LocalizedStringKey, _ v: String, mono: Bool = false) -> some View {
-        HStack(alignment: .top) {
-            Text(k).foregroundStyle(.secondary).frame(width: 88, alignment: .leading)
-            Text(v).font(mono ? .body.monospaced() : .body).textSelection(.enabled)
+        GridRow(alignment: .top) {
+            Text(k).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                .gridColumnAlignment(.leading)
+            Text(v).font(mono ? .aeBody.monospaced() : .aeBody).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
+        }.font(.aeBody)
+    }
+
+    private func accountRow(_ label: LocalizedStringKey, _ address: String) -> some View {
+        GridRow(alignment: .top) {
+            Text(label).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                .gridColumnAlignment(.leading)
+            HStack(alignment: .top, spacing: DesignTokens.Space.s2) {
+                AccountIcon(address: address, size: 32)
+                Text(verbatim: address).font(.aeBody.monospaced()).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }.font(.aeBody)
     }
 }
@@ -1856,17 +2050,28 @@ struct CallSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Approve a request").font(.aeTitle)
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+            HStack {
+                Text("Approve a request").font(.aeTitle)
+                Spacer()
+                EastSeaDawnMark().frame(width: 32, height: 32)
+            }
             if let r = model.callRequest {
                 Label(r.origin.map { String(localized: "\($0) asks you to sign this. Check it before you approve.") } ?? String(localized: "A page asks you to sign this. Check it before you approve."), systemImage: "link")
                     .font(.aeBody).foregroundStyle(Color.warn)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.inner))
-                row("Action", r.method)
-                if !r.to.isEmpty { row("Contract", r.to, mono: true) }
-                row("Sends", "\(r.value) \(Brand.networkCoinTicker)")
-                if let m = r.memo { row("Note", m) }
+                Grid(alignment: .leading, horizontalSpacing: DesignTokens.Space.s4, verticalSpacing: DesignTokens.Space.s3) {
+                    row("Action", r.method)
+                    accountRow("Account", model.address)
+                    if !r.to.isEmpty { accountRow("Contract", r.to) }
+                    if let address = tokenDestination(r.data) { accountRow("To", address) }
+                    row("Sends", "\(r.value) \(Brand.networkCoinTicker)")
+                    if let m = r.memo { row("Note", m) }
+                }
+                .padding(DesignTokens.Space.s4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(DesignTokens.Palette.surfaceSunken.color, in: RoundedRectangle(cornerRadius: Radius.inner))
                 DisclosureGroup(String(localized: "Call data (\((r.data.count - 2) / 2) bytes)")) {
                     ScrollView { Text(r.data).font(.aeFootnote.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                         .frame(maxHeight: 120)
@@ -1882,22 +2087,60 @@ struct CallSheet: View {
                     model.approveCall()
                     dismiss()
                 } label: { Label("Approve", systemImage: "touchid").frame(minWidth: 100) }
-                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    .buttonStyle(EastSeaPrimaryButtonStyle()).keyboardShortcut(.defaultAction)
                     .disabled(model.busy || model.callRequest == nil)
             }
         }
-        .padding(24)
+        .padding(DesignTokens.Space.s6)
         .macMinSize(width: 460)
+        .buttonStyle(EastSeaQuietButtonStyle())
         .sheetScroll()
+        .eastSeaSheet()
     }
 
     private func row(_ k: LocalizedStringKey, _ v: String, mono: Bool = false) -> some View {
-        HStack(alignment: .top) {
-            Text(k).foregroundStyle(.secondary).frame(width: 72, alignment: .leading)
-            Text(v).font(mono ? .body.monospaced() : .body).textSelection(.enabled)
+        GridRow(alignment: .top) {
+            Text(k).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                .gridColumnAlignment(.leading)
+            Text(v).font(mono ? .aeBody.monospaced() : .aeBody).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
         }.font(.aeBody)
+    }
+
+    private func accountRow(_ label: LocalizedStringKey, _ address: String) -> some View {
+        GridRow(alignment: .top) {
+            Text(label).foregroundStyle(DesignTokens.Palette.textMuted.color)
+                .gridColumnAlignment(.leading)
+            HStack(alignment: .top, spacing: DesignTokens.Space.s2) {
+                AccountIcon(address: address, size: 32)
+                Text(verbatim: address).font(.aeBody.monospaced()).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }.font(.aeBody)
+    }
+
+    /// Show the actual ABI address argument for familiar ERC-20 calls, never
+    /// a dApp's memo or claimed name. This only adds review text; signing is
+    /// still driven by the original request's destination and calldata.
+    private func tokenDestination(_ data: String) -> String? {
+        let hex = Array(data.utf8)
+        guard hex.count >= 10, hex[0] == 48, hex[1] == 120 || hex[1] == 88,
+              hex.dropFirst(2).allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else { return nil }
+        let selector = String(decoding: hex[2..<10], as: UTF8.self).lowercased()
+        let word: Int
+        let count: Int
+        switch selector {
+        case "a9059cbb", "095ea7b3": word = 0; count = 138
+        case "23b872dd": word = 1; count = 202
+        default: return nil
+        }
+        guard hex.count == count else { return nil }
+        let start = 10 + word * 64
+        guard hex[start..<(start + 24)].allSatisfy({ $0 == 48 }) else { return nil }
+        let address = "0x" + String(decoding: hex[(start + 24)..<(start + 64)], as: UTF8.self)
+        return AccountIconSpec.of(address: address) == nil ? nil : address
     }
 }
 
@@ -1907,11 +2150,20 @@ struct ConnectSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Connect").font(.aeTitle)
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s4) {
+            HStack {
+                Text("Connect").font(.aeTitle)
+                Spacer()
+                EastSeaDawnMark().frame(width: 32, height: 32)
+            }
+            HStack(alignment: .top, spacing: DesignTokens.Space.s2) {
+                AccountIcon(address: model.address, size: 32)
+                Text(verbatim: model.address).font(.aeBody.monospaced()).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text(model.connectRequest.map { String(localized: "\($0.origin) wants to see your address \(Short.address(model.address)). It cannot move funds: every payment or call still asks you here.") }
                  ?? String(localized: "A page wants to see your address \(Short.address(model.address)). It cannot move funds: every payment or call still asks you here."))
-                .font(.aeBody).foregroundStyle(.secondary)
+                .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
             HStack {
                 Button("Cancel") {
                     model.connectRequest = nil
@@ -1921,12 +2173,14 @@ struct ConnectSheet: View {
                 Button("Connect") {
                     model.approveConnect()
                     dismiss()
-                }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                }.buttonStyle(EastSeaPrimaryButtonStyle()).keyboardShortcut(.defaultAction)
             }
         }
-        .padding(24)
+        .padding(DesignTokens.Space.s6)
         .macMinSize(width: 420)
+        .buttonStyle(EastSeaQuietButtonStyle())
         .sheetScroll()
+        .eastSeaSheet()
     }
 }
 
@@ -1935,14 +2189,20 @@ struct ReceiveSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Receive \(Brand.networkCoinTicker)").font(.aeTitle)
+        VStack(spacing: DesignTokens.Space.s6) {
+            HStack {
+                Text("Receive \(Brand.networkCoinTicker)").font(.aeTitle)
+                Spacer()
+                EastSeaDawnMark().frame(width: 32, height: 32)
+            }
             ReceiveAddressView(address: model.address)
             Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
         }
-        .padding(24)
+        .padding(DesignTokens.Space.s6)
         .macMinSize(width: 380)
+        .buttonStyle(EastSeaQuietButtonStyle())
         .sheetScroll()
+        .eastSeaSheet()
     }
 }
 
@@ -1950,17 +2210,17 @@ private struct RecoveryPanel: View {
     @EnvironmentObject var model: WalletModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.s5) {
             Text("Recovery device").font(.aeHeadline)
             Text("If you lose this device, a second device you trust (your other Mac or iPhone) can move your funds to itself.")
-                .font(.aeBody).foregroundStyle(.secondary)
+                .font(.aeBody).foregroundStyle(DesignTokens.Palette.textMuted.color)
             // F-05: recovery saves a lost key, never a stolen one.
             Label(KeyExposureNotice.recovery.text, systemImage: "exclamationmark.triangle").font(.aeFootnote).foregroundStyle(Color.warn)
                 .fixedSize(horizontal: false, vertical: true)
             step(1, "On the other device, copy its code", "Open \(Brand.name) there, go to Security ▸ Recovery device, and copy \"This device's code\".")
             HStack {
-                TextField("Paste the other device's code", text: $model.guardianInput).textFieldStyle(.roundedBorder).font(.aeFootnote.monospaced())
-                Button("Trust it") { model.setRecoveryKey() }.buttonStyle(.borderedProminent).disabled(model.busy || model.guardianInput.isEmpty)
+                TextField("Paste the other device's code", text: $model.guardianInput).textFieldStyle(EastSeaTextFieldStyle()).font(.aeFootnote.monospaced())
+                Button("Trust it") { model.setRecoveryKey() }.buttonStyle(EastSeaPrimaryButtonStyle()).disabled(model.busy || model.guardianInput.isEmpty)
             }
             Button("Remove all my recovery devices and words") { model.removeRecoveryKeys() }
                 .font(.aeFootnote).disabled(model.busy)
@@ -1980,19 +2240,19 @@ private struct RecoveryPanel: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Recovering \(Short.address(p.request.lost)): \(Wei.format(p.request.valueWei)) \(Brand.networkCoinTicker)").font(.aeBody.weight(.medium))
                         Text(p.isReady ? String(localized: "Ready to finish") : String(localized: "Can finish \(p.readyAt.formatted(date: .abbreviated, time: .shortened))"))
-                            .font(.aeFootnote).foregroundStyle(p.isReady ? Color.aether : .secondary)
+                            .font(.aeFootnote).foregroundStyle(p.isReady ? Color.aether : DesignTokens.Palette.textMuted.color)
                     }
                     Spacer()
-                    Button("Finish recovery") { model.finishRecovery() }.buttonStyle(.borderedProminent).disabled(model.busy || !p.isReady)
+                    Button("Finish recovery") { model.finishRecovery() }.buttonStyle(EastSeaPrimaryButtonStyle()).disabled(model.busy || !p.isReady)
                 }
             } else {
                 HStack {
-                    TextField("0x lost account", text: $model.lostInput).textFieldStyle(.roundedBorder).font(.aeFootnote.monospaced())
+                    TextField("0x lost account", text: $model.lostInput).textFieldStyle(EastSeaTextFieldStyle()).font(.aeFootnote.monospaced())
                     Button("Start recovery") { model.recover() }.disabled(model.busy || model.lostInput.isEmpty)
                 }
-                Text("Lost every device? Use your 24 recovery words instead (with the lost account above).").font(.aeFootnote).foregroundStyle(.secondary)
+                Text("Lost every device? Use your 24 recovery words instead (with the lost account above).").font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                 HStack {
-                    SecureField("24 recovery words", text: $model.paperWordsInput).textFieldStyle(.roundedBorder).font(.aeFootnote.monospaced())
+                    SecureField("24 recovery words", text: $model.paperWordsInput).textFieldStyle(EastSeaTextFieldStyle()).font(.aeFootnote.monospaced())
                     Button("Recover with words") { model.recoverWithWords() }
                         .disabled(model.busy || model.lostInput.isEmpty || model.paperWordsInput.split(separator: " ").count != 24)
                 }
@@ -2001,11 +2261,11 @@ private struct RecoveryPanel: View {
     }
 
     private func step(_ n: Int, _ title: LocalizedStringKey, _ detail: LocalizedStringKey) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: DesignTokens.Space.s3) {
             Text("\(n)").font(.aeFootnote.bold()).frame(width: 22, height: 22).background(Color.aether.opacity(0.15), in: Circle())
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.aeBody.weight(.semibold))
-                Text(detail).font(.aeFootnote).foregroundStyle(.secondary)
+                Text(detail).font(.aeFootnote).foregroundStyle(DesignTokens.Palette.textMuted.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -2016,6 +2276,10 @@ private struct RecoveryPanel: View {
 
 enum Amount {
     static func text(_ v: Double) -> String {
+        v.formatted(.number.precision(.fractionLength(0...4)))
+    }
+
+    static func text(_ v: Decimal) -> String {
         v.formatted(.number.precision(.fractionLength(0...4)))
     }
 

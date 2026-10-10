@@ -185,10 +185,10 @@ impl Outbox {
         }
     }
 
-    /// Ask the registrar (or, on a follower, the upstream) for a re-attestation.
-    async fn reattest(&self, params: Value) -> Result<Value, String> {
+    /// Key discovery and encrypted requests use the same bounded transport.
+    async fn registrar_call(&self, method: &str, params: Value) -> Result<Value, String> {
         if let Ok(url) = std::env::var(REGISTRAR_RPC_ENV) {
-            let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "aether_reattest", "params": params });
+            let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
             let v: Value = reqwest::Client::new()
                 .post(url)
                 .json(&body)
@@ -205,9 +205,24 @@ impl Outbox {
             };
         }
         match self {
-            Outbox::Upstream(u) => u.first("aether_reattest", params).await,
+            Outbox::Upstream(u) => u.first(method, params).await,
             Outbox::Local(_) => Err(format!("no registrar to re-attest with (set {REGISTRAR_RPC_ENV})")),
         }
+    }
+
+    /// Authenticate against locally verified finalized registry state, then
+    /// encrypt before a follower, validator or HTTP endpoint sees any token.
+    async fn reattest(&self, token: &str, chain_id: u64, registrar: &aether_crypto::PublicKey, public_params: Vec<Value>) -> Result<Value, String> {
+        for _ in 0..2 {
+            let descriptor: aether_net::registrar::EncryptionKey = serde_json::from_value(self.registrar_call("aether_registrarEncryptionKey", json!([])).await?)
+                .map_err(|_| "registrar encryption key unavailable")?;
+            let params = crate::devicecheck::encrypt_token_request(token, &descriptor, chain_id, registrar, "aether_reattest", public_params.clone())?;
+            match self.registrar_call("aether_reattest", params).await {
+                Err(e) if e.contains("registrar encryption key expired") => continue,
+                result => return result,
+            }
+        }
+        Err("registrar encryption key changed; retry re-attestation".into())
     }
 }
 
@@ -241,16 +256,18 @@ async fn answer_slots(chain: &Chain, outbox: &Outbox, keys: &CandidateKeys, st: 
             (false, _) => None,
             (true, Some(r)) => Some(r.clone()),
             (true, None) => {
-                let params = match std::fs::read_to_string(keys.dir.join(DEVICE_TOKEN_FILE)) {
-                    Ok(token) => json!([token.trim(), hex::encode(me), due.period, hex::encode(keys.reattest_request(chain_id, due.period))]),
+                let token = match std::fs::read_to_string(keys.dir.join(DEVICE_TOKEN_FILE)) {
+                    Ok(token) => p256::elliptic_curve::zeroize::Zeroizing::new(token),
                     Err(e) => {
                         warn!(%e, period = due.period, "daily re-attestation due, but the app left no DeviceCheck token: this Mac earns nothing until it re-attests");
                         continue;
                     }
                 };
-                match outbox.reattest(params).await.and_then(|v| serde_json::from_value::<Reattestation>(v).map_err(|e| e.to_string())) {
+                let (x, y) = registry::registrar(&state);
+                let registrar = aether_crypto::PublicKey { scheme: aether_types::SignerScheme::P256, bytes: [&[4u8][..], &x, &y].concat() };
+                let params = vec![json!(hex::encode(me)), json!(due.period), json!(hex::encode(keys.reattest_request(chain_id, due.period)))];
+                match outbox.reattest(token.trim(), chain_id, &registrar, params).await.and_then(|v| serde_json::from_value::<Reattestation>(v).map_err(|e| e.to_string())) {
                     Ok(r) => {
-                        info!(period = due.period, "re-attested with a fresh DeviceCheck token");
                         st.attested.insert(due.period, r.clone());
                         Some(r)
                     }

@@ -1,71 +1,100 @@
 import SwiftUI
 
-// Design tokens (docs/research/design-benchmark-2026.md §6): six type sizes, one card
-// radius, and colors that each mean one thing. Green is for money coming in only.
+// Native aliases keep every existing screen on the generated EastSea system.
+// Values belong in design/brand/tokens.json, including both appearances.
 
 extension Font {
-    /// The Home balance: the largest thing on any screen.
-    #if os(macOS)
-    static let display = Font.system(size: 56, weight: .semibold, design: .rounded)
-    #else
-    static let display = Font.system(size: 48, weight: .semibold, design: .rounded)
-    #endif
-    /// Page and sheet titles, headline numbers.
-    #if os(macOS)
-    static let aeTitle = Font.system(size: 22, weight: .semibold)
-    #else
-    static let aeTitle = Font.title2.weight(.semibold)
-    #endif
-    /// Card titles.
-    static let aeHeadline = Font.headline
-    /// Body text (at most two lines on a card).
-    #if os(macOS)
-    static let aeBody = Font.body
-    static let aeFootnote = Font.callout
-    static let aeCaption = Font.caption
-    #else
-    static let aeBody = Font.subheadline
-    static let aeFootnote = Font.footnote
-    static let aeCaption = Font.caption2
-    #endif
+    static let display = DesignTokens.TypeScale.amountXl.font
+    static let aeTitle = DesignTokens.TypeScale.title3.font
+    static let aeHeadline = DesignTokens.TypeScale.headline.font
+    static let aeBody = DesignTokens.TypeScale.bodyUi.font
+    static let aeFootnote = DesignTokens.TypeScale.footnote.font
+    static let aeCaption = DesignTokens.TypeScale.caption.font
 }
 
 extension Font {
-    /// The earnings number: loud, but never larger than the balance above it.
-    static let heroNumber = Font.system(size: 48, weight: .heavy, design: .rounded)
-    static let heroNumberNarrow = Font.system(size: 40, weight: .heavy, design: .rounded)
+    static let heroNumber = DesignTokens.TypeScale.amountLg.font
+    static let heroNumberNarrow = DesignTokens.TypeScale.amountMd.font
 }
 
 extension Color {
-    /// Warning text and dots. System orange is 2.6:1 on white, so light mode gets
-    /// a dark amber (4.7:1) and dark mode a bright one — both over 4.5:1 on the
-    /// card backgrounds (docs/research/design-critique-2026-09.md).
-    static let warn: Color = {
-        #if os(macOS)
-        Color(NSColor(name: nil, dynamicProvider: { appearance in
-            appearance.bestMatch(from: [.darkAqua, .vibrantDark]) == nil
-                ? NSColor(red: 0.68, green: 0.38, blue: 0.0, alpha: 1)
-                : NSColor(red: 1.0, green: 0.72, blue: 0.34, alpha: 1)
-        }))
-        #else
-        Color(UIColor { trait in
-            trait.userInterfaceStyle == .dark
-                ? UIColor(red: 1.0, green: 0.72, blue: 0.34, alpha: 1)
-                : UIColor(red: 0.68, green: 0.38, blue: 0.0, alpha: 1)
-        })
-        #endif
-    }()
+    static let aether = DesignTokens.Palette.accent.color
+    static let warn = DesignTokens.Palette.warn.color
 }
 
 /// Inside every card, the same padding.
 enum CardPadding {
-    static let narrow: CGFloat = 16
-    static let wide: CGFloat = 20
+    static let narrow: CGFloat = DesignTokens.Space.s4
+    static let wide: CGFloat = DesignTokens.Space.s5
 }
 
 enum Radius {
     /// Every card-shaped surface.
-    static let card: CGFloat = 16
+    static let card: CGFloat = DesignTokens.Radius.lg
     /// Tiles and buttons nested inside a card.
-    static let inner: CGFloat = 12
+    static let inner: CGFloat = DesignTokens.Radius.md
+}
+
+extension View {
+    func eastSeaPage() -> some View {
+        font(.aeBody)
+            .foregroundStyle(DesignTokens.Palette.text.color)
+            .tint(DesignTokens.Palette.accent.color)
+            .background(DesignTokens.Palette.bg.color)
+    }
+
+    func eastSeaSheet() -> some View {
+        font(.aeBody)
+            .foregroundStyle(DesignTokens.Palette.text.color)
+            .tint(DesignTokens.Palette.accent.color)
+            .background(DesignTokens.Palette.surface.color)
+    }
+}
+
+struct EastSeaPrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(DesignTokens.TypeScale.bodyUi.font.weight(.semibold))
+            .padding(.horizontal, DesignTokens.Space.s4)
+            .frame(minHeight: DesignTokens.Space.s10)
+            .foregroundStyle(DesignTokens.Palette.onAccentFill.color)
+            .background(configuration.role == .destructive
+                        ? DesignTokens.Palette.danger.color
+                        : DesignTokens.Palette.accentFill.color, in: Capsule())
+            .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.45)
+    }
+}
+
+struct EastSeaQuietButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(DesignTokens.TypeScale.bodyUi.font)
+            .padding(.horizontal, DesignTokens.Space.s4)
+            .frame(minHeight: DesignTokens.Space.s10)
+            .foregroundStyle(configuration.role == .destructive
+                             ? DesignTokens.Palette.danger.color
+                             : DesignTokens.Palette.text.color)
+            .background(DesignTokens.Palette.surfaceSunken.color, in: Capsule())
+            .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.45)
+    }
+}
+
+struct EastSeaTextFieldStyle: TextFieldStyle {
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration
+            .textFieldStyle(.plain)
+            .font(DesignTokens.TypeScale.bodyUi.font)
+            .padding(DesignTokens.Space.s3)
+            .foregroundStyle(DesignTokens.Palette.text.color)
+            .background(DesignTokens.Palette.surfaceSunken.color,
+                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
+            .overlay {
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
+                    .stroke(DesignTokens.Palette.lineControl.color, lineWidth: 1)
+            }
+    }
 }

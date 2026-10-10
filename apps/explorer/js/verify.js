@@ -7,6 +7,9 @@
 // load it; else nothing and the page says "not verified". One answer shape
 // everywhere — {verified, height, reason} — so the pages have one code path.
 
+import { readVerdict, readSource } from './peers.js';
+import { DEFAULT_ENDPOINT } from './rpc.js';
+
 export const NOT_VERIFIED = 'not verified';
 export const NOT_COMMITTED = 'not committed';
 
@@ -15,8 +18,8 @@ export function verdict(verified, height = null, reason = '') {
   return { verified: !!verified, height: Number.isSafeInteger(height) ? height : null, reason: String(reason || '') };
 }
 
-/** The one answer receipts get today, from any verifier: no block commits to
- * a receipt yet, so there is nothing a certificate could vouch for. */
+/** Legacy blocks without a receipt commitment cannot certify their receipts.
+ * Modern receipt proofs are verified by the public reader before display. */
 export const notCommitted = () => verdict(false, null, NOT_COMMITTED);
 
 /** `window.eastsea.verify` when the page runs inside the app and the surface
@@ -30,8 +33,9 @@ export function nativeVerifier(win = globalThis) {
 // explorer (a deployment that carries its own wasm/) and next door in an
 // apps/ checkout (apps/extension). In the app bundle neither exists — the
 // native path has already answered, so these are never fetched.
-const MODULE_URLS = ['wasm/aether_wasm.js', '../extension/wasm/aether_wasm.js'];
-const NETWORK_URLS = ['../extension/network.json', 'network.json'];
+const MODULE_URLS = [new URL('../wasm/aether_wasm.js', import.meta.url).href,
+  new URL('../../extension/wasm/aether_wasm.js', import.meta.url).href];
+const NETWORK_URLS = ['network.json', '../extension/network.json'];
 
 /** The retries mirror the wallet's FFI and the extension's rpc.js: a node
  * answers null for a height until its block is finalized, ~250 ms a poll. */
@@ -71,9 +75,9 @@ function writeFloor(storage, key, height) {
  * the account, anchor its height with a finalized certificate, verify, and
  * only ever raise the stored height floor. Never rejects; a check that ran
  * and failed is a verdict, not an error. */
-export async function wasmAccount(node, address, env) {
+export async function wasmAccount(node, address, env, displayed = null) {
   try {
-    const account = await node.call('aether_getAccount', [address]);
+    const account = displayed || await node.call('aether_getAccount', [address]);
     const height = account?.height;
     if (!Number.isSafeInteger(height) || height < 0) return verdict(false, null, 'account height is missing');
     const [finalized, status] = await Promise.all([
@@ -84,7 +88,7 @@ export async function wasmAccount(node, address, env) {
     const floor = readFloor(env.storage, floorKey);
     const verified = JSON.parse(String(env.mod.verifyAccount(
       JSON.stringify(env.network), JSON.stringify(status), JSON.stringify(account),
-      JSON.stringify(finalized), address, floor, env.now(),
+      JSON.stringify(finalized), address, BigInt(floor), BigInt(env.now()),
     )));
     const certified = Number(verified.certified_block);
     if (!Number.isSafeInteger(certified) || certified < floor) return verdict(false, null, 'invalid certified height');
@@ -145,6 +149,17 @@ function nativeAsk(promise) {
   );
 }
 
+function nativeDisplayed(native, kind, node, key, displayed) {
+  const checked = readVerdict(displayed);
+  if (checked) return Promise.resolve(checked);
+  // The bridge verifies its own node independently. It cannot certify a
+  // different HTTP node's displayed fields at the same height/address. Use
+  // the answer's recorded source before the mutable current-source badge.
+  const source = readSource(displayed) || node?.source;
+  if ((source?.url || node?.url) !== DEFAULT_ENDPOINT) return Promise.resolve(verdict(false, null, 'read from another node'));
+  return nativeAsk(Promise.resolve().then(() => native[kind](key)));
+}
+
 /** Pick the verifier once, at boot: native when the page is inside the app,
  * else wasm when the module loads, else none. Every kind answers the same
  * three questions and never rejects. */
@@ -153,20 +168,23 @@ export async function detectVerifier(win = globalThis, io = {}) {
   if (native) {
     return {
       kind: 'native',
-      block: (_node, height) => nativeAsk(native.block(height)),
-      account: (_node, address) => nativeAsk(native.account(address)),
-      receipt: (_node, hash) => nativeAsk(native.receipt(hash)),
+      block: (node, height, displayed) => nativeDisplayed(native, 'block', node, height, displayed),
+      account: (node, address, displayed) => nativeDisplayed(native, 'account', node, address, displayed),
+      receipt: (node, hash, displayed) => nativeDisplayed(native, 'receipt', node, hash, displayed),
     };
   }
   const env = await loadWasmVerifier(io);
   if (env) {
     return {
       kind: 'wasm',
-      // The module exports an account check only (crates/wasm): a block or a
-      // receipt has no native claim to make here, so it says so instead.
-      block: async () => verdict(false, null, NOT_VERIFIED),
-      account: (node, address) => wasmAccount(node, address, env),
-      receipt: notCommitted,
+      env,
+      // PublicPeerPool verifies and constructs the exact displayed object.
+      // Independently re-fetching a genuine proof must not bless a forged
+      // HTTP summary or a different receipt rendered by a concurrent request.
+      block: async (_node, _height, displayed) => readVerdict(displayed) || verdict(false, null, NOT_VERIFIED),
+      account: (node, address, displayed) => readVerdict(displayed) || wasmAccount(node, address, env, displayed),
+      receipt: async (_node, _hash, displayed) => readVerdict(displayed)
+        || (typeof env.mod.verifyReceipt === 'function' ? verdict(false, null, NOT_VERIFIED) : notCommitted()),
     };
   }
   return {

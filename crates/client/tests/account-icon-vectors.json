@@ -1,0 +1,414 @@
+{
+  "domain": "eastsea-account-icon-v2",
+  "version": 3,
+  "palettes": [
+    {
+      "name": "tidal",
+      "start": "#209792",
+      "end": "#1d8781",
+      "ink": "#0d2135"
+    },
+    {
+      "name": "coral",
+      "start": "#ca2b2b",
+      "end": "#b92727",
+      "ink": "#eed7a0"
+    },
+    {
+      "name": "cove",
+      "start": "#2f62da",
+      "end": "#2558d0",
+      "ink": "#eed7a0"
+    },
+    {
+      "name": "seagrass",
+      "start": "#429c1c",
+      "end": "#3b8b18",
+      "ink": "#0d2135"
+    },
+    {
+      "name": "anemone",
+      "start": "#c7237e",
+      "end": "#b62073",
+      "ink": "#eed7a0"
+    },
+    {
+      "name": "gold",
+      "start": "#aa8518",
+      "end": "#987716",
+      "ink": "#0d2135"
+    },
+    {
+      "name": "azure",
+      "start": "#298ee0",
+      "end": "#1f84d6",
+      "ink": "#0d2135"
+    },
+    {
+      "name": "reef",
+      "start": "#257e52",
+      "end": "#206f47",
+      "ink": "#eed7a0"
+    },
+    {
+      "name": "rose",
+      "start": "#d36979",
+      "end": "#cf596b",
+      "ink": "#0d2135"
+    },
+    {
+      "name": "kelp",
+      "start": "#6e7722",
+      "end": "#5f671e",
+      "ink": "#eed7a0"
+    },
+    {
+      "name": "orchid",
+      "start": "#e444d4",
+      "end": "#e232d0",
+      "ink": "#0d2135"
+    },
+    {
+      "name": "sea",
+      "start": "#257793",
+      "end": "#216a83",
+      "ink": "#eed7a0"
+    },
+    {
+      "name": "dawn",
+      "start": "#df6320",
+      "end": "#cd5b1d",
+      "ink": "#0d2135"
+    },
+    {
+      "name": "iris",
+      "start": "#a029e0",
+      "end": "#961fd6",
+      "ink": "#eed7a0"
+    },
+    {
+      "name": "copper",
+      "start": "#96612c",
+      "end": "#865727",
+      "ink": "#eed7a0"
+    },
+    {
+      "name": "lilac",
+      "start": "#9579d8",
+      "end": "#8969d3",
+      "ink": "#0d2135"
+    }
+  ],
+  "silhouettes": [
+    {
+      "name": "cove",
+      "path": "M 52 12 C 36 4 13 10 10 28 C 7 45 25 55 43 48 L 47 38 C 33 44 21 40 22 29 C 23 19 35 15 48 23 Z"
+    },
+    {
+      "name": "headland",
+      "path": "M 12 47 L 12 34 C 22 32 19 18 29 11 C 37 5 51 12 53 24 C 55 35 44 41 35 38 C 29 36 29 48 22 50 Z"
+    },
+    {
+      "name": "sandbar",
+      "path": "M 10 40 C 13 29 21 28 29 26 C 35 24 37 10 48 10 L 55 21 C 44 22 46 35 35 38 C 27 41 21 38 17 51 Z"
+    },
+    {
+      "name": "twin peaks",
+      "path": "M 9 43 L 19 15 C 21 9 25 9 28 17 L 33 29 L 42 12 C 45 7 48 9 50 17 L 56 43 C 42 51 24 51 9 43 Z"
+    },
+    {
+      "name": "reef",
+      "path": "M 8 32 L 25 9 C 28 6 32 8 32 13 L 29 24 L 50 16 C 56 14 58 20 53 25 L 35 48 C 31 54 26 51 28 45 L 32 34 L 13 42 C 7 45 5 39 8 32 Z"
+    },
+    {
+      "name": "breaker",
+      "path": "M 8 43 C 16 39 17 18 31 11 C 44 4 56 14 54 27 C 48 18 36 17 34 28 C 40 26 51 32 56 43 C 40 52 22 51 8 43 Z"
+    },
+    {
+      "name": "inlet",
+      "path": "M 10 48 L 10 26 C 10 6 52 6 52 26 L 52 48 L 40 48 L 40 29 C 40 21 22 21 22 29 L 22 48 Z"
+    },
+    {
+      "name": "delta",
+      "path": "M 27 50 L 25 32 L 9 20 L 14 9 L 31 22 L 48 9 L 56 18 L 39 34 L 40 50 Z"
+    },
+    {
+      "name": "spit",
+      "path": "M 11 48 C 9 26 23 9 51 10 C 49 33 33 49 11 48 Z"
+    },
+    {
+      "name": "shelf",
+      "path": "M 10 15 L 32 10 L 33 25 L 52 20 L 55 40 L 39 50 L 12 45 C 8 34 8 25 10 15 Z"
+    },
+    {
+      "name": "hook",
+      "path": "M 11 10 L 25 10 L 25 32 C 25 45 43 44 43 32 L 43 22 L 55 22 L 55 35 C 55 59 11 58 11 35 Z"
+    },
+    {
+      "name": "crescent",
+      "path": "M 50 8 C 23 4 8 19 10 36 C 12 52 33 58 52 45 C 30 43 29 23 50 8 Z"
+    },
+    {
+      "name": "ridge",
+      "path": "M 8 42 L 14 27 L 25 30 L 31 9 L 43 24 L 51 18 L 57 42 C 39 51 24 50 8 42 Z"
+    },
+    {
+      "name": "estuary",
+      "path": "M 10 13 L 24 11 L 32 28 L 41 10 L 55 15 L 42 33 L 51 47 L 35 51 L 28 39 L 13 48 L 8 34 L 23 29 Z"
+    },
+    {
+      "name": "arch",
+      "path": "M 8 44 C 9 27 18 8 32 8 C 46 8 55 27 56 44 L 42 47 C 42 33 37 24 32 24 C 27 24 22 33 22 47 Z"
+    },
+    {
+      "name": "tidal pool",
+      "path": "M 54 27 C 54 47 38 55 21 48 C 6 41 8 18 23 11 C 39 3 51 13 46 27 C 42 37 30 39 25 29 C 29 32 36 29 35 23 C 34 16 21 21 21 31 C 21 43 43 42 43 29 Z"
+    }
+  ],
+  "backgrounds": {
+    "light": "#f4efe6",
+    "dark": "#071320"
+  },
+  "vectors": [
+    {
+      "address": "0x0000000000000000000000000000000000000000",
+      "features": {
+        "version": 3,
+        "palette": 3,
+        "layout": 12657,
+        "shape": 1,
+        "rotation": 3
+      },
+      "silhouetteClass": 5,
+      "seedSha256": "d3717158df7a7a45ee1d79a961ceb15f8591786de958c8bbac7cde29d4038d4c",
+      "svg16Sha256": "09846013dbe29175f66e28d889a2b3a7dd386fea05ca63d9918db011afc11d91",
+      "svg32Sha256": "e0594658149c3f1b04ce4819c6a6eccba5bae04d29e7a2ba2fa706fd6d990ace",
+      "svg64Sha256": "0750b6233e646fe10ec6dea09c2d0ea97df9573492740e1936dff4a550a719da"
+    },
+    {
+      "address": "0xffffffffffffffffffffffffffffffffffffffff",
+      "features": {
+        "version": 3,
+        "palette": 1,
+        "layout": 11846,
+        "shape": 1,
+        "rotation": 0
+      },
+      "silhouetteClass": 6,
+      "seedSha256": "112e46de3137bc9e1da5f90bd3c4589382bf67be5f129fa301bd72b662578770",
+      "svg16Sha256": "6d95a445fbc47d2e2ce2dfa0d109128d389a548f2262b51d10cc49e75203a929",
+      "svg32Sha256": "5e52a8ed54718fe2bd493518881fc4c8d22d3b3a4b0c8e7e68153fd89d3e5199",
+      "svg64Sha256": "26de1ae1ca6aa19954408875d993888bcee2d9add1b7cb65c786a6c44008c609"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000001",
+      "features": {
+        "version": 3,
+        "palette": 3,
+        "layout": 5157,
+        "shape": 2,
+        "rotation": 2
+      },
+      "silhouetteClass": 9,
+      "seedSha256": "a3542582e315f15b3916b6913a3d4c42d3b0ac0d49fb76218adeb4b0262f9463",
+      "svg16Sha256": "37f1d1e251b7fc375910dc395da9739f9ee831aea962f303b9a22313f6731e4a",
+      "svg32Sha256": "6844056789e6360f9aa11afef6ac578abc9ab52e4e1d04887c2d5b1c20fa4a6e",
+      "svg64Sha256": "89613ca6a5a81c926f04cc52f75413bce6165a04b3dd51356d1744a0ef4f54d9"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000002",
+      "features": {
+        "version": 3,
+        "palette": 7,
+        "layout": 13120,
+        "shape": 0,
+        "rotation": 0
+      },
+      "silhouetteClass": 0,
+      "seedSha256": "07f340fc6c1227ac503919295926e66310426083ee22bf5598cccba189e268aa",
+      "svg16Sha256": "420fbe2d10e4eb074c580c2361258cbfd2160d5d8237728d4ca51d04d141bba8",
+      "svg32Sha256": "f3cdedb46e7097cc9cfca32f1fa106b906cc7f2820e4f258b331a4b3c532a77e",
+      "svg64Sha256": "8015632864296e24420ec5f8a7d72e7aef6bcf43e3d3e7c31d6ef471f235be31"
+    },
+    {
+      "address": "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "features": {
+        "version": 3,
+        "palette": 13,
+        "layout": 7123,
+        "shape": 0,
+        "rotation": 2
+      },
+      "silhouetteClass": 3,
+      "seedSha256": "8d1bd39fc91dee7c63461012aa5dbea2e0d6997def1247cd0195691b9e20faf6",
+      "svg16Sha256": "d63964ea742013a70b62e31e7df1773299c571dd17b4634cc5e7999c3aa0a539",
+      "svg32Sha256": "f7707be8c2c373fd598dc10d1ad5515a85058ebb5e08662f7146917e17aa3f5b",
+      "svg64Sha256": "7b8cf48f2946a0e3c6cd64470e133ad6c8b1a9373acb5d8d0f4a2085a49f3390"
+    },
+    {
+      "address": "0x52908400098527886e0f7030069857d2e4169ee7",
+      "features": {
+        "version": 3,
+        "palette": 3,
+        "layout": 8027,
+        "shape": 2,
+        "rotation": 2
+      },
+      "silhouetteClass": 11,
+      "seedSha256": "a31f5b2f150af53ff8d7881df04eae5d556c2d90d867200fbfa0474a811e9105",
+      "svg16Sha256": "05a0fc20e86524fd6ec64498d022426cb0d7b96df5493279c334e89b2046a13f",
+      "svg32Sha256": "8c99a16744e7be87a9ea38f67ec2dd9023730db91be44429353ddb814f2ff951",
+      "svg64Sha256": "b066734a74ff428dab2650adbf466d2cb1563923f824ad0cc79e1cc231a5c3af"
+    },
+    {
+      "address": "0x00000000000000000000000000000000000000c1",
+      "features": {
+        "version": 3,
+        "palette": 5,
+        "layout": 4220,
+        "shape": 1,
+        "rotation": 2
+      },
+      "silhouetteClass": 4,
+      "seedSha256": "95507cf62a8cd9d643026802a1f020c6230939008f64731efb0d0df5b7c65c34",
+      "svg16Sha256": "e499e20314569a324dd8316d3f92d5c79301f8a3da8baaa07a5640b11ea4f2c7",
+      "svg32Sha256": "8327321314c53dec4c339409ae79f0176d3a268cd4c0375b08859b77e9d63440",
+      "svg64Sha256": "a9b5d649adfea7961e3aee19a9f9168c0ccf7b69f89f2969bb95bf98899fe9bb"
+    },
+    {
+      "address": "0x1234567890abcdef1234567890abcdef12345678",
+      "features": {
+        "version": 3,
+        "palette": 12,
+        "layout": 290,
+        "shape": 2,
+        "rotation": 2
+      },
+      "silhouetteClass": 10,
+      "seedSha256": "ac812251ce4a43e999939a95df79eba11ad66e53392a7a794d90deec484adb5a",
+      "svg16Sha256": "81432e322ab483ecaf7f4ec1b295cf733c0ae7d78610ee3ec418046cbaa7600c",
+      "svg32Sha256": "490263579beed633076dd1c8b6fe0df74b5c6cf38d69742dd189a1dbc0f58bbf",
+      "svg64Sha256": "238ec74f446b189761764de304dbd1efb09f7dd9dedba8145f5295fd5deea944"
+    },
+    {
+      "address": "0x1234567890abcdef0000000000abcdef12345678",
+      "features": {
+        "version": 3,
+        "palette": 2,
+        "layout": 12388,
+        "shape": 3,
+        "rotation": 3
+      },
+      "silhouetteClass": 12,
+      "seedSha256": "f27064b601a8c559b1ebc69b0eabaadb3bf77900a1f3692170444261664ca723",
+      "svg16Sha256": "aa9c33516dd64228eea1195e23f7dd54d0b851be679ba788ead61978e803860b",
+      "svg32Sha256": "260d3728fe7ad31a90072e87a13a4a933f069eb60c3781d4f505ec1caf85ce2d",
+      "svg64Sha256": "60856d88f05a12149c96337fd4cd86e1eb64d0730a823bd273d1a414ef72751c"
+    },
+    {
+      "address": "0xa2521982a17474cb2f8741c85de653b5282d72b0",
+      "features": {
+        "version": 3,
+        "palette": 11,
+        "layout": 5518,
+        "shape": 2,
+        "rotation": 3
+      },
+      "silhouetteClass": 10,
+      "seedSha256": "eb158e9230485871805991a835748b4c7042e6bd8ffa819b3061be2bd2656983",
+      "svg16Sha256": "a8ad7cb7ba740c5d5084a116e8f27eb30e23112452ff7ecef27d167298f89cdc",
+      "svg32Sha256": "ae6d3b778963ed73eb298ef7223976484c1c53bb2594c8e8dd94c9c0ae43f9be",
+      "svg64Sha256": "9f68122d9a665d79d5e9185aa2de884aa0b9416f5a7b1a475a30c04b82f088a8"
+    },
+    {
+      "address": "0x6bc5ded76ccbdc8df35e7cd28b68fed245a74416",
+      "features": {
+        "version": 3,
+        "palette": 14,
+        "layout": 6726,
+        "shape": 3,
+        "rotation": 0
+      },
+      "silhouetteClass": 14,
+      "seedSha256": "3eda46849df7335c4be2d76423c59b9dd9c333f81c199bd3b86912655560f74b",
+      "svg16Sha256": "425f900aa24afb07a65d48df5156e4d49973ee8f1d844b4a0c763766f4bc1a48",
+      "svg32Sha256": "938eb35752ae42578672ed6899890199be55675bbd8a144d88e510cf3ab68324",
+      "svg64Sha256": "c770a76b91fe8c9326e53244412b9fd09b1a7943314d27f01030efacbf7f7af0"
+    },
+    {
+      "address": "0x961f8add5ae93ff0700be8abd5f9f8ec69ba4347",
+      "features": {
+        "version": 3,
+        "palette": 15,
+        "layout": 6548,
+        "shape": 1,
+        "rotation": 3
+      },
+      "silhouetteClass": 4,
+      "seedSha256": "dfd9941df20aabd20f96dc1d2c6188e6cf49041eac30b1c1a5b3f55830306210",
+      "svg16Sha256": "dc9dfdd0ff8ee4e1ac58004177c012969c1ee0f9e8cbf934a63438beef6b38e9",
+      "svg32Sha256": "a8f386abaaa78b792f961027df4801840d0bae71bb36b691d7f517d75f90bb82",
+      "svg64Sha256": "935c741817c6427cd138cdf46cccf176ef64fb9dba82d5a1a8fc143c1d7a7c24"
+    },
+    {
+      "address": "0xc91367bac92c6de822de8afd0f34ff19fd8f7670",
+      "features": {
+        "version": 3,
+        "palette": 8,
+        "layout": 10334,
+        "shape": 1,
+        "rotation": 3
+      },
+      "silhouetteClass": 6,
+      "seedSha256": "d8685eba46d84d77becd3d922608dcb6157061ee9af379840a3d6cfa2d64cd41",
+      "svg16Sha256": "c413f56353321b2cb06a1476a23867a97da1829e19dbd07126522e1c2dabcb28",
+      "svg32Sha256": "38e3e35b40a0328cf860cd59ef50f3058f60d0364ec4853268416586ce1431f3",
+      "svg64Sha256": "a294099c04cd1baedd4bb9b6e6ac4635a028143f3f554f36cb24a1f8c0f690fc"
+    },
+    {
+      "address": "0x00000000000000000000000000000000000000ff",
+      "features": {
+        "version": 3,
+        "palette": 12,
+        "layout": 1259,
+        "shape": 3,
+        "rotation": 3
+      },
+      "silhouetteClass": 15,
+      "seedSha256": "fc44eb4b84d75156e6271ea6e24b7e5bdb3b474adcc6e0962e9abdb232c7cc50",
+      "svg16Sha256": "73564e74e261e69dc48fa008398be00e31228523d5bc6659370e2052e5e8d820",
+      "svg32Sha256": "e00d1010f1d81f5a19e27ec84e35c9d3c774ee5445301d50989fa86ffceb1851",
+      "svg64Sha256": "d2e72e7ed7ee6a2480e89d2a49295c01ac561666582298a75007bd46aeadea4b"
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000100",
+      "features": {
+        "version": 3,
+        "palette": 5,
+        "layout": 12298,
+        "shape": 1,
+        "rotation": 0
+      },
+      "silhouetteClass": 6,
+      "seedSha256": "15b00ae69320a28359159ec028eb4f0d64e3f83bfde8be0656e7514b4c0bc6e6",
+      "svg16Sha256": "157fa650bff3c86f5e7e60f791b0dff5065e07a48639dfbc7463dde2197fe04b",
+      "svg32Sha256": "4ab703879d495a01cbffc7787dce82a8a84b7c10311a9ffcf9f3a49ef29eb178",
+      "svg64Sha256": "4bce7d04f95cc580f1351c41cb64396368d0991d065cf2f55dccceac046c9a74"
+    },
+    {
+      "address": "0x000000000000000000000000000000000000ffff",
+      "features": {
+        "version": 3,
+        "palette": 2,
+        "layout": 3628,
+        "shape": 0,
+        "rotation": 2
+      },
+      "silhouetteClass": 0,
+      "seedSha256": "820e2cc9154068c232a1c3a601ae0f29224a7d2187980ed473cb0639df71e3b9",
+      "svg16Sha256": "ada9724feff717f5474162ae0495b8f24729123dd70a4d9a0b8b9f705f71ddb3",
+      "svg32Sha256": "9d6355474c3c0ff5357f2f758451e292a04beb72b834617a60936d7d2c97ded2",
+      "svg64Sha256": "6fd370a8e04dcb00731d965671f434b666fdbfe5166b6ce676aaaa664e36c694"
+    }
+  ]
+}

@@ -10,6 +10,7 @@ struct SettingsView: View {
     @AppStorage("developerMode") private var developerMode = false
     @AppStorage("useDevelopmentNetwork") private var useDevelopmentNetwork = false
     @AppStorage("developmentNetworkPort") private var developmentNetworkPort = 18546
+    @AppStorage("browserSearchEngine") private var browserSearchEngine = BrowserSearchEngine.duckDuckGo.rawValue
 
     var body: some View {
         Form {
@@ -58,6 +59,14 @@ struct SettingsView: View {
                     UnattendedSection()
                 }
                 PublicReadSection()
+                SettingsSection(LocalizedStringKey("Explore"), explanation: LocalizedStringKey("Web search starts only when you choose Search the web.")) {
+                    SettingsControlRow(LocalizedStringKey("Search engine")) {
+                        Picker("Search engine", selection: $browserSearchEngine) {
+                            ForEach(BrowserSearchEngine.allCases) { engine in Text(engine.title).tag(engine.rawValue) }
+                        }
+                        .accessibilityLabel("Search engine")
+                    }
+                }
                 HistoryStorageSection()
                 ResourcesSection()
                 PresencePrivacySection()

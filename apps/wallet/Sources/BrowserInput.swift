@@ -1,31 +1,35 @@
 import Foundation
 
 enum BrowserSearchEngine: String, Codable, CaseIterable, Identifiable {
-    case duckDuckGo, google, bing
+    case duckDuckGo, google, bing, naver, brave
     var id: String { rawValue }
     var title: String {
         switch self {
         case .duckDuckGo: return String(localized: "DuckDuckGo")
         case .google: return String(localized: "Google")
         case .bing: return String(localized: "Bing")
+        case .naver: return String(localized: "Naver")
+        case .brave: return String(localized: "Brave")
         }
     }
 
     /// Only the query is sent. Affiliate, source, account and tracking parameters
     /// never travel from the wallet to a search engine.
     func searchURL(for query: String) -> URL {
-        let host: String
+        let host: String, path: String, parameter: String
         switch self {
-        case .duckDuckGo: host = "duckduckgo.com"
-        case .google: host = "www.google.com"
-        case .bing: host = "www.bing.com"
+        case .duckDuckGo: (host, path, parameter) = ("duckduckgo.com", "/", "q")
+        case .google: (host, path, parameter) = ("www.google.com", "/search", "q")
+        case .bing: (host, path, parameter) = ("www.bing.com", "/search", "q")
+        case .naver: (host, path, parameter) = ("search.naver.com", "/search.naver", "query")
+        case .brave: (host, path, parameter) = ("search.brave.com", "/search", "q")
         }
         var components = URLComponents()
         components.scheme = "https"
         components.host = host
-        components.path = self == .duckDuckGo ? "/" : "/search"
+        components.path = path
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
-        components.percentEncodedQuery = "q=" + (query.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")
+        components.percentEncodedQuery = parameter + "=" + (query.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")
         // All components are generated above, rather than interpreted as a URL.
         return components.url!
     }

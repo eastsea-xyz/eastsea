@@ -60,7 +60,17 @@ function browserHost({ reduced = false, webgl = true, width = 600, height = 600,
       super(); this.tagName = tag; this.children = []; this.attributes = new Map(); this.dataset = {};
       this.hidden = false; this.textContent = ''; this.ownerDocument = doc; this.capture = new Set();
       this.style = { display: '', touchAction: '', setProperty(name, value) { this[name] = value; }, getPropertyValue(name) { return this[name] || ''; } };
-      this.classList = { add: name => { this.className = [this.className, name].filter(Boolean).join(' '); } };
+      this.classList = {
+        add: name => { this.className = [this.className, name].filter(Boolean).join(' '); },
+        contains: name => (this.className || '').split(/\s+/).includes(name),
+        toggle: (name, force) => {
+          const classes = new Set((this.className || '').split(/\s+/).filter(Boolean));
+          const enabled = force ?? !classes.has(name);
+          if (enabled) classes.add(name); else classes.delete(name);
+          this.className = [...classes].join(' ');
+          return enabled;
+        },
+      };
     }
     append(...elements) { for (const el of elements) { el.parentElement = this; this.children.push(el); } }
     after(el) {
@@ -72,12 +82,16 @@ function browserHost({ reduced = false, webgl = true, width = 600, height = 600,
     }
     replaceChildren(...elements) { this.children = []; this.append(...elements); }
     get childElementCount() { return this.children.length; }
-    get offsetWidth() { return this.className === 'lg-marker-label' ? labelDimensions?.width : undefined; }
-    get offsetHeight() { return this.className === 'lg-marker-label' ? labelDimensions?.height : undefined; }
+    get offsetWidth() { return this.className === 'lg-marker-label' ? Math.floor(labelDimensions?.width || 0) : undefined; }
+    get offsetHeight() { return this.className === 'lg-marker-label' ? Math.floor(labelDimensions?.height || 0) : undefined; }
     setAttribute(name, value) { this.attributes.set(name, String(value)); }
     getAttribute(name) { return this.attributes.get(name) ?? null; }
     removeAttribute(name) { this.attributes.delete(name); }
-    getBoundingClientRect() { return { width, height }; }
+    getBoundingClientRect() {
+      return this.className === 'lg-marker-label'
+        ? { width: labelDimensions?.width || 0, height: labelDimensions?.height || 0 }
+        : { width, height };
+    }
     getContext(kind) { return kind === '2d' ? context : webgl ? gl : null; }
     setPointerCapture(pointer) { this.capture.add(pointer); }
     hasPointerCapture(pointer) { return this.capture.has(pointer); }
@@ -712,6 +726,19 @@ test('wallet entry offers a ready inbound-only API with measured height and loca
   assert.equal(host.frames.size, 0);
 });
 
+test('search home reuses the local globe with compact presentation and no polling', () => {
+  const host = browserHost({ reduced: true });
+  const api = installWalletHost(host.root);
+  assert.equal(api.configure({ searchHome: true, lang: 'ko', theme: 'dark', fixture: true }), true);
+  assert.equal(host.doc.body.classList.contains('search-home'), true);
+  assert.equal(api.update(today), true);
+  assert.equal(host.find('lg-status').dataset.state, 'fixture');
+  assert.equal(host.timers.size, 0);
+  assert.equal(host.frames.size, 0);
+  assert.equal(api.configure({ searchHome: false }), true);
+  assert.equal(host.doc.body.classList.contains('search-home'), false);
+});
+
 function cohortSnapshot(by_region = { '030': 3 }, extras = {}) {
   const total = Object.values(by_region).reduce((sum, count) => sum + count, 0);
   return {
@@ -720,6 +747,76 @@ function cohortSnapshot(by_region = { '030': 3 }, extras = {}) {
     total, by_role: { unknown: total }, by_version: { unknown: total }, by_region, ...extras,
   };
 }
+
+test('search home shows one M49 sub-region level, including after a snapshot or mode change', () => {
+  const host = browserHost({ reduced: true, width: 332, height: 332 });
+  const api = installWalletHost(host.root);
+  api.update(example);
+  assert.equal(host.find('lg-marker', 'asia:KR').hidden, false);
+  api.configure({ searchHome: true });
+  assert.ok(host.descendants(host.root).filter(el => el.className === 'lg-marker').every(el => el.hidden),
+    'legacy continents and country buckets cannot appear on the search home');
+  api.update(cohortSnapshot({ '030': 6, '155': 3, asia: 3, world: 3 }));
+  for (const lang of ['ko', 'en']) {
+    api.configure({ lang });
+    const visible = host.descendants(host.root).filter(el => el.className === 'lg-marker' && !el.hidden);
+    assert.deepEqual(visible.map(el => el.dataset.region).sort(), ['030', '155']);
+    assert.ok(visible.every(el => !el.dataset.country));
+    assert.equal(host.find('lg-region', 'asia').hidden, true);
+    assert.equal(host.find('lg-region', 'world').hidden, true);
+  }
+  api.configure({ searchHome: false });
+  assert.equal(host.find('lg-marker', 'asia').hidden, false, 'the regular live globe retains legacy display');
+  api.configure({ searchHome: true });
+  assert.equal(host.find('lg-marker', 'asia').hidden, true);
+  api.configure({ state: 'stale' });
+  api.configure({ searchHome: false });
+  assert.equal(host.find('lg-status').dataset.state, 'stale', 'display changes retain snapshot freshness');
+});
+
+test('compact M49 labels leave eight pixels between their actual fractional rendered bounds', () => {
+  const host = browserHost({ reduced: true, width: 332, height: 332,
+    labelDimensions: { width: 150.75, height: 36.75 } });
+  const globe = createGlobe(host.canvas, { seed: 'fractional-labels' });
+  globe.update(cohortSnapshot({ '030': 3, '035': 3, '034': 3, '145': 3, '151': 3, '155': 3 }), { subregionsOnly: true });
+  const labels = host.descendants(host.root).filter(el => el.className === 'lg-marker' && !el.hidden && !el.children[1].hidden)
+    .map(marker => {
+      const [x, y] = marker.style.transform.match(/[\d.-]+(?=px)/g).map(Number);
+      const label = marker.children[1];
+      return { x: x - 22 + parseFloat(label.style.left), y: y - 22 + parseFloat(label.style.top),
+        w: label.getBoundingClientRect().width, h: label.getBoundingClientRect().height, key: marker.dataset.region };
+    });
+  assert.equal(labels.length, 6, 'the displayed groups fit without dropping labels');
+  for (let i = 0; i < labels.length; i++) for (const b of labels.slice(i + 1)) {
+    const a = labels[i];
+    assert.ok(a.x + a.w + 7.95 <= b.x || b.x + b.w + 7.95 <= a.x
+      || a.y + a.h + 7.95 <= b.y || b.y + b.h + 7.95 <= a.y, `${a.key} touches ${b.key}`);
+  }
+  globe.destroy();
+});
+
+test('search-home display changes retain expired accepted cohorts without accepting expired new input', () => {
+  const originalNow = Date.now;
+  const observed = Math.floor(originalNow() / 600_000) * 600;
+  const host = browserHost({ reduced: true });
+  const api = installWalletHost(host.root);
+  try {
+    Date.now = () => (observed + 1) * 1000;
+    const snapshot = cohortSnapshot({ '030': 3, asia: 3 });
+    assert.equal(api.update(snapshot), true);
+    api.configure({ state: 'stale' });
+    Date.now = () => (observed + 601) * 1000;
+    assert.equal(api.configure({ searchHome: true }), true);
+    assert.equal(host.find('lg-status').dataset.state, 'stale');
+    assert.equal(host.find('lg-marker', '030').dataset.count, '3');
+    assert.equal(host.find('lg-marker', 'asia').hidden, true);
+    assert.equal(api.configure({ searchHome: false }), true);
+    assert.equal(host.find('lg-status').dataset.state, 'stale');
+    assert.equal(host.find('lg-marker', 'asia').hidden, false);
+    assert.equal(api.update(snapshot), false, 'the RPC boundary still refuses newly supplied expired data');
+    assert.equal(host.find('lg-total').textContent, '6');
+  } finally { Date.now = originalNow; }
+});
 
 test('Traditional Chinese renders native and cohort copy without an English or Simplified fallback', () => {
   const host = browserHost({ reduced: true });

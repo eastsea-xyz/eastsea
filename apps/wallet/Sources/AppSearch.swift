@@ -20,6 +20,19 @@ struct AppSearchResult: Codable, Equatable, Identifiable, Sendable {
 
     var id: String { url + "|" + name + "|" + publisher }
 
+    /// AppRegistry binds this name to the app ID; publisher metadata cannot
+    /// provide a substitute address. Opening the result still uses `url`.
+    var primaryURL: String {
+        let namedURL = "sea://" + name
+        guard registryKey != nil, AppSearchInput.seaName(in: namedURL) == name,
+              !SeaAppLink.isAppCandidate(namedURL),
+              let link = try? SeaURL.parse(namedURL), case .name = link else { return url }
+        return name.lowercased() == "search" ? namedURL + ".sea" : namedURL
+    }
+
+    /// Keep the full registry key for copy; only the view truncates its text.
+    var registryKey: String? { SeaAppLink.parse(url)?.appKey }
+
     enum CodingKeys: String, CodingKey {
         case name, title, description, category, publisher, url, verified, lookalike
         case usage7d = "usage_7d"

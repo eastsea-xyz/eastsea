@@ -2977,6 +2977,41 @@
         }
       }
     },
+    "About these results": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About these results"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "検索結果について"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "검색 결과 안내"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关于搜索结果"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "關於搜尋結果"
+          }
+        }
+      }
+    },
     "Account": {
       "localizations": {
         "en": {
@@ -3591,6 +3626,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "已新增流動性"
+          }
+        }
+      }
+    },
+    "Address": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Address"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アドレス"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "주소"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "地址"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "地址"
           }
         }
       }
@@ -5862,6 +5932,41 @@
         }
       }
     },
+    "Brave": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Brave"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Brave"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Brave"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Brave"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Brave"
+          }
+        }
+      }
+    },
     "Browse blocks and transactions.": {
       "extractionState": "manual",
       "localizations": {
@@ -5998,6 +6103,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "瀏覽器資料庫"
+          }
+        }
+      }
+    },
+    "Built-in": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built-in"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内蔵"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "기본 제공"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内置"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "內建"
           }
         }
       }
@@ -6577,6 +6717,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "中亞"
+          }
+        }
+      }
+    },
+    "Chain lookup": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chain lookup"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "チェーン検索"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "체인 조회"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "链上查询"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "鏈上查詢"
           }
         }
       }
@@ -8574,6 +8749,16 @@
         }
       }
     },
+    "Copy registry hash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Copy registry hash" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "レジストリのハッシュをコピー" } },
+        "ko": { "stringUnit": { "state": "translated", "value": "레지스트리 해시 복사" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "复制注册表哈希" } },
+        "zh-Hant": { "stringUnit": { "state": "translated", "value": "複製登錄檔雜湊" } }
+      }
+    },
     "Copying and checking · %lld%%": {
       "localizations": {
         "en": {
@@ -10294,6 +10479,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "EastSea 名稱"
+          }
+        }
+      }
+    },
+    "EastSea Search": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "EastSea Search"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "EastSea 検索"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "동해 검색"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "EastSea 搜索"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "EastSea 搜尋"
           }
         }
       }
@@ -15567,6 +15787,111 @@
         }
       }
     },
+    "Name, app, address, block or URL": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name, app, address, block or URL"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名前、アプリ、アドレス、ブロック番号、ウェブアドレス"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이름, 앱, 주소, 블록 번호 또는 웹 주소"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名称、应用、地址、区块号或网址"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名稱、應用程式、地址、區塊號碼或網址"
+          }
+        }
+      }
+    },
+    "Names, apps and chain lookups use your own node; web search starts only when you choose it.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Names, apps and chain lookups use your own node; web search starts only when you choose it."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名前、アプリ、チェーンの検索には自分のノードを使います。ウェブ検索は選択したときだけ始まります。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이름, 앱, 체인 조회는 내 노드를 사용해요. 웹 검색은 직접 선택해야 시작돼요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名称、应用和链上查询使用你自己的节点；只有你选择网页搜索时才会开始。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名稱、應用程式和鏈上查詢使用你自己的節點；只有你選擇網頁搜尋時才會開始。"
+          }
+        }
+      }
+    },
+    "Naver": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Naver"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Naver"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Naver"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Naver"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Naver"
+          }
+        }
+      }
+    },
     "Network": {
       "localizations": {
         "en": {
@@ -18150,6 +18475,41 @@
         }
       }
     },
+    "On-chain app or name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On-chain app or name"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "チェーンに登録されたアプリまたは名前"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "체인에 등록된 앱 또는 이름"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "链上应用或名称"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "鏈上應用程式或名稱"
+          }
+        }
+      }
+    },
     "One Mac, one voting node. Your Mac proves it is online every hour; the longest-running Macs are picked to sign blocks, and no single operator address can hold a third of the seats.": {
       "localizations": {
         "en": {
@@ -18800,6 +19160,41 @@
         }
       }
     },
+    "Open first result": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open first result"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最初の結果を開く"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "첫 결과 열기"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开第一条结果"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "開啟第一筆結果"
+          }
+        }
+      }
+    },
     "Open in Safari": {
       "extractionState": "manual",
       "localizations": {
@@ -18831,6 +19226,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "在 Safari 中開啟"
+          }
+        }
+      }
+    },
+    "Open result": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open result"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "検索結果を開く"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "결과 열기"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开结果"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "開啟結果"
           }
         }
       }
@@ -24577,6 +25007,41 @@
         }
       }
     },
+    "Search home": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search home"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "検索ホーム"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "검색 홈"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索首页"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜尋首頁"
+          }
+        }
+      }
+    },
     "Search index status unavailable. Results may be incomplete.": {
       "localizations": {
         "en": {
@@ -24607,6 +25072,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "無法獲取搜索索引狀態，結果可能不完整。"
+          }
+        }
+      }
+    },
+    "Search names, apps, chain or web": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search names, apps, chain or web"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名前、アプリ、チェーン、ウェブを検索"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이름, 앱, 체인 또는 웹 검색"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索名称、应用、链上数据或网页"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜尋名稱、應用程式、鏈上資料或網頁"
           }
         }
       }
@@ -24642,6 +25142,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "搜尋或輸入網址、sea:// 名稱"
+          }
+        }
+      }
+    },
+    "Search paused. Reload to try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search paused. Reload to try again."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "検索を一時停止しました。再読み込みしてもう一度お試しください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "검색이 일시 정지됐어요. 새로고침해서 다시 시도하세요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索已暂停。请重新加载后再试。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜尋已暫停。請重新載入後再試。"
           }
         }
       }
@@ -24710,6 +25245,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "搜索記錄詳情"
+          }
+        }
+      }
+    },
+    "Search the web": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search the web"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ウェブを検索"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "웹 검색"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索网页"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜尋網頁"
           }
         }
       }
@@ -25086,6 +25656,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "以目前手續費再次傳送"
+          }
+        }
+      }
+    },
+    "Send this query to your selected web search engine": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send this query to your selected web search engine"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この検索語を選択したウェブ検索エンジンに送信"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "선택한 웹 검색 엔진으로 검색어 보내기"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将此搜索词发送到你选择的网页搜索引擎"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "將此搜尋詞傳送至你選擇的網頁搜尋引擎"
           }
         }
       }
@@ -34236,6 +34841,41 @@
         }
       }
     },
+    "Transaction": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Transaction"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "トランザクション"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "트랜잭션"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "交易"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "交易"
+          }
+        }
+      }
+    },
     "Transactions in the last %lld blocks": {
       "localizations": {
         "en": {
@@ -36367,6 +37007,41 @@
         }
       }
     },
+    "Wallet action": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wallet action"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ウォレット操作"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "지갑 작업"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "钱包操作"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "錢包操作"
+          }
+        }
+      }
+    },
     "Warm-up: %lld%% of a full share · full in %lld days": {
       "localizations": {
         "en": {
@@ -36467,6 +37142,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "普通網頁地址不是EastSea名稱，請使用https://打開。"
+          }
+        }
+      }
+    },
+    "Web search starts only when you choose Search the web.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Web search starts only when you choose Search the web."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「ウェブを検索」を選択したときだけウェブ検索が始まります。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "‘웹 검색’을 선택해야 웹 검색이 시작돼요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只有选择“搜索网页”时才会开始网页搜索。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只有選擇「搜尋網頁」時才會開始網頁搜尋。"
           }
         }
       }
@@ -38762,6 +39472,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "根 %@…"
+          }
+        }
+      }
+    },
+    "sea:// name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sea:// name"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sea:// の名前"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sea:// 이름"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sea:// 名称"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sea:// 名稱"
           }
         }
       }

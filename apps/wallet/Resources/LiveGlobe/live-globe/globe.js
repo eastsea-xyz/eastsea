@@ -255,6 +255,8 @@ export function createGlobe(canvas, {
   let yaw = INITIAL_YAW, pitch = INITIAL_PITCH, time = 0;
   let homeYaw = yaw, homePitch = pitch, centered = false, idleUntil = 0;
   let labels = { continents: {}, regions: {}, quality: 'Operator quality', qualityUnavailable: 'Operation quality unavailable' }, visibilityKey = '';
+  let labelGap = 4;
+  let acceptedModel = null;
   let sourceEvidence = true;
   const unplaced = new Map([['unknown', 0], ['world', 0]]);
   let frame = 0, lastFrame = 0, paused = Boolean(initiallyPaused), visible = true, destroyed = false;
@@ -501,7 +503,8 @@ export function createGlobe(canvas, {
     // Text metrics are cached outside animation. Labels avoid every visible
     // pulse as well as previous labels; pulses retain their geographic anchors.
     const occupied = [];
-    const overlaps = (a, b) => a.x < b.x + b.w + 4 && a.x + a.w + 4 > b.x && a.y < b.y + b.h + 4 && a.y + a.h + 4 > b.y;
+    const overlaps = (a, b) => a.x < b.x + b.w + labelGap && a.x + a.w + labelGap > b.x
+      && a.y < b.y + b.h + labelGap && a.y + a.h + labelGap > b.y;
     const coversPulse = rect => front.some(pulse => {
       const dx = pulse.x - clamp(pulse.x, rect.x, rect.x + rect.w);
       const dy = pulse.y - clamp(pulse.y, rect.y, rect.y + rect.h);
@@ -567,11 +570,12 @@ export function createGlobe(canvas, {
       const labelHidden = marker.label.hidden;
       marker.button.hidden = false;
       marker.label.hidden = false;
+      const bounds = marker.label.getBoundingClientRect();
       const compact = width <= 680;
       const maxWidth = compact ? 150 : 190;
       const measured = [...marker.label.textContent].reduce((sum, character) => sum + (character.charCodeAt(0) > 127 ? 13 : 7), 14);
-      marker.labelWidth = marker.label.offsetWidth || Math.min(maxWidth, measured);
-      marker.labelHeight = marker.label.offsetHeight || Math.ceil(measured / maxWidth) * (compact ? 17 : 19) + 8;
+      marker.labelWidth = bounds.width || marker.label.offsetWidth || Math.min(maxWidth, measured);
+      marker.labelHeight = bounds.height || marker.label.offsetHeight || Math.ceil(measured / maxWidth) * (compact ? 17 : 19) + 8;
       marker.button.hidden = hidden;
       marker.label.hidden = labelHidden;
     }
@@ -616,11 +620,17 @@ export function createGlobe(canvas, {
     arcData[offset + 3] = progress; arcData[offset + 4] = phase;
   }
 
-  function update(model, { reset = false } = {}) {
+  function update(model, { reset = false, subregionsOnly = false } = {}) {
     if (destroyed) return;
-    const clean = normalizePresence(model);
+    acceptedModel = normalizePresence(model);
+    display(acceptedModel, { reset, subregionsOnly });
+  }
+
+  function display(clean, { reset = false, subregionsOnly = false } = {}) {
+    labelGap = subregionsOnly ? 8 : 4;
     sourceEvidence = clean.schema !== 2;
-    const regions = presenceRegions(clean);
+    const regions = presenceRegions(clean).filter(region => !subregionsOnly
+      || SUBREGION_NAMES[region.continent] && !region.country && region.count >= 3);
     if (reset) {
       yaw = homeYaw = INITIAL_YAW;
       pitch = homePitch = INITIAL_PITCH;
@@ -650,6 +660,7 @@ export function createGlobe(canvas, {
     }
     const totals = new Map();
     for (const total of continentTotals(clean)) {
+      if (subregionsOnly && (!SUBREGION_NAMES[total.continent] || total.count < 3)) continue;
       totals.set(total.continent, total.count);
       const marker = byContinent.get(total.continent);
       if (marker) {
@@ -761,6 +772,9 @@ export function createGlobe(canvas, {
 
   return {
     update,
+    setSubregionsOnly(value) {
+      if (!destroyed && acceptedModel) display(acceptedModel, { subregionsOnly: Boolean(value) });
+    },
     setLabels(next) { labels = next; labelMarkers(); resize(); },
     setHighlight(code, { interaction = true } = {}) {
       if (interaction) interact();

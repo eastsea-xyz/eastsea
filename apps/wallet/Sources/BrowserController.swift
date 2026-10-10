@@ -47,7 +47,7 @@ final class BrowserController: NSObject, ObservableObject {
     @Published var findQuery = ""
     @Published private(set) var findFound: Bool?
     @Published private(set) var downloadPrompt: DownloadPrompt?
-    /// nil until something was loaded: while nil the curated home shows.
+    /// Native Home has its own URL without creating a WebKit document.
     @Published private(set) var currentURL: URL?
     @Published private(set) var appIdentity: AppBrowserIdentity?
     @Published private(set) var contentLoading = false
@@ -57,6 +57,10 @@ final class BrowserController: NSObject, ObservableObject {
     @Published private(set) var searchBusy = false
     @Published private(set) var searchFailure: String?
     @Published private(set) var searchInfo: AppSearchInfo?
+    @Published private(set) var searchName: SeaNameResolver.NameRecord?
+    @Published private(set) var searchNameFailure: String?
+    @Published private(set) var searchFocusRequest = 0
+    private var searchSubmitPending = false
     @Published private(set) var searchSuggestions: [AppSearchResult] = []
     @Published private(set) var suggestionsBusy = false
     @Published private(set) var suggestionsFailure: String?
@@ -239,7 +243,11 @@ final class BrowserController: NSObject, ObservableObject {
     init(isPrivate: Bool = false) {
         self.isPrivate = isPrivate
         super.init()
-        navigationItems = [NavigationItem(id: UUID(), url: nil, title: String(localized: "Start page"))]
+        currentURL = SeaSearch.homeURL
+        addressField = SeaSearch.homeURL.absoluteString
+        searchQuery = ""
+        title = String(localized: "EastSea Search")
+        navigationItems = [NavigationItem(id: UUID(), url: SeaSearch.homeURL, title: title)]
     }
 
     private static let acknowledgedKey = "explore.acknowledged"
@@ -285,6 +293,8 @@ final class BrowserController: NSObject, ObservableObject {
         searchResults = []
         searchFailure = nil
         searchInfo = nil
+        searchName = nil
+        searchNameFailure = nil
         searchNeedsRefresh = searchQuery != nil
         let hadApp = appIdentity != nil || contentLoading
         cancelContentResolution()
@@ -302,12 +312,15 @@ final class BrowserController: NSObject, ObservableObject {
             releaseWebView()
             appIdentity = nil
             appBundle = nil
-            currentURL = nil
-            addressField = ""
-            title = ""
+            currentURL = SeaSearch.homeURL
+            addressField = SeaSearch.homeURL.absoluteString
+            title = String(localized: "EastSea Search")
+            searchQuery = ""
+            searchNeedsRefresh = false
             canonicalOrigin = ""
             isSecureOrigin = false
             notice = String(localized: "The wallet context changed. Open the app again.")
+            recordNavigation(url: SeaSearch.homeURL, title: title)
             onHome?()
         }
         privatePermissions.removeAll()
@@ -522,6 +535,16 @@ final class BrowserController: NSObject, ObservableObject {
     /// sea:// names and https pages share the native address bar.
     func open(_ text: String) {
         guard !closed else { return }
+        if SeaAppLink.isAppCandidate(text), SeaAppLink.parse(text) == nil {
+            notice = BrowserInput.Failure.invalidAddress.localizedDescription
+            return
+        }
+        #if WALLET_SCREENS
+        if SeaSearch.classify(text) != .home {
+            if let url = URL(string: text) { screenNavigationRequests.append(url) }
+            return
+        }
+        #endif
         interruptedNavigation = nil
         resume()
         openInput(text, historyTarget: nil)
@@ -529,6 +552,16 @@ final class BrowserController: NSObject, ObservableObject {
 
     private func openInput(_ text: String, historyTarget: UUID?) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if SeaSearch.classify(text) == .home { showHome(historyTarget: historyTarget); return }
+        dismissSearch()
+        if case .registryApp(let link) = SeaSearch.classify(text) {
+            openRegistryApp(link, historyTarget: historyTarget)
+            return
+        }
+        if SeaAppLink.isAppCandidate(text) {
+            notice = BrowserInput.Failure.invalidAddress.localizedDescription
+            return
+        }
         cancelContentResolution()
         notice = nil
         httpsOffer = nil
@@ -607,6 +640,19 @@ final class BrowserController: NSObject, ObservableObject {
                 return
             } catch {
                 guard self.navigationID == requestID else { return }
+                if error as? SeaNameResolver.Failure == .noApp,
+                   let name = try? await SeaRegistryReader.lookup(link, chainID: chain, port: port, sources: pins),
+                   !SeaNameResolver.isZero(name.address), !Task.isCancelled,
+                   !self.suspended, !self.closed, self.navigationID == requestID,
+                   self.model?.browserChainID == chain, self.model?.nodeRpcPort == port,
+                   self.model?.accountStore.activeAccount?.id == accountID,
+                   self.model?.address.lowercased() == accountAddress {
+                    self.contentLoading = false
+                    self.contentTask = nil
+                    self.performLoad(SeaSearch.ChainLookup.address(name.address).explorerURL, historyTarget: historyTarget)
+                    return
+                }
+                guard self.navigationID == requestID else { return }
                 self.contentLoading = false
                 self.contentTask = nil
                 self.pendingNavigation = nil
@@ -616,10 +662,29 @@ final class BrowserController: NSObject, ObservableObject {
         }
     }
 
-    /// Search is a native surface. The retained page cannot ask the wallet
-    /// or navigate underneath it while results are being displayed.
+    var isSearchHome: Bool { currentURL.map(SeaSearch.isHome) == true }
+    var classifiedSearch: SeaSearch.Query {
+        SeaSearch.classify(searchQuery ?? "", chainID: model?.browserChainID ?? Brand.networkChainId)
+    }
+    var searchBuiltins: [BrowserToolboxApp] {
+        guard let term = classifiedSearch.localAppQuery, !term.isEmpty else { return [] }
+        return BuiltinBrowserApps.apps.filter { $0.title.localizedCaseInsensitiveContains(term)
+            || $0.id.localizedCaseInsensitiveContains(term) }
+    }
+
+    func focusSearch() { searchFocusRequest += 1 }
+
+    /// Native results use the user's node. No engine URL is loaded by editing
+    /// the query or submitting it; the web button has its own explicit action.
     func search(_ text: String = "") {
         guard !closed, !suspended else { return }
+        if !isSearchHome { showHome(historyTarget: nil) }
+        updateSearchQuery(text)
+        focusSearch()
+    }
+
+    func updateSearchQuery(_ text: String) {
+        guard !closed, !suspended, isSearchHome else { return }
         cancelSearchRead()
         dismissSuggestions()
         searchRecord = nil
@@ -638,17 +703,20 @@ final class BrowserController: NSObject, ObservableObject {
         refusePendingDownloads()
         refreshSitePermissions()
         notice = nil
-        let query = AppSearchInput.seaName(in: text) ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
-        searchQuery = query
-        canGoBack = true
-        addressField = query
+        let query = text
+        searchQuery = text
+        addressField = SeaSearch.homeURL.absoluteString
         searchResults = []
         searchFailure = nil
         searchInfo = nil
+        searchName = nil
+        searchNameFailure = nil
+        searchSubmitPending = false
         searchNeedsRefresh = false
-        guard !query.isEmpty else { return }
+        let classified = classifiedSearch
+        guard let appQuery = classified.localAppQuery, !appQuery.isEmpty else { return }
         let request: AppSearchRequest
-        do { request = try AppSearchRequest(query: query) }
+        do { request = try AppSearchRequest(query: appQuery) }
         catch { searchFailure = AppSearchFailure.queryTooLong.message; return }
         guard let port = model?.nodeRpcPort else {
             searchFailure = AppSearchFailure.unavailable.message
@@ -658,16 +726,22 @@ final class BrowserController: NSObject, ObservableObject {
         let generation = documentGeneration
         let accountID = model?.accountStore.activeAccount?.id
         let address = model?.address.lowercased()
-        let chainID = model?.networkChainId
+        let chainID = model?.browserChainID ?? Brand.networkChainId
+        let nameLink = classified.nameLink
         searchBusy = true
         searchTask = Task { [weak self] in
-            let result = await Self.readSearch(port: port, request: request)
+            do { try await Task.sleep(nanoseconds: 300_000_000) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            async let appRead = Self.readSearch(port: port, request: request)
+            async let nameRead = Self.readSearchName(port: port, chainID: chainID, link: nameLink)
+            let (result, nameResult) = await (appRead, nameRead)
             guard !Task.isCancelled, let self, !self.closed, !self.suspended,
                   self.searchRequestID == requestID, self.documentGeneration == generation,
                   self.searchQuery == query, self.model?.nodeRpcPort == port,
                   self.model?.accountStore.activeAccount?.id == accountID,
                   self.model?.address.lowercased() == address,
-                  self.model?.networkChainId == chainID else { return }
+                  self.model?.browserChainID == chainID else { return }
             self.searchTask = nil
             self.searchBusy = false
             switch result {
@@ -675,6 +749,106 @@ final class BrowserController: NSObject, ObservableObject {
                 self.searchResults = response.records
                 self.searchInfo = response.info
             case .failure(let failure): self.searchFailure = failure.message
+            }
+            switch nameResult {
+            case .found(let name): self.searchName = name
+            case .failed(let message):
+                if case .name = classified { self.searchNameFailure = message }
+            case .absent: break
+            }
+            if self.searchSubmitPending { self.searchSubmitPending = false; self.submitSearch() }
+        }
+    }
+
+    func submitSearch() {
+        guard !closed, !suspended, isSearchHome else { return }
+        let query = classifiedSearch
+        if let url = query.directURL { load(url); return }
+        if case .registryApp(let link) = query { open(link.canonicalURL); return }
+        if case .action(_, let raw) = query { open(raw); return }
+        if searchBusy { searchSubmitPending = true; return }
+        if let name = searchName { open(name.link.canonicalURL); return }
+        if let record = searchResults.first { open(record.url); return }
+        if let tool = searchBuiltins.first { load(tool.url); return }
+        if query == .invalid { notice = BrowserInput.Failure.invalidAddress.localizedDescription }
+    }
+
+    func chooseWebSearch(engine: BrowserSearchEngine) {
+        guard !closed, !suspended, isSearchHome,
+              let url = SeaSearch.webSearchURL(for: classifiedSearch, engine: engine) else { return }
+        load(url)
+    }
+
+    private enum NameLookupResponse: Sendable {
+        case found(SeaNameResolver.NameRecord), absent, failed(String)
+    }
+
+    nonisolated private static func readSearchName(port: UInt16, chainID: UInt64,
+                                                  link: SeaURL.NameLink?) async -> NameLookupResponse {
+        guard let link else { return .absent }
+        do {
+            return .found(try await SeaRegistryReader.lookup(link, chainID: chainID, port: port,
+                sources: SeaRegistrySources.bundled(chainID: chainID)))
+        } catch SeaNameResolver.Failure.unregistered { return .absent }
+        catch { return .failed(SeaNameText.message(error)) }
+    }
+
+    /// AppRegistry entries carry an app ID, not a DNS name. Recheck the pinned
+    /// active release after fetching, just as the name route does.
+    private func openRegistryApp(_ link: SeaAppLink, historyTarget: UUID?) {
+        guard !closed, !suspended else { return }
+        cancelContentResolution()
+        discardActiveNavigation()
+        invalidateDocument()
+        let requestID = navigationID
+        let chain = model?.browserChainID ?? Brand.networkChainId
+        let port = model?.nodeRpcPort ?? 18545
+        let accountID = model?.accountStore.activeAccount?.id
+        let accountAddress = model?.address.lowercased() ?? ""
+        let pins = SeaRegistrySources.bundled(chainID: chain)
+        releaseWebView()
+        appIdentity = nil
+        appBundle = nil
+        notice = nil
+        warning = nil
+        navigationTarget = historyTarget
+        let url = URL(string: link.canonicalURL)!
+        rememberPendingNavigation(url, historyTarget: historyTarget)
+        acceptsNavigationCallbacks = false
+        currentURL = url
+        addressField = link.canonicalURL
+        canonicalOrigin = BrowserCanonicalOrigin.string(for: url) ?? ""
+        title = link.appKey
+        isSecureOrigin = false
+        isLoading = false
+        estimatedProgress = 0
+        refreshSitePermissions()
+        contentLoading = true
+        contentTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let record = try await SeaRegistryReader.resolveApp(appID: link.appID, chainID: chain, port: port, sources: pins)
+                let source = try await NodeAppContentSource(app: record, endpoint: URL(string: "http://127.0.0.1:\(port)/")!)
+                _ = try source.bundle.pageURL(appKey: link.appKey, path: link.path, query: link.query)
+                let latest = try await SeaRegistryReader.resolveApp(appID: link.appID, chainID: chain, port: port, sources: pins)
+                guard record == latest else { throw SeaNameResolver.Failure.unstable }
+                try Task.checkCancellation()
+                guard !self.suspended, !self.closed, self.navigationID == requestID,
+                      self.model?.browserChainID == chain, self.model?.nodeRpcPort == port,
+                      self.model?.accountStore.activeAccount?.id == accountID,
+                      self.model?.address.lowercased() == accountAddress,
+                      let registry = pins?.apps.address else { return }
+                let identity = try AppBrowserIdentity(appID: link.appID, chainID: chain, registry: registry)
+                self.contentLoading = false
+                try self.openAppBundle(source.bundle, identity: identity, path: link.path, query: link.query)
+            } catch is CancellationError { return }
+            catch {
+                guard self.navigationID == requestID else { return }
+                self.contentLoading = false
+                self.contentTask = nil
+                self.pendingNavigation = nil
+                self.navigationTarget = nil
+                self.notice = error is AppContentError ? error.localizedDescription : SeaNameText.message(error)
             }
         }
     }
@@ -733,7 +907,7 @@ final class BrowserController: NSObject, ObservableObject {
         refusePendingDownloads()
         warning = nil
         approvedURL = nil
-        searchRecordInfo = suggestionsInfo
+        searchRecordInfo = isSearchHome ? searchInfo : suggestionsInfo
         dismissSuggestions()
         searchRecord = record
     }
@@ -749,6 +923,9 @@ final class BrowserController: NSObject, ObservableObject {
         searchResults = []
         searchFailure = nil
         searchInfo = nil
+        searchName = nil
+        searchNameFailure = nil
+        searchSubmitPending = false
         searchNeedsRefresh = false
         guard wasSearching else { return }
         addressField = webView?.url.map { urlBarText($0) } ?? currentURL?.absoluteString ?? ""
@@ -772,6 +949,7 @@ final class BrowserController: NSObject, ObservableObject {
         searchTask = nil
         searchRequestID = UUID()
         searchBusy = false
+        searchSubmitPending = false
     }
 
     private struct SearchResponse: Sendable {
@@ -780,25 +958,24 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     nonisolated private static func readSearch(port: UInt16, request: AppSearchRequest) async -> Result<SearchResponse, AppSearchFailure> {
-        async let recordsRead = nodeCall(port: port, method: AppSearchRequest.method, params: request.params)
-        async let infoRead = nodeCall(port: port, method: "aether_searchInfo", params: [])
-        let (recordsReply, infoReply) = await (recordsRead, infoRead)
-        switch recordsReply {
-        case .success(let value):
-            let info: AppSearchInfo?
-            if case .success(let value) = infoReply { info = try? AppSearchInfo.decode(from: value) }
-            else { info = nil }
+        async let recordsRead = SeaRegistryReader.call(port: port, method: AppSearchRequest.method, params: request.params)
+        async let infoRead = SeaRegistryReader.call(port: port, method: "aether_searchInfo", params: [])
+        do {
+            let value = try await recordsRead
+            let info = (try? await infoRead).flatMap { try? AppSearchInfo.decode(from: $0) }
             do { return .success(SearchResponse(records: try request.results(from: value), info: info)) }
             catch { return .failure(.malformedResponse) }
-        case .failure(let error):
-            return .failure(error.code == -32601 ? .unsupported : .unavailable)
-        }
+        } catch SeaRegistryReader.RPCFailure.rpc(-32601) { return .failure(.unsupported) }
+        catch { return .failure(.unavailable) }
     }
 
     /// Load a URL through the same rules a link goes through. Address input is
     /// normalized by BrowserSession; every URL is still checked here.
     func load(_ url: URL) {
         guard !closed else { return }
+        #if WALLET_SCREENS
+        if !SeaSearch.isHome(url) { screenNavigationRequests.append(url); return }
+        #endif
         // A new address supersedes the interrupted request; it must not
         // restart the old page as a side effect of activating this tab.
         interruptedNavigation = nil
@@ -808,6 +985,7 @@ final class BrowserController: NSObject, ObservableObject {
 
     private func performLoad(_ url: URL, historyTarget: UUID?) {
         guard !suspended, !closed else { return }
+        if SeaSearch.isHome(url) { showHome(historyTarget: historyTarget); return }
         dismissSearch()
         cancelContentResolution()
         navigationTarget = historyTarget
@@ -879,7 +1057,7 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     func goBack() {
-        if searchQuery != nil { dismissSearch(); return }
+        if searchQuery != nil { dismissSearch() }
         guard navigationIndex > 0 else { return }
         navigate(to: navigationItems[navigationIndex - 1])
     }
@@ -893,7 +1071,7 @@ final class BrowserController: NSObject, ObservableObject {
         guard !suspended, navigationItems.contains(where: { $0.id == item.id }) else { return }
         dismissSearch()
         navigationTarget = item.id
-        guard let url = item.url else {
+        guard let url = item.url, !SeaSearch.isHome(url) else {
             showHome(historyTarget: item.id)
             return
         }
@@ -940,9 +1118,10 @@ final class BrowserController: NSObject, ObservableObject {
         releaseWebView()
         appIdentity = nil
         appBundle = nil
-        currentURL = nil
-        addressField = ""
-        title = String(localized: "Start page")
+        currentURL = SeaSearch.homeURL
+        addressField = SeaSearch.homeURL.absoluteString
+        title = String(localized: "EastSea Search")
+        searchQuery = ""
         canonicalOrigin = ""
         isSecureOrigin = false
         isLoading = false
@@ -951,9 +1130,10 @@ final class BrowserController: NSObject, ObservableObject {
         notice = nil
         httpsOffer = nil
         navigationTarget = historyTarget
-        recordNavigation(url: nil, title: title)
+        recordNavigation(url: SeaSearch.homeURL, title: title)
         refreshSitePermissions()
         onHome?()
+        focusSearch()
     }
 
     func reload() {
@@ -977,7 +1157,12 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     func stop() {
-        if searchQuery != nil { dismissSearch(); return }
+        if searchQuery != nil {
+            cancelSearchRead()
+            searchNeedsRefresh = false
+            searchFailure = String(localized: "Search paused. Reload to try again.")
+            return
+        }
         cancelContentResolution()
         pendingNavigation = nil
         interruptedNavigation = nil
@@ -1971,6 +2156,17 @@ final class BrowserController: NSObject, ObservableObject {
     }
 
     #if WALLET_SCREENS
+    private(set) var screenNavigationRequests: [URL] = []
+
+    func configureSearchFixture(query: String, name: SeaNameResolver.NameRecord? = nil,
+                                records: [AppSearchResult] = []) {
+        showHome(historyTarget: nil)
+        searchQuery = query
+        searchName = name
+        searchResults = records
+        searchInfo = AppSearchInfo(historyComplete: true, rejectedRecords: 0, usageComplete: true, sourcesConfigured: true)
+    }
+
     /// Native renderer state only: no WebView, network, cookies, or wallet
     /// permission writes are involved in screenshot fixtures.
     func configureScreenFixture(url: URL?, title: String, connectedAccount: String? = nil,

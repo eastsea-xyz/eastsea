@@ -14,14 +14,15 @@ struct AppBrowserIdentity: Equatable, Sendable {
 
     enum Failure: Error { case invalidIdentity }
 
-    init(appID: String, name: String, chainID: UInt64, registry: String) throws {
+    init(appID: String, name: String? = nil, chainID: UInt64, registry: String) throws {
         let hex = appID.hasPrefix("0x") ? String(appID.dropFirst(2)) : appID
         let registryHex = registry.hasPrefix("0x") ? String(registry.dropFirst(2)) : registry
         guard let id = Self.hexBytes(hex), id.count == 32,
               let registryBytes = Self.hexBytes(registryHex), registryBytes.count == 20,
-              chainID != 0, Self.validName(name) else { throw Failure.invalidIdentity }
-        appKey = Self.base32(id)
-        displayOrigin = "sea://\(name.lowercased())"
+              chainID != 0, name.map(Self.validName) ?? true else { throw Failure.invalidIdentity }
+        let key = Self.base32(id)
+        appKey = key
+        displayOrigin = "sea://\(name ?? key)"
         permissionKey = "\(Self.scheme)://\(chainID)/\(registryHex.lowercased())/\(hex.lowercased())"
         self.chainID = chainID
         isDeveloper = false

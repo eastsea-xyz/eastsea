@@ -21,13 +21,21 @@ final class BrowserTab: Identifiable {
     }
 
     var title: String {
+        if !hasLoaded, let savedURL {
+            return savedTitle.isEmpty ? (savedURL.host ?? savedURL.absoluteString) : savedTitle
+        }
+        if isPrivate, controller.isSearchHome { return String(localized: "Private tab") }
         if !controller.title.isEmpty { return controller.title }
         if !savedTitle.isEmpty { return savedTitle }
         return isPrivate ? String(localized: "Private tab") : String(localized: "New tab")
     }
 
     var snapshot: BrowserTabSnapshot {
-        BrowserTabSnapshot(id: id, title: title, url: controller.currentURL ?? savedURL, isPrivate: isPrivate)
+        // saved metadata is updated only by a commit or an explicit Home.
+        // Selecting a restored tab can still be awaiting a site warning.
+        BrowserTabSnapshot(id: id, title: savedTitle.isEmpty ? title : savedTitle,
+                           url: savedURL ?? controller.currentURL,
+                           isPrivate: isPrivate)
     }
 }
 
@@ -42,7 +50,7 @@ final class BrowserSession: ObservableObject {
     @Published private(set) var tabs: [BrowserTab] = []
     @Published private(set) var activeTabID: UUID = UUID()
     @Published private(set) var profile = BrowserProfile()
-    let registry: any BrowserAppRegistry
+    var builtInApps: [BrowserToolboxApp] { BuiltinBrowserApps.apps }
     private let defaults: UserDefaults
     private weak var model: WalletModel?
     private var store: BrowserProfileStore?
@@ -50,10 +58,8 @@ final class BrowserSession: ObservableObject {
     private var defaultsSubscription: AnyCancellable?
     private var tabSubscriptions: [UUID: AnyCancellable] = [:]
 
-    init(defaults: UserDefaults = .standard,
-         registry: any BrowserAppRegistry = PlaceholderBrowserAppRegistry()) {
+    init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        self.registry = registry
         let tab = BrowserTab()
         tabs = [tab]
         activeTabID = tab.id
@@ -65,6 +71,9 @@ final class BrowserSession: ObservableObject {
 
     var selectedTab: BrowserTab { tabs.first { $0.id == activeTabID } ?? tabs[0] }
     var controller: BrowserController { selectedTab.controller }
+    var searchEngine: BrowserSearchEngine {
+        defaults.string(forKey: "browserSearchEngine").flatMap(BrowserSearchEngine.init(rawValue:)) ?? profile.searchEngine
+    }
     var recentSites: [BrowserHistoryEntry] {
         var seen: Set<String> = []
         return profile.history.filter {
@@ -88,6 +97,9 @@ final class BrowserSession: ObservableObject {
         tabSubscriptions.removeAll()
         store = account.map { BrowserProfileStore(accountID: $0.id, address: $0.address, defaults: defaults) }
         profile = store?.load() ?? BrowserProfile()
+        if account != nil, defaults.string(forKey: "browserSearchEngine") == nil {
+            defaults.set(profile.searchEngine.rawValue, forKey: "browserSearchEngine")
+        }
         tabs = profile.tabs.filter { !$0.isPrivate }.map {
             BrowserTab(id: $0.id, url: $0.url, title: $0.title)
         }
@@ -112,8 +124,8 @@ final class BrowserSession: ObservableObject {
         }
         tab.controller.onHome = { [weak self, weak tab] in
             guard let self, let tab, self.tabs.contains(where: { $0 === tab }) else { return }
-            tab.savedURL = nil
-            tab.savedTitle = ""
+            tab.savedURL = SeaSearch.homeURL
+            tab.savedTitle = String(localized: "EastSea Search")
             self.persist()
         }
         tab.controller.zoomProvider = { [weak self, weak tab] origin in
@@ -128,7 +140,7 @@ final class BrowserSession: ObservableObject {
         }
         tab.controller.phishingCheck = { [weak self] url in
             guard let self else { return nil }
-            return BrowserConfusables.warning(for: url, bookmarks: self.profile.bookmarks, apps: self.registry.apps)?.protectedName
+            return BrowserConfusables.warning(for: url, bookmarks: self.profile.bookmarks, apps: self.builtInApps)?.protectedName
         }
         tab.controller.onSeaLink = { [weak self, weak tab] url in
             guard let self, let tab, self.selectedTab.id == tab.id else { return }
@@ -189,59 +201,30 @@ final class BrowserSession: ObservableObject {
     }
 
     func goHome() {
-        selectedTab.savedURL = nil
-        selectedTab.savedTitle = ""
+        selectedTab.savedURL = SeaSearch.homeURL
+        selectedTab.savedTitle = String(localized: "EastSea Search")
         controller.goHome()
         persist()
     }
 
     func open(_ input: String) {
         let tab = selectedTab
-        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        let scheme = URL(string: text)?.scheme?.lowercased() ?? ""
-        let host = text.prefix { !"/?#".contains($0) }
-        do {
-            switch try SeaURL.browserInput(text, chainID: model?.browserChainID ?? Brand.networkChainId) {
-            case .name, .action:
-                tab.hasLoaded = true
-                tab.controller.open(text)
-                return
-            case .web(let url):
-                guard let canonical = BrowserInput.canonicalURL(url) else {
-                    controller.notice = BrowserInput.Failure.invalidAddress.localizedDescription
-                    return
-                }
-                tab.hasLoaded = true
-                tab.controller.load(canonical)
-                return
-            }
-        } catch {
-            let explicitName = !text.contains("://") && !text.contains(where: \.isWhitespace)
-                && (host.lowercased().hasSuffix(".sea") || host.lowercased().hasSuffix(".aeth"))
-            if error as? SeaURL.ParseError == .externalTLD
-                || ["sea", "eastsea", "aether"].contains(scheme) || explicitName {
-                // Invalid names and external TLDs stay with the canonical
-                // parser; an HTTPS offer needs the person's explicit choice.
-                tab.hasLoaded = true
-                tab.controller.open(text)
-                return
-            }
-        }
-        switch AppSearchInput.destination(for: input) {
+        let query = SeaSearch.classify(input, chainID: model?.browserChainID ?? Brand.networkChainId)
+        switch query {
         case .empty: return
-        case .search(let query):
+        case .home: goHome()
+        case .chain(let lookup): tab.hasLoaded = true; tab.controller.load(lookup.explorerURL)
+        case .url(let url): tab.hasLoaded = true; tab.controller.load(url)
+        case .app, .web:
             tab.hasLoaded = true
             tab.controller.resume()
-            tab.controller.search(query)
-        case .web(let url):
-            guard let canonical = BrowserInput.canonicalURL(url) else {
-                controller.notice = BrowserInput.Failure.invalidAddress.localizedDescription
-                return
-            }
+            tab.controller.search(input)
+            tab.controller.submitSearch()
+        case .name, .registryApp, .action:
             tab.hasLoaded = true
-            tab.controller.load(canonical)
+            tab.controller.open(input)
         case .invalid:
-            controller.notice = String(localized: "That is not a web address.")
+            tab.controller.notice = BrowserInput.Failure.invalidAddress.localizedDescription
         }
     }
 
@@ -256,7 +239,7 @@ final class BrowserSession: ObservableObject {
         guard !needle.isEmpty else { return [] }
         var candidates = profile.bookmarks.map { BrowserSuggestion(title: $0.title, url: $0.url) }
         if !selectedTab.isPrivate { candidates += profile.history.map { BrowserSuggestion(title: $0.title, url: $0.url) } }
-        candidates += registry.apps.map { BrowserSuggestion(title: $0.title, url: $0.url) }
+        candidates += builtInApps.map { BrowserSuggestion(title: $0.title, url: $0.url) }
         var seen: Set<String> = []
         return candidates.filter {
             ($0.title.lowercased().contains(needle) || $0.url.absoluteString.lowercased().contains(needle))
@@ -289,11 +272,15 @@ final class BrowserSession: ObservableObject {
         editProfile { $0.reorderBookmarks(ids) }
     }
     func clearHistory(_ range: BrowserHistoryRange) { editProfile { $0.clearHistory(range) } }
-    func setSearchEngine(_ engine: BrowserSearchEngine) { editProfile { $0.searchEngine = engine } }
+    func setSearchEngine(_ engine: BrowserSearchEngine) {
+        defaults.set(engine.rawValue, forKey: "browserSearchEngine")
+        editProfile { $0.searchEngine = engine }
+    }
 
     /// Windows own their live tabs; account records have a single serialized
     /// read/modify/write on the main actor, so a stale window cannot erase them.
     private func refreshSharedProfile() {
+        objectWillChange.send()
         guard let store else { return }
         let latest = store.load()
         if profile.bookmarks != latest.bookmarks { profile.bookmarks = latest.bookmarks }

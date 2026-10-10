@@ -294,7 +294,7 @@ struct SimpleDashboard: View {
     @ViewBuilder private func pageView(_ p: Page) -> some View {
         switch p {
         case .home: HomePage(sheet: $sheet, showActivity: { page = .activity }, showNetwork: { page = .network })
-        case .explore: ExplorePage(goHome: { page = .home })
+        case .explore: ExplorePage()
         case .activity: ActivityPage()
         case .network: NetworkPage()
         case .security: SecurityPage()

@@ -54,6 +54,8 @@ struct LiveGlobePresence: Equatable, Sendable {
     /// True only for a validated v3 summary, never inferred from cohort counts.
     let hasQualityEvidence: Bool
     let aggregateJSON: String
+    /// Home uses one M49 sub-region level, aggregated natively before k=3.
+    let searchHomeAggregateJSON: String
 
     static let continents = ["africa", "asia", "europe", "north_america", "south_america",
                              "oceania", "antarctica", "unknown"]
@@ -86,7 +88,8 @@ struct LiveGlobePresence: Equatable, Sendable {
 
     private init(total: Int, roles: [String: Int], versions: [String: Int],
                  reserveKeys: ReserveKeys, regions: [Region], recentBlocks: [RecentBlock],
-                 hasQualityEvidence: Bool, aggregateJSON: String? = nil) throws {
+                 hasQualityEvidence: Bool, aggregateJSON: String? = nil,
+                 searchHomeRegions: [Region] = []) throws {
         self.total = total
         self.roles = roles
         self.versions = versions
@@ -96,6 +99,7 @@ struct LiveGlobePresence: Equatable, Sendable {
         self.hasQualityEvidence = hasQualityEvidence
         if let aggregateJSON {
             self.aggregateJSON = aggregateJSON
+            self.searchHomeAggregateJSON = aggregateJSON
             return
         }
         let payload = Payload(total: total, roles: roles.mapValues { Role(count: $0) }, versions: versions,
@@ -103,6 +107,9 @@ struct LiveGlobePresence: Equatable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         self.aggregateJSON = String(decoding: try encoder.encode(payload), as: UTF8.self)
+        let home = Payload(total: total, roles: roles.mapValues { Role(count: $0) }, versions: versions,
+                           reserveKeys: reserveKeys, regions: searchHomeRegions, recentBlocks: [])
+        self.searchHomeAggregateJSON = String(decoding: try encoder.encode(home), as: UTF8.self)
     }
 
     /// Reject malformed or expired local replies and discard every unlisted field.
@@ -242,7 +249,8 @@ struct LiveGlobePresence: Equatable, Sendable {
             }
         }
         return try Self(total: total, roles: roles, versions: versions, reserveKeys: reserveKeys,
-                        regions: fold(regions), recentBlocks: recentBlocks, hasQualityEvidence: true)
+                        regions: fold(regions), recentBlocks: recentBlocks, hasQualityEvidence: true,
+                        searchHomeRegions: subregions(regions))
     }
 
     private static func cohort(_ source: [String: Any], now: TimeInterval) throws -> Self {
@@ -258,6 +266,29 @@ struct LiveGlobePresence: Equatable, Sendable {
         return try Self(total: total, roles: sample.byRole, versions: sample.byVersion,
                         reserveKeys: ReserveKeys(standby: 0, seated: 0), regions: regions, recentBlocks: [],
                         hasQualityEvidence: false, aggregateJSON: aggregateJSON)
+    }
+
+    /// Combine sibling countries before applying the sub-region threshold.
+    private static func subregions(_ source: [Region]) throws -> [Region] {
+        var buckets: [String: Region] = [:]
+        func append(_ region: Region, to code: String) throws {
+            let previous = buckets[code]
+                ?? Region(continent: code, country: nil, count: 0, quality: .unmeasured(count: 0))
+            let bins = try zip(previous.quality.histogram, region.quality.histogram).map { try add($0.0, $0.1) }
+            buckets[code] = Region(continent: code, country: nil, count: try add(previous.count, region.count),
+                quality: Quality(scoreSum: try add(previous.quality.scoreSum, region.quality.scoreSum), histogram: bins))
+        }
+        for region in source {
+            // Broad or unsupported geography cannot establish a sub-region.
+            try append(region, to: PresenceRegion.fromRegion(region.country) ?? "unknown")
+        }
+        for code in PresenceRegion.codes {
+            if let small = buckets[code], small.count < 3 {
+                buckets.removeValue(forKey: code)
+                try append(small, to: "unknown")
+            }
+        }
+        return (PresenceRegion.codes + ["unknown"]).compactMap { buckets[$0] }.filter { $0.count > 0 }
     }
 
     /// Merge duplicate country buckets within each relay continent before k=3.

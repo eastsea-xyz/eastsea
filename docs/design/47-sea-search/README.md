@@ -6,6 +6,10 @@ The placeholder app registry and old start-page inventory are removed. Explorer 
 
 Editing or pressing Enter on plain text never chooses a web engine. Native reads use loopback, with cookies/proxies/cache disabled and redirects refused. Query text is not saved in browser history. Restored tabs retain their saved URL/title until a commit or an explicit Home action. ⌘L focuses the query on Home and the address field on a page.
 
+Round 2 (2026-10-10) changes only globe and result presentation. The search-home globe shows one UN M49 sub-region level. The Mac combines legacy country buckets before applying k≥3, preserves native schema-2 cohorts and their frozen observation window, and leaves broad or unsupported geography unplaced. Public country and continent labels are excluded from Home. The existing host has no marker for this Mac’s opted-in country, so no country marker is added. The regular Network globe retains its previous display policy.
+
+Labels use their actual fractional DOM bounds and at least 8 CSS pixels between them on Home; [render-geometry.json](render-geometry.json) records the checked bounds for all 90 screens, including the 380 pt Home. App results promote a registered name such as `sea://eastsea`, keep the full registry key in a small middle-truncated copyable detail, and navigate through the original registry URL. The registered `search` name displays `sea://search.sea` to keep it distinct from native Home. Regressions cover aggregation before suppression, dense labels, expired accepted cohorts, readable names, reserved names, and unchanged hash/path/query values.
+
 ## Screens
 
 There are **90 PNGs and Vision OCR sidecars**: Home, exact name, registry app, address, transaction hash, block, URL, web text, and narrow Home × en/ko/ja/zh-Hans/zh-Hant × light/dark.
@@ -25,23 +29,23 @@ Representative views:
 
 These images render the **actual SeaSearchPage, design tokens, result labels and LiveGlobeView** in a bounded `DEBUG WALLET_SCREENS` native-view harness. The controller/session/model adapters are isolated screenshot fixtures under `tmp/`, and do not ship. The screenshots cover the page content; the regular WalletScreens target adds the actual browser chrome. Globe snapshots visibly say they are fixtures. This evidence verifies presentation, not a live registry deployment or real app navigation.
 
-The visual review passes at 93/100 against the redesign's typography, dawn mark, paper/navy palette and layout. The compact globe retains rotation/pause and Reduce Motion behavior. Screenshot verification caught and fixed the initial ES-module readiness race; the native host now waits for its local API before sending the first aggregate/settings. The full renderer also starts outside a held main-queue block, so WebKit can answer its nested run-loop waits.
+The round-2 visual review passes at 94/100 against the redesign's typography, dawn mark, paper/navy palette and layout. The compact globe retains rotation/pause and Reduce Motion behavior. Screenshot verification caught and fixed the initial ES-module readiness race; the native host now waits for its local API before sending the first aggregate/settings. The full renderer also starts outside a held main-queue block, so WebKit can answer its nested run-loop waits.
 
 ## Verification
 
 | Check | Result |
 | --- | --- |
-| Pure Swift: sea-search, sea-resolution, app-identity, browser-plus, app-search, sea-url, live-globe, live-globe-bundle | Passed |
+| Full pure Swift suite on the rebased branch | 76 suites passed |
 | Search golden cases | 378 checks; 137 shared extension/explorer name/action cases |
 | Registry name/app lookup | 85 checks, including code pins, release validity, stable snapshots and cancellation |
-| Explorer JavaScript | 373 tests passed |
-| Extension sea URL parity | 155 tests passed |
-| Localization lint/catalog | Passed; 1,282 keys in every language |
-| Screenshot matrix / Vision text | Passed: 90 images, 2,759 visible text lines; required locale/appearance pairs complete |
-| Native source type checking | 125 WALLET_SCREENS inputs passed; production Debug reproduces the base app-entry isolation error below |
+| Explorer JavaScript | 381 tests passed |
+| Full extension suite, including packaged WASM | 329 tests passed |
+| Localization lint/catalog | Passed; 1,283 keys in every language |
+| Screenshot matrix / Vision text | Passed: 90 images, 2,208 primary/multilingual OCR lines; required locale/appearance pairs complete |
+| Native source type checking | 127 renderer inputs passed; including the unchanged app entry reproduces the `AppDelegate.isSafeMode` isolation error |
 | Xcode project / diff | Project plist and diff whitespace checks passed |
 
-Compiles ran behind the lane semaphore. Swift compiles/type checks used a 2 GiB aggregate RSS stop limit; measured peaks stayed below 550 MiB. No Rust/guest, ad-hoc wallet or release build ran, and EastSea was never launched. All temporary artifacts are in this worktree's `tmp/`; no remote machines or node processes were used.
+Compiles ran behind the lane semaphore. Swift compiles/type checks used a 2 GiB aggregate RSS stop limit; the final view compile peaked at 302 MiB and the renderer-source typecheck at 285 MiB. No Rust/guest, ad-hoc wallet or release build ran, and EastSea was never launched. All temporary artifacts are in this worktree's `tmp/`; no remote machines or real node processes were used. Native-identity test fixtures cleaned up their own processes. The full extension suite loads an existing real WASM package copied read-only from the sea-names lane into `tmp/`, through a temporary module resolver; no WASM build or source substitution was used.
 
 ## Release gates
 

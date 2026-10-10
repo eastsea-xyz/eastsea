@@ -271,6 +271,7 @@ export function mountLiveGlobe(root, {
   let hostReducedMotion = Boolean(reducedMotion);
   let evidenceAvailable = true;
   let hostEvidenceAvailable = true;
+  let subregionsOnly = false;
   let destroyed = false;
   let timer = null;
   let controller = null;
@@ -433,8 +434,8 @@ export function mountLiveGlobe(root, {
     headlineStart.textContent = isCohort ? copy.cohortCaption[0] : copy.caption[0];
     headlineEnd.textContent = isCohort ? copy.cohortCaption[1]
       : model?.total === 1 && copy.captionOne ? copy.captionOne : copy.caption[1];
-    canvas.setAttribute('aria-label', isCohort ? copy.cohortCanvas : evidenceAvailable ? copy.canvas : copy.canvasUnavailable);
-    list.setAttribute('aria-label', isCohort ? copy.cohortList : copy.list);
+    canvas.setAttribute('aria-label', isCohort || subregionsOnly ? copy.cohortCanvas : evidenceAvailable ? copy.canvas : copy.canvasUnavailable);
+    list.setAttribute('aria-label', isCohort || subregionsOnly ? copy.cohortList : copy.list);
     privacy.textContent = copy.privacy;
     artwork.textContent = isCohort ? copy.cohortArtwork : copy.artwork;
     newLabel.textContent = copy.qualityNew;
@@ -490,7 +491,8 @@ export function mountLiveGlobe(root, {
       const row = rows.get(code);
       const total = totals.get(code);
       row.button.textContent = geographyName(code);
-      row.row.hidden = SUBREGION_CODES.includes(code) ? !subregionsShown
+      row.row.hidden = subregionsOnly && !SUBREGION_NAMES[code] ? true
+        : SUBREGION_CODES.includes(code) ? !subregionsShown
         : code === 'world' ? !total?.count
         : subregionsShown && code !== 'unknown' && !total?.count;
       row.button.disabled = !total?.count;
@@ -548,9 +550,10 @@ export function mountLiveGlobe(root, {
 
   function apply(snapshot) {
     model = normalizePresence(snapshot);
-    regions = presenceRegions(model);
+    regions = presenceRegions(model).filter(region => !subregionsOnly
+      || SUBREGION_NAMES[region.continent] && !region.country && region.count >= 3);
     state = model.total === null ? 'withheld' : fixture ? 'fixture' : model.total === 0 ? 'empty' : 'live';
-    globe.update(model, { reset: model.total === null });
+    globe.update(model, { reset: model.total === null, subregionsOnly });
     text();
   }
 
@@ -664,13 +667,13 @@ export function mountLiveGlobe(root, {
     configure(next = {}) {
       if (!host || destroyed || !next || typeof next !== 'object' || Array.isArray(next)) return false;
       const values = {};
-      for (const key of ['paused', 'reducedMotion', 'theme', 'lang', 'state', 'fixture', 'evidenceAvailable']) {
+      for (const key of ['paused', 'reducedMotion', 'theme', 'lang', 'state', 'fixture', 'evidenceAvailable', 'subregionsOnly']) {
         const field = Object.getOwnPropertyDescriptor(next, key);
         if (!field) continue;
         if (!Object.hasOwn(field, 'value')) return false;
         values[key] = field.value;
       }
-      for (const key of ['paused', 'reducedMotion', 'fixture', 'evidenceAvailable']) {
+      for (const key of ['paused', 'reducedMotion', 'fixture', 'evidenceAvailable', 'subregionsOnly']) {
         if (Object.hasOwn(values, key) && typeof values[key] !== 'boolean') return false;
       }
       if (Object.hasOwn(values, 'theme') && !['light', 'dark'].includes(values.theme)) return false;
@@ -680,6 +683,14 @@ export function mountLiveGlobe(root, {
       if (Object.hasOwn(values, 'reducedMotion')) hostReducedMotion = values.reducedMotion;
       if (Object.hasOwn(values, 'lang')) language = values.lang;
       if (Object.hasOwn(values, 'evidenceAvailable')) hostEvidenceAvailable = values.evidenceAvailable;
+      if (Object.hasOwn(values, 'subregionsOnly') && subregionsOnly !== values.subregionsOnly) {
+        subregionsOnly = values.subregionsOnly;
+        if (model) {
+          regions = presenceRegions(model).filter(region => !subregionsOnly
+            || SUBREGION_NAMES[region.continent] && !region.country && region.count >= 3);
+          globe.setSubregionsOnly(subregionsOnly);
+        }
+      }
       if (Object.hasOwn(values, 'fixture')) {
         fixture = values.fixture;
         if (model) state = model.total === null ? 'withheld' : fixture ? 'fixture' : model.total === 0 ? 'empty' : 'live';

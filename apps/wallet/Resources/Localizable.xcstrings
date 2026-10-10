@@ -8749,6 +8749,16 @@
         }
       }
     },
+    "Copy registry hash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Copy registry hash" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "レジストリのハッシュをコピー" } },
+        "ko": { "stringUnit": { "state": "translated", "value": "레지스트리 해시 복사" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "复制注册表哈希" } },
+        "zh-Hant": { "stringUnit": { "state": "translated", "value": "複製登錄檔雜湊" } }
+      }
+    },
     "Copying and checking · %lld%%": {
       "localizations": {
         "en": {

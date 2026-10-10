@@ -149,7 +149,7 @@ private struct LiveGlobeWebContent: NSViewRepresentable {
             guard loaded, !stopped, let view else { return }
             let visible = view.window.map { $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible) } ?? false
             let update = LiveGlobeRenderingPolicy.Update(
-                aggregate: presence?.aggregateJSON, state: state,
+                aggregate: searchHome ? presence?.searchHomeAggregateJSON : presence?.aggregateJSON, state: state,
                 paused: fixture || LiveGlobeRenderingPolicy.paused(windowVisible: visible && !NSApp.isHidden,
                     viewHidden: view.isHiddenOrHasHiddenAncestor, lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled),
                 reducedMotion: reduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,

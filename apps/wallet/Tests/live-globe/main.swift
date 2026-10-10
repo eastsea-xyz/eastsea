@@ -48,6 +48,28 @@ check(Set(encoded.keys) == Set(["schema_version", "scope", "quality_version", "t
                                "reserve_keys", "regions", "recent_blocks"]), "bridge JSON has exact canonical root fields")
 check(encoded["scope"] as? String == "node", "private observer scope never crosses the bridge")
 
+let home = try JSONSerialization.jsonObject(with: Data(sample.searchHomeAggregateJSON.utf8)) as! [String: Any]
+let homeRegions = home["regions"] as! [[String: Any]]
+check(homeRegions.map { $0["continent"] as! String } == ["030", "155", "unknown"],
+      "search home contains only M49 sub-regions and an unplaced remainder")
+check(homeRegions.map { $0["count"] as! Int } == [6, 3, 15],
+      "search home never assigns broad region counts to an invented sub-region")
+check(homeRegions.allSatisfy { $0["country"] == nil } && home["total"] as? Int == 24,
+      "search home removes public country labels without double-counting")
+check((home["recent_blocks"] as! [Any]).isEmpty, "broad block geography cannot mix into home sub-region arcs")
+let mergedSubregion = LiveGlobePresence.parse(aggregate([
+    region("europe", country: "FR", scores: [10_000, 60_000]),
+    region("europe", country: "DE", scores: [110_000]),
+    region("asia", country: "KR", scores: [160_000, 210_000]),
+]), now: now)!
+let mergedHome = try JSONSerialization.jsonObject(with: Data(mergedSubregion.searchHomeAggregateJSON.utf8)) as! [String: Any]
+let mergedRegions = mergedHome["regions"] as! [[String: Any]]
+check(mergedRegions.map { $0["continent"] as! String } == ["155", "unknown"]
+      && mergedRegions.map { $0["count"] as! Int } == [3, 2],
+      "Mac combines sibling countries before k=3 and withholds smaller sub-regions")
+check((mergedRegions[0]["quality"] as! [String: Any])["score_sum"] as? Int == 180_000,
+      "sub-region aggregation preserves measured quality")
+
 // Unknown fields are discarded at every level; only counts can enter the page.
 var dirty = fixture
 dirty["nodes"] = [["node_id": "SECRET-root-node", "address": "SECRET-wallet", "country": "SECRET-country"]]
@@ -203,6 +225,8 @@ let cohortSource: [String: Any] = [
     "by_region": ["asia": 3, "unknown": 3, "world": 3],
 ]
 let local = LiveGlobePresence.parse(cohortSource, now: now)!
+check(local.searchHomeAggregateJSON == local.aggregateJSON,
+      "native M49 cohorts preserve their original threshold and frozen observation window")
 check(local.total == 9 && local.roles == ["validator": 3, "unknown": 3, "other": 3],
       "schema-2 roles remain the exact published partition")
 check(local.versions == ["unknown": 9], "unknown builds do not become invented release labels")

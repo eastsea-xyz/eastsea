@@ -99,8 +99,9 @@ struct SeaSearchPage: View {
             directResult
             ForEach(browser.searchResults) { record in
                 VStack(alignment: .leading, spacing: DesignTokens.Space.s1) {
-                    result(title: record.title.isEmpty ? record.name : record.title, detail: record.url,
+                    result(title: record.primaryURL, detail: record.title.isEmpty ? record.name : record.title,
                            icon: "square.stack", kind: "On-chain app or name") { browser.open(record.url) }
+                    if let key = record.registryKey { registryKeyDetail(key) }
                     if !record.description.isEmpty {
                         Text(verbatim: record.description).font(.aeFootnote).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -162,10 +163,29 @@ struct SeaSearchPage: View {
         case .url(let url):
             result(title: url.host ?? url.absoluteString, detail: url.absoluteString, icon: "link", kind: "Web address") { browser.submitSearch() }
         case .registryApp(let link):
-            result(title: link.appKey, detail: link.canonicalURL, icon: "square.stack", kind: "On-chain app or name") { browser.submitSearch() }
+            if let record = browser.searchResults.first(where: { SeaAppLink.parse($0.url)?.appID == link.appID }),
+               record.primaryURL != record.url {
+                result(title: record.primaryURL, detail: record.title.isEmpty ? record.name : record.title,
+                       icon: "square.stack", kind: "On-chain app or name") { browser.submitSearch() }
+                registryKeyDetail(link.appKey)
+            } else {
+                result(title: link.appKey, detail: link.canonicalURL, icon: "square.stack", kind: "On-chain app or name") { browser.submitSearch() }
+            }
         case .action(let host, _):
             result(title: host, detail: browser.searchQuery ?? "", icon: "wallet.pass", kind: "Wallet action") { browser.submitSearch() }
         default: EmptyView()
+        }
+    }
+
+    private func registryKeyDetail(_ key: String) -> some View {
+        HStack(spacing: DesignTokens.Space.s2) {
+            Text(verbatim: key).font(.aeCaption.monospaced()).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                .frame(maxWidth: 240, alignment: .leading)
+            Button { Clipboard.copy(key) } label: {
+                Image(systemName: "doc.on.doc").font(.aeCaption)
+            }
+            .buttonStyle(.plain).accessibilityLabel("Copy registry hash").help("Copy registry hash")
         }
     }
 

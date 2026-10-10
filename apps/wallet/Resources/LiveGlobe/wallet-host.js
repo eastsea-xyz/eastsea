@@ -15,6 +15,7 @@ export function installWalletHost(root) {
     configure(options) {
       if (typeof options?.searchHome === 'boolean') {
         document.body.classList.toggle('search-home', options.searchHome);
+        options = { ...options, subregionsOnly: options.searchHome };
       }
       const configured = view.configure(options);
       if (configured) {

@@ -1,5 +1,5 @@
 // Native search contract and address-bar routing, without an app or a node.
-// scripts/test-swift-pure.sh compiles AppSearch.swift and BrowserOriginPolicy.swift.
+// scripts/test-swift-pure.sh compiles AppSearch.swift and its pure URL parsers.
 import Foundation
 
 func check(_ condition: Bool, _ message: String) {
@@ -86,6 +86,35 @@ check(records[0].title == "App tide.sea" && records[0].description == "Publisher
 check(records[0].publisher == "0x1111111111111111111111111111111111111111" && records[0].category == "games", "publisher and category retained")
 check(records[1].usage7d == 50_000 && records[1].createdAt == 1_700_000_000, "chain usage and timestamp")
 check(try defaultRequest.results(from: []).isEmpty, "empty result is valid")
+
+// Registered app names are primary, even though navigation is pinned to the
+// registry key. The full key remains available for the secondary copy action.
+let appKey = "aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dypq"
+let appURL = "sea://" + appKey + "/pages/My_page-2.html?q=%2f&x=one+two"
+var namedAppRow = row(name: "eastsea", verified: true, usage: 3)
+namedAppRow["url"] = appURL
+namedAppRow["title"] = "EastSea"
+let namedApp = try defaultRequest.results(from: [namedAppRow])[0]
+check(namedApp.primaryURL == "sea://eastsea", "registered readable name replaces the raw hash address")
+check(namedApp.registryKey == appKey && namedApp.registryKey?.count == 52, "secondary copy keeps the full registry key")
+check(namedApp.url == appURL, "presentation does not change navigation path or raw query spelling")
+check(namedApp.name == "eastsea" && namedApp.title == "EastSea", "presentation does not overwrite registry or publisher fields")
+var reservedAppRow = namedAppRow
+reservedAppRow["name"] = "search"
+check(try defaultRequest.results(from: [reservedAppRow])[0].primaryURL == "sea://search.sea",
+      "the registered search name cannot display the native home address")
+namedAppRow["verified"] = false
+check(try defaultRequest.results(from: [namedAppRow])[0].primaryURL == "sea://eastsea", "content hash presence does not decide readable names")
+for name in ["", appKey, "0x" + String(repeating: "a", count: 64), "not a name", "pay", "eastsea/other"] {
+    var unnamedRow = namedAppRow
+    unnamedRow["name"] = name
+    unnamedRow["title"] = "eastsea"
+    let unnamedApp = try defaultRequest.results(from: [unnamedRow])[0]
+    check(unnamedApp.primaryURL == appURL, "missing or invalid registered name cannot come from a title: \(name)")
+    check(unnamedApp.registryKey == appKey && unnamedApp.url == appURL, "hash-only fallback retains full copy and navigation values")
+}
+check(records[0].primaryURL == "sea://tide.sea" && records[0].registryKey == nil, "named URL needs no duplicate hash detail")
+check(records[1].primaryURL == "sea://tіde.sea", "Unicode URL identity is not rewritten into another name")
 
 // Coverage metadata is independently decoded. Missing/invalid metadata is
 // unknown; the wallet cannot turn a capped or unavailable activity index into 0.

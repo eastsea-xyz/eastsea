@@ -46,7 +46,9 @@ bash scripts/package-public-reader.sh
 echo "built apps/extension (load it unpacked from chrome://extensions)"
 if [ "${1:-}" = "--zip" ]; then
   # Store releases carry recently signature-checked DHT discovery hints.
-  node scripts/refresh-read-seeds.mjs
+  # Fewer than 3 signed locators (e.g. before nodes publish them): keep the
+  # previous seeds file; clients still discover nodes over the DHT at runtime.
+  node scripts/refresh-read-seeds.mjs || echo "seed refresh: keeping the previous public-read seeds" >&2
   bash scripts/package-public-reader.sh
   version=$(python3 -c 'import json; print(json.load(open("apps/extension/manifest.json"))["version"])')
   mkdir -p dist

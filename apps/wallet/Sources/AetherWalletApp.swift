@@ -210,7 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var heldItem: SUAppcastItem?
     /// Update failures, persisted and retried by cause (red team #11):
     /// discover → download → verify → install → health, across relaunches.
-    private lazy var tracker: UpdateTracker = {
+    @MainActor private lazy var tracker: UpdateTracker = {
         if !recovery.isSafeMode {
             _ = migration
             DataMigration.ensure()

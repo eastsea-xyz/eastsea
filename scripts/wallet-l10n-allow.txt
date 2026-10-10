@@ -13,6 +13,7 @@ file: InstallLocation.swift     # ko/en pair (Tests/install-location)
 file: DiagnosticReport.swift    # a support report: key: value lines, title as a ko/en pair
 file: TxStatusText.swift        # ko/en pairs (Tests/tx-status-text)
 file: UnattendedDecision.swift  # ko/en pairs (Tests/unattended)
+file: AccountIconSpec.swift     # machine identifiers only (silhouette/palette names in the cross-language golden vectors), never shown in the UI
 file: DataMigration.swift       # sentences as ko/en pairs; the rest is the English technical log (Tests/rename-migration)
 file: EarningsExport.swift      # CSV file content: column names and comment lines stay English
 file: ResizeBenchmark.swift     # debug-only benchmark log

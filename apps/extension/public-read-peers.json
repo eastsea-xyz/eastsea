@@ -1,4 +1,15 @@
 {
   "chain_id": 7780,
-  "peers": []
+  "refreshed_at": "2026-10-10T04:12:10.844Z",
+  "peers": [
+    {
+      "node": "ae7b4bb59d9c18f830fed15a23fafec37029ee1de4df398b2154f312b9c1a23e"
+    },
+    {
+      "node": "eaac28ac8d47d7015dc994004c3698f8eb77c3638300d442a166a8d76bc71d92"
+    },
+    {
+      "node": "69868870413e35b3e8132d5398f92cd360d008d63c9798289b14e87352e621f3"
+    }
+  ]
 }
